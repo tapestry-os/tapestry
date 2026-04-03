@@ -103,7 +103,7 @@ void wm_init(world_model_t *wm,
     recompute_metric(wm);
 }
 
-void wm_update_self(world_model_t *wm, const element_state_t *own_state)
+void wm_update_self(world_model_t *wm, element_state_t *own_state)
 {
     wm_entry_t *self = &wm->entries[wm->owner_id];
 
@@ -113,6 +113,9 @@ void wm_update_self(world_model_t *wm, const element_state_t *own_state)
     self->is_active    = true;
     self->is_stale     = false;
     self->update_count++;
+
+    /* Write clock back so caller's copy stays in sync with the WM entry. */
+    own_state->logical_clock = self->state.logical_clock;
 }
 
 bool wm_receive_gossip(world_model_t *wm, const element_state_t *received)

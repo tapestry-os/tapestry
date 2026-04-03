@@ -130,9 +130,11 @@ void wm_init(world_model_t *wm,
 /*
  * wm_update_self — Update the owner's own entry.
  * Called after each local state change (position update, power change).
- * Increments logical clock. Never marks own entry stale or expired.
+ * Increments the logical clock and writes the new value back to own_state
+ * so the caller's copy stays in sync with the world model entry.
+ * Never marks own entry stale or expired.
  */
-void wm_update_self(world_model_t *wm, const element_state_t *own_state);
+void wm_update_self(world_model_t *wm, element_state_t *own_state);
 
 /*
  * wm_receive_gossip — Process an incoming gossip message.

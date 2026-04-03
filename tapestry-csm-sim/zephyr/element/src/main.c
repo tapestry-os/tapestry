@@ -104,11 +104,6 @@ int main(void)
         if (own_state.power_state == POWER_ACTIVE && !metric->degraded) {
             movement_tick(&own_state, &wm);
             wm_update_self(&wm, &own_state);
-            /* wm_update_self increments the clock in its own copy of the
-             * state but own_state is passed by value (const).  Sync the
-             * clock back so outgoing gossip carries the current value. */
-            own_state.logical_clock =
-                wm_get_entry(&wm, own_state.id)->state.logical_clock;
         }
 
         /* 4. Send gossip on interval */
