@@ -1,0 +1,16 @@
+cmake_minimum_required(VERSION 3.20.0)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(test_csm)
+
+set(TAPESTRY_OS_CSM ${CMAKE_CURRENT_SOURCE_DIR}/../../subsys/csm)
+
+target_sources(app PRIVATE
+    src/main.c
+    ${TAPESTRY_OS_CSM}/world_model.c
+)
+
+target_include_directories(app PRIVATE
+    ${TAPESTRY_OS_CSM}
+)
+
+target_link_libraries(app PRIVATE m)
