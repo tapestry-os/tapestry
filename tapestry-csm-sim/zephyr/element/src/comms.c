@@ -12,8 +12,8 @@
 LOG_MODULE_REGISTER(comms, LOG_LEVEL_INF);
 
 /* Scratch buffers — single-threaded main loop, no concurrency concern */
-static uint8_t tx_buf[SIM_HEADER_SIZE + SIM_GOSSIP_SIZE];
-static uint8_t rx_buf[SIM_HEADER_SIZE + SIM_GOSSIP_SIZE];
+static uint8_t tx_buf[SIM_MAX_MSG_SIZE];
+static uint8_t rx_buf[SIM_MAX_MSG_SIZE];
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
@@ -82,6 +82,41 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
 {
     const wm_consistency_metric_t *m = wm_get_metric(wm);
 
+    /* ── Compute mean_age_ms and min_separation from world model ── */
+    float    age_sum         = 0.0f;
+    uint8_t  age_count       = 0;
+    float    min_sep         = WORLD_SIZE * 2.0f;   /* sentinel > any real dist */
+    bool     any_active_peer = false;
+
+    const wm_entry_t *self_entry = wm_get_entry(wm, element_id);
+
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->state.id == ELEMENT_ID_INVALID || e->is_self || !e->is_active) {
+            continue;
+        }
+        age_sum += (float)e->age_ms;
+        age_count++;
+        any_active_peer = true;
+
+        if (self_entry != NULL) {
+            float d = position_distance(&self_entry->state.position,
+                                        &e->state.position);
+            if (d < min_sep) {
+                min_sep = d;
+            }
+        }
+    }
+
+    float mean_age = (age_count > 0) ? (age_sum / (float)age_count) : 0.0f;
+    /* Encode min_separation as uint16 at 0.01 unit resolution.
+     * If no active peers exist keep sentinel value 0xFFFF so the
+     * visualiser can distinguish "no peers" from "peers at distance 0". */
+    uint16_t min_sep_enc = any_active_peer
+                           ? (uint16_t)(min_sep * 100.0f)
+                           : 0xFFFFu;
+
+    /* ── Pack and send ── */
     sim_msg_header_t *hdr = (sim_msg_header_t *)tx_buf;
     hdr->type        = SIM_MSG_METRIC;
     hdr->src_id      = element_id;
@@ -89,16 +124,19 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
 
     sim_metric_payload_t *p =
         (sim_metric_payload_t *)(tx_buf + SIM_HEADER_SIZE);
-    p->element_id      = element_id;
-    p->active_total    = m->active_total;
-    p->active_fresh    = m->active_fresh;
-    p->active_stale    = m->active_stale;
-    p->inactive_total  = m->inactive_total;
-    p->collision_count = m->collision_count;
-    p->fresh_ratio     = m->fresh_ratio;
-    p->quorum_held     = m->quorum_held ? 1u : 0u;
-    p->cp_frozen       = m->cp_frozen   ? 1u : 0u;
-    p->cycle_count     = wm->cycle_count;
+    p->element_id           = element_id;
+    p->active_total         = m->active_total;
+    p->active_fresh         = m->active_fresh;
+    p->active_stale         = m->active_stale;
+    p->inactive_total       = m->inactive_total;
+    p->collision_count      = m->collision_count;
+    p->fresh_ratio          = m->fresh_ratio;
+    p->quorum_held          = m->quorum_held ? 1u : 0u;
+    p->cp_frozen            = m->cp_frozen   ? 1u : 0u;
+    p->cycle_count          = wm->cycle_count;
+    p->mean_age_ms          = mean_age;
+    p->mean_position_error  = 0.0f;   /* filled by orchestrator */
+    p->min_separation_x100  = min_sep_enc;
 
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);

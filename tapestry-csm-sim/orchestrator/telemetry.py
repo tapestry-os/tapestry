@@ -34,6 +34,9 @@ COLUMNS = [
     'quorum_held',
     'cp_frozen',
     'cycle_count',
+    'mean_age_ms',
+    'mean_position_error',
+    'min_separation',
 ]
 
 

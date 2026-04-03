@@ -4,10 +4,28 @@ broker.py — Gossip broker and orchestrator network state.
 Listens on ORCH_PORT for all element traffic (gossip + metrics).
 Forwards gossip only to elements in the same partition island.
 Sends control messages to individual elements on their own ports.
+
+Ground truth tracking
+─────────────────────
+The broker sees every gossip message an element sends, so it holds the
+authoritative current position of every element.  When a metric report
+arrives, the broker computes mean_position_error by comparing each
+element's world model belief (inferred from the last gossip it forwarded
+to that element per peer) against the ground truth position table.
+
+Because gossip is forwarded verbatim, the broker tracks:
+  _ground_truth[elem_id] = {'x': ..., 'y': ...}   ← actual position
+  _last_seen[observer_id][peer_id] = {'x': ..., 'y': ...}
+      ← last gossip forwarded from peer_id to observer_id
+      (i.e. what observer_id believes about peer_id)
+
+mean_position_error for observer O =
+    mean over all peers P of |ground_truth[P] − last_seen[O][P]|
 """
 
 import asyncio
 import logging
+import math
 
 from protocol import (
     ORCH_PORT, ELEMENT_BASE_PORT, LOOPBACK,
@@ -16,6 +34,12 @@ from protocol import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _dist(a: dict, b: dict) -> float:
+    dx = a['x'] - b['x']
+    dy = a['y'] - b['y']
+    return math.sqrt(dx * dx + dy * dy)
 
 
 class _Protocol(asyncio.DatagramProtocol):
@@ -52,12 +76,21 @@ class GossipBroker:
     """
 
     def __init__(self, n_elements: int, metric_cb=None):
-        self._n          = n_elements
-        self._metric_cb  = metric_cb
-        self._transport  = None
+        self._n            = n_elements
+        self._metric_cb    = metric_cb
+        self._transport    = None
         # island assignment: element_id → island_id (all start in island 0)
-        self._islands    = {i: 0 for i in range(n_elements)}
-        self._metrics    = {}   # element_id → most recent metric dict
+        self._islands      = {i: 0 for i in range(n_elements)}
+        self._metrics      = {}   # element_id → most recent metric dict
+
+        # ground truth: element_id → {'x': float, 'y': float}
+        self._ground_truth: dict[int, dict] = {}
+
+        # last gossip forwarded: observer_id → {peer_id → {'x', 'y'}}
+        # Represents what observer currently believes about each peer.
+        self._last_seen: dict[int, dict[int, dict]] = {
+            i: {} for i in range(n_elements)
+        }
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -85,22 +118,58 @@ class GossipBroker:
             self._handle_metric(msg)
 
     def _route_gossip(self, msg: dict):
-        """Forward gossip to every element in the same partition island."""
+        """Forward gossip and update ground truth + last_seen tables."""
         sender_id     = msg['src_id']
         sender_island = self._islands.get(sender_id, 0)
-        raw           = encode_gossip(msg)
+        pos           = {'x': msg['x'], 'y': msg['y']}
+
+        # Always update ground truth from sender's own gossip
+        self._ground_truth[sender_id] = pos
+
+        raw = encode_gossip(msg)
 
         for elem_id in range(self._n):
             if elem_id == sender_id:
                 continue
             if self._islands.get(elem_id, 0) != sender_island:
                 continue   # partitioned — drop
+
             self._transport.sendto(raw, (LOOPBACK, ELEMENT_BASE_PORT + elem_id))
+            # Record what this observer now believes about sender_id
+            self._last_seen[elem_id][sender_id] = pos
 
     def _handle_metric(self, msg: dict):
-        self._metrics[msg['element_id']] = msg
+        """Inject mean_position_error then dispatch to callback."""
+        observer_id = msg['element_id']
+        msg['mean_position_error'] = self._compute_position_error(observer_id)
+        self._metrics[observer_id] = msg
         if self._metric_cb:
             asyncio.ensure_future(self._metric_cb(msg))
+
+    # ── Position error computation ────────────────────────────────────────────
+
+    def _compute_position_error(self, observer_id: int) -> float:
+        """
+        Mean Euclidean error between what observer believes about each peer
+        and that peer's actual (ground truth) position.
+
+        Returns 0.0 if no peers have been seen yet.
+        """
+        beliefs = self._last_seen.get(observer_id, {})
+        if not beliefs:
+            return 0.0
+
+        total_error = 0.0
+        count       = 0
+
+        for peer_id, believed_pos in beliefs.items():
+            actual = self._ground_truth.get(peer_id)
+            if actual is None:
+                continue
+            total_error += _dist(believed_pos, actual)
+            count += 1
+
+        return (total_error / count) if count > 0 else 0.0
 
     # ── Partition control ────────────────────────────────────────────────────
 
