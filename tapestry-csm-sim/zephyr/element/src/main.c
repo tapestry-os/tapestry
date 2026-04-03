@@ -22,8 +22,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include "state.h"
-#include "world_model.h"
+#include <tapestry/csm.h>
 #include "movement.h"
 #include "comms.h"
 #include "sim_protocol.h"

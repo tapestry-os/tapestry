@@ -17,8 +17,7 @@
 #ifndef TAPESTRY_MOVEMENT_H
 #define TAPESTRY_MOVEMENT_H
 
-#include "state.h"
-#include "world_model.h"
+#include <tapestry/csm.h>
 
 /*
  * movement_tick — Apply one position update to own_state.

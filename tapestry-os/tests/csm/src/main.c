@@ -10,7 +10,7 @@
  */
 
 #include <zephyr/ztest.h>
-#include "world_model.h"
+#include <tapestry/csm.h>
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 

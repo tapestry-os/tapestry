@@ -15,8 +15,7 @@
 #define TAPESTRY_COMMS_H
 
 #include <stdint.h>
-#include "state.h"
-#include "world_model.h"
+#include <tapestry/csm.h>
 #include "sim_protocol.h"
 
 typedef struct {
