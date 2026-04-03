@@ -132,7 +132,8 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
     p->collision_count      = m->collision_count;
     p->fresh_ratio          = m->fresh_ratio;
     p->quorum_held          = m->quorum_held ? 1u : 0u;
-    p->cp_frozen            = m->cp_frozen   ? 1u : 0u;
+    p->degraded             = m->degraded    ? 1u : 0u;
+    p->confidence           = m->confidence;
     p->cycle_count          = wm->cycle_count;
     p->mean_age_ms          = mean_age;
     p->mean_position_error  = 0.0f;   /* filled by orchestrator */

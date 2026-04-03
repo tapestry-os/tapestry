@@ -20,7 +20,9 @@ Because gossip is forwarded verbatim, the broker tracks:
       (i.e. what observer_id believes about peer_id)
 
 mean_position_error for observer O =
-    mean over all peers P of |ground_truth[P] − last_seen[O][P]|
+    sum over seen peers P of |ground_truth[P] − last_seen[O][P]|
+    divided by (n − 1), so the denominator is always stable.
+    Unseen peers contribute 0 to the numerator.
 """
 
 import asyncio
@@ -153,23 +155,26 @@ class GossipBroker:
         Mean Euclidean error between what observer believes about each peer
         and that peer's actual (ground truth) position.
 
-        Returns 0.0 if no peers have been seen yet.
+        Denominator is always n-1 (all potential peers), not the count of
+        peers currently in _last_seen.  Peers the observer has never been
+        told about contribute 0 to the numerator but still appear in the
+        denominator, keeping the metric stable when intra-island beliefs
+        are refreshed and preventing artificial decreases during partitions.
         """
-        beliefs = self._last_seen.get(observer_id, {})
-        if not beliefs:
-            return 0.0
-
+        beliefs     = self._last_seen.get(observer_id, {})
         total_error = 0.0
-        count       = 0
+        n_peers     = self._n - 1   # exclude self
 
-        for peer_id, believed_pos in beliefs.items():
-            actual = self._ground_truth.get(peer_id)
-            if actual is None:
+        for peer_id in range(self._n):
+            if peer_id == observer_id:
                 continue
+            believed_pos = beliefs.get(peer_id)
+            actual       = self._ground_truth.get(peer_id)
+            if believed_pos is None or actual is None:
+                continue   # unseen peer contributes 0 to numerator
             total_error += _dist(believed_pos, actual)
-            count += 1
 
-        return (total_error / count) if count > 0 else 0.0
+        return (total_error / n_peers) if n_peers > 0 else 0.0
 
     # ── Partition control ────────────────────────────────────────────────────
 

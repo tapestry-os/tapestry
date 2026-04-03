@@ -28,15 +28,15 @@ CTRL_SHUTDOWN      = 3
 
 # ── Struct formats ────────────────────────────────────────────────────────────
 #
-# HEADER_FMT   '<BBH'           type, src_id, payload_len             — 4 bytes
-# GOSSIP_FMT   '<BffIBBI'       id, x, y, clock, power, island, seq   — 19 bytes
-# METRIC_FMT   '<BBBBBBfBBIffH' eid,at,af,as_,it,cc,ratio,qh,cf,      — 28 bytes
-#                               cycle,mean_age,mean_pos_err,min_sep_x100
-# CTRL_FMT     '<BB'            ctrl_type, value                       — 2 bytes
+# HEADER_FMT   '<BBH'            type, src_id, payload_len              — 4 bytes
+# GOSSIP_FMT   '<BffIBBI'        id, x, y, clock, power, island, seq    — 19 bytes
+# METRIC_FMT   '<BBBBBBfBBfIffH' eid,at,af,as_,it,cc,ratio,qh,deg,     — 30 bytes
+#                                conf,cycle,mean_age,mean_pos_err,min_sep
+# CTRL_FMT     '<BB'             ctrl_type, value                        — 2 bytes
 
 HEADER_FMT = struct.Struct('<BBH')
 GOSSIP_FMT = struct.Struct('<BffIBBI')
-METRIC_FMT = struct.Struct('<BBBBBBfBBIffH')
+METRIC_FMT = struct.Struct('<BBBBBBfBBfIffH')
 CTRL_FMT   = struct.Struct('<BB')
 
 # ── Encode ────────────────────────────────────────────────────────────────────
@@ -76,7 +76,7 @@ def decode(data: bytes) -> dict | None:
     Metric result keys:
         type, src_id, element_id, active_total, active_fresh, active_stale,
         inactive_total, collision_count, fresh_ratio, quorum_held,
-        cp_frozen, cycle_count
+        degraded, confidence, cycle_count
     """
     if len(data) < HEADER_FMT.size:
         return None
@@ -102,7 +102,7 @@ def decode(data: bytes) -> dict | None:
         }
 
     if msg_type == MSG_METRIC and len(payload) >= METRIC_FMT.size:
-        eid, at, af, ast, it, cc, ratio, qh, cf, cycle, \
+        eid, at, af, ast, it, cc, ratio, qh, deg, conf, cycle, \
             mean_age, mean_pos_err, min_sep_x100 = \
             METRIC_FMT.unpack_from(payload)
         # Decode min_separation: 0xFFFF sentinel means no active peers
@@ -118,7 +118,8 @@ def decode(data: bytes) -> dict | None:
             'collision_count':      cc,
             'fresh_ratio':          ratio,
             'quorum_held':          bool(qh),
-            'cp_frozen':            bool(cf),
+            'degraded':             bool(deg),
+            'confidence':           conf,
             'cycle_count':          cycle,
             'mean_age_ms':          mean_age,
             'mean_position_error':  mean_pos_err,   # broker will fill this

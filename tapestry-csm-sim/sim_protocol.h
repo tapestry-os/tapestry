@@ -72,13 +72,17 @@ typedef struct {
 
 /* ── Metric payload ──────────────────────────────────────────────────────── */
 /*
- * Python format: struct.Struct('<BBBBBBfBBIffH')
- * Size: 28 bytes
+ * Python format: struct.Struct('<BBBBBBfBBfIffH')
+ * Size: 30 bytes
  * Fields: element_id, active_total, active_fresh, active_stale,
  *         inactive_total, collision_count, fresh_ratio,
- *         quorum_held, cp_frozen, cycle_count,
+ *         quorum_held, degraded, confidence, cycle_count,
  *         mean_age_ms, mean_position_error, min_separation_x100
  *
+ * confidence           — proximity to quorum threshold [0.0, 1.0].
+ *                        1.0 = at or above quorum; 0.0 = no fresh peers.
+ *                        Always 1.0 when consistency_bias == 0.0 (pure AP).
+ * degraded             — 1 when quorum lost (element below its threshold).
  * mean_age_ms          — average age_ms of active non-self entries (ms)
  * mean_position_error  — average |believed pos − actual pos| per active peer
  *                        computed by orchestrator and injected before logging;
@@ -96,14 +100,15 @@ typedef struct {
     uint8_t  collision_count;
     float    fresh_ratio;
     uint8_t  quorum_held;
-    uint8_t  cp_frozen;
+    uint8_t  degraded;
+    float    confidence;
     uint32_t cycle_count;
     float    mean_age_ms;
     float    mean_position_error;   /* filled by orchestrator */
     uint16_t min_separation_x100;
 } __attribute__((packed)) sim_metric_payload_t;
 
-#define SIM_METRIC_SIZE  ((uint16_t)sizeof(sim_metric_payload_t))   /* 28 */
+#define SIM_METRIC_SIZE  ((uint16_t)sizeof(sim_metric_payload_t))   /* 30 */
 
 /* ── Control payload ─────────────────────────────────────────────────────── */
 /*
@@ -126,6 +131,6 @@ typedef struct {
 
 /* ── Worst-case receive buffer ───────────────────────────────────────────── */
 
-#define SIM_MAX_MSG_SIZE  (SIM_HEADER_SIZE + SIM_METRIC_SIZE)   /* 32 bytes */
+#define SIM_MAX_MSG_SIZE  (SIM_HEADER_SIZE + SIM_METRIC_SIZE)   /* 34 bytes */
 
 #endif /* SIM_PROTOCOL_H */

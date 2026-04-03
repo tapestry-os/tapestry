@@ -5,9 +5,10 @@ Reads one or two telemetry CSV files and produces a 4-panel figure
 comparing L4 algorithm efficacy across four metrics:
 
   Panel 1 — fresh_ratio          (accuracy: is the world model current?)
-  Panel 2 — mean_position_error  (accuracy: how far off are beliefs?)
-  Panel 3 — mean_age_ms          (accuracy: how old is the data being used?)
-  Panel 4 — min_separation       (safety: how close did elements get?)
+  Panel 2 — fraction_degraded    (consistency: what fraction of the fleet lost quorum?)
+  Panel 3 — mean_position_error  (accuracy: how far off are beliefs?)
+  Panel 4 — mean_age_ms          (accuracy: how old is the data being used?)
+  Panel 5 — min_separation       (safety: how close did elements get?)
 
 Partition events are inferred from drops in fresh_ratio and marked as
 shaded regions.  Each panel plots the per-element mean ± std band so
@@ -49,20 +50,33 @@ def load(path: str) -> pd.DataFrame:
     return df
 
 
-def per_cycle_stats(df: pd.DataFrame, col: str) -> pd.DataFrame:
+def per_cycle_stats(df: pd.DataFrame, col: str,
+                    smooth_window_s: float = 0.0) -> pd.DataFrame:
     """
     Aggregate per-cycle across all elements: mean, std, min, max.
     Groups by wall_time_s rounded to the nearest 100 ms cycle boundary.
+
+    smooth_window_s: if > 0, apply a rolling mean over this many seconds
+    after aggregation.  Useful for metrics that oscillate at the gossip
+    interval (500 ms) — e.g. mean_position_error.
     """
     df = df.copy()
     df['t'] = (df['wall_time_s'] * 10).round() / 10   # round to 0.1 s
     grp = df.groupby('t')[col]
-    return pd.DataFrame({
+    result = pd.DataFrame({
         'mean': grp.mean(),
         'std':  grp.std().fillna(0),
         'min':  grp.min(),
         'max':  grp.max(),
     })
+    if smooth_window_s > 0:
+        # Convert seconds to number of 0.1 s buckets
+        w = max(1, int(smooth_window_s / 0.1))
+        result['mean'] = result['mean'].rolling(w, center=True,
+                                                min_periods=1).mean()
+        result['std']  = result['std'].rolling(w,  center=True,
+                                               min_periods=1).mean()
+    return result
 
 
 # ── Partition region detection ────────────────────────────────────────────────
@@ -118,17 +132,18 @@ def _draw_panel(ax, stats: pd.DataFrame, colour: str, label: str,
 def plot(paths: list[str], labels: list[str], out: str | None):
     datasets = [load(p) for p in paths]
 
-    fig, axes = plt.subplots(4, 1, figsize=(12, 9), sharex=True)
+    fig, axes = plt.subplots(5, 1, figsize=(12, 11), sharex=True)
     fig.subplots_adjust(hspace=0.08, top=0.93, bottom=0.07)
 
     # Use the first dataset's partition regions as the reference timeline
     regions = partition_regions(datasets[0])
 
     panels = [
-        ('fresh_ratio',         'Fresh ratio [0–1]',   (0, 1.05), 0.5),
-        ('mean_position_error', 'Mean pos error (u)',  None,       None),
-        ('mean_age_ms',         'Mean age (ms)',        None,       None),
-        ('min_separation',      'Min separation (u)',   (0, None),  3.0),
+        ('fresh_ratio',         'Fresh ratio [0–1]',      (0, 1.05), 0.5),
+        ('degraded',            'Fraction degraded [0–1]', (0, 1.05), None),
+        ('mean_position_error', 'Mean pos error (u)',      None,       None),
+        ('mean_age_ms',         'Mean age (ms)',            None,       None),
+        ('min_separation',      'Min separation (u)',       (0, None),  3.0),
     ]
 
     legend_handles = []
@@ -139,7 +154,10 @@ def plot(paths: list[str], labels: list[str], out: str | None):
         legend_handles.append(handle)
 
         for ax, (col, ylabel, ylim, hline) in zip(axes, panels):
-            stats = per_cycle_stats(df, col)
+            # mean_position_error oscillates at the gossip interval (500 ms)
+            # due to intra-island belief refreshes; smooth over 1.5 s.
+            smooth = 1.5 if col == 'mean_position_error' else 0.0
+            stats = per_cycle_stats(df, col, smooth_window_s=smooth)
             _draw_panel(ax, stats, colour, label, regions,
                         ylabel, ylim=ylim, hline=hline)
 

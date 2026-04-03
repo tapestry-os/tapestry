@@ -27,11 +27,11 @@ static element_state_t make_state(element_id_t id, float x, float y,
     return s;
 }
 
-/* Owner is always ID 0. */
-static void init_wm(world_model_t *wm, wm_consistency_mode_t mode)
+/* Owner is always ID 0. bias=0.0 → pure AP, bias=1.0 → pure CP. */
+static void init_wm(world_model_t *wm, float bias)
 {
     element_state_t own = make_state(0, 50.0f, 50.0f, 1);
-    wm_init(wm, 0, &own, mode);
+    wm_init(wm, 0, &own, bias);
 }
 
 /* ── Test suite ──────────────────────────────────────────────────────────── */
@@ -47,7 +47,7 @@ ZTEST_SUITE(world_model, NULL, NULL, NULL, NULL, NULL);
 ZTEST(world_model, test_staleness_aging)
 {
     world_model_t wm;
-    init_wm(&wm, WM_MODE_AP);
+    init_wm(&wm, 0.0f);
 
     element_state_t peer = make_state(1, 55.0f, 50.0f, 10);
     zassert_true(wm_receive_gossip(&wm, &peer), "initial gossip should be accepted");
@@ -84,7 +84,7 @@ ZTEST(world_model, test_staleness_aging)
 ZTEST(world_model, test_gossip_clock_ordering)
 {
     world_model_t wm;
-    init_wm(&wm, WM_MODE_AP);
+    init_wm(&wm, 0.0f);
 
     element_state_t peer = make_state(1, 60.0f, 50.0f, 10);
 
@@ -125,7 +125,7 @@ ZTEST(world_model, test_gossip_clock_ordering)
 ZTEST(world_model, test_lamport_merge)
 {
     world_model_t wm;
-    init_wm(&wm, WM_MODE_AP);
+    init_wm(&wm, 0.0f);
 
     element_state_t peer = make_state(1, 60.0f, 50.0f, 10);
     wm_receive_gossip(&wm, &peer);
@@ -146,13 +146,17 @@ ZTEST(world_model, test_lamport_merge)
 /*
  * test_cp_freeze
  *
- * In CP mode, cp_frozen must be set when fresh_ratio drops to zero.
- * In AP mode, cp_frozen must never be set.
+ * bias=1.0 (pure CP): degraded must be set when fresh_ratio drops to zero;
+ * confidence must reach 0.0 at that point.
+ * bias=0.0 (pure AP): degraded must never be set; confidence always 1.0.
+ * bias=0.5 (hybrid): degraded triggers at a lower threshold; confidence
+ * degrades continuously rather than jumping.
  */
 ZTEST(world_model, test_cp_freeze)
 {
+    /* ── Pure CP (bias=1.0) ── */
     world_model_t wm;
-    init_wm(&wm, WM_MODE_CP);
+    init_wm(&wm, 1.0f);
 
     element_state_t p1 = make_state(1, 55.0f, 50.0f, 10);
     element_state_t p2 = make_state(2, 45.0f, 50.0f, 10);
@@ -161,35 +165,52 @@ ZTEST(world_model, test_cp_freeze)
 
     wm_tick(&wm, 1);
     const wm_consistency_metric_t *m = wm_get_metric(&wm);
-    zassert_false(m->cp_frozen, "should not be frozen with two fresh peers");
+    zassert_false(m->degraded,   "should not be degraded with two fresh peers");
+    zassert_equal(m->confidence, 1.0f, "confidence should be 1.0 when at quorum");
 
     /* Age both peers past stale threshold — fresh_ratio drops to 0 */
     wm_tick(&wm, WM_STALE_THRESHOLD_MS);
     m = wm_get_metric(&wm);
-    zassert_equal(m->active_fresh, 0, "both peers should be stale");
-    zassert_true(m->cp_frozen, "CP mode must freeze when all peers are stale");
+    zassert_equal(m->active_fresh, 0,    "both peers should be stale");
+    zassert_true(m->degraded,            "CP mode must degrade when all peers stale");
+    zassert_equal(m->confidence,  0.0f,  "confidence must be 0.0 when no fresh peers");
 
-    /* AP mode: same scenario, must never freeze */
+    /* ── Pure AP (bias=0.0) ── */
     world_model_t wm_ap;
-    init_wm(&wm_ap, WM_MODE_AP);
+    init_wm(&wm_ap, 0.0f);
     element_state_t p1_ap = make_state(1, 55.0f, 50.0f, 10);
     wm_receive_gossip(&wm_ap, &p1_ap);
     wm_tick(&wm_ap, WM_STALE_THRESHOLD_MS + 1);
     m = wm_get_metric(&wm_ap);
-    zassert_false(m->cp_frozen, "AP mode must never set cp_frozen");
+    zassert_false(m->degraded,   "AP mode must never degrade");
+    zassert_equal(m->confidence, 1.0f, "AP mode confidence always 1.0");
+
+    /* ── Hybrid (bias=0.5): quorum threshold = 0.25 ── */
+    /* With one fresh and one stale peer: fresh_ratio=0.5, threshold=0.25 → not degraded */
+    world_model_t wm_h;
+    element_state_t own_h = make_state(0, 50.0f, 50.0f, 1);
+    wm_init(&wm_h, 0, &own_h, 0.5f);
+    element_state_t ph1 = make_state(1, 55.0f, 50.0f, 10);
+    element_state_t ph2 = make_state(2, 45.0f, 50.0f, 10);
+    wm_receive_gossip(&wm_h, &ph1);
+    wm_receive_gossip(&wm_h, &ph2);
+    /* Age both past stale — fresh_ratio=0, threshold=0.25 → degraded */
+    wm_tick(&wm_h, WM_STALE_THRESHOLD_MS + 1);
+    m = wm_get_metric(&wm_h);
+    zassert_true(m->degraded, "hybrid must degrade when fresh_ratio < threshold");
+    zassert_equal(m->confidence, 0.0f, "confidence must be 0.0 at fresh_ratio=0");
 }
 
 /*
  * test_quorum_boundary
  *
- * At exactly 50% fresh the implementation uses >= so quorum must be held.
- * This pins the behaviour to document the discrepancy with the ">50%"
- * comment in world_model.h.
+ * At bias=1.0 the threshold is 0.5.  At exactly 50% fresh the implementation
+ * uses >= so quorum must be held and confidence must be exactly 1.0.
  */
 ZTEST(world_model, test_quorum_boundary)
 {
     world_model_t wm;
-    init_wm(&wm, WM_MODE_CP);
+    init_wm(&wm, 1.0f);
 
     /* Four peers, all fresh */
     for (int i = 1; i <= 4; i++) {
@@ -214,10 +235,11 @@ ZTEST(world_model, test_quorum_boundary)
     zassert_equal(m->active_fresh,  2, "2 fresh peers (3 and 4)");
     zassert_equal(m->active_stale,  2, "2 stale peers (1 and 2)");
     zassert_equal(m->fresh_ratio, 0.5f, "fresh_ratio should be exactly 0.5");
-    /* Implementation is >=, so 0.5 holds quorum */
+    /* Implementation is >=, so 0.5 == threshold holds quorum */
     zassert_true(m->quorum_held,
                  "quorum should be held at exactly 0.5 (implementation uses >=)");
-    zassert_false(m->cp_frozen, "should not be CP frozen at exactly 0.5");
+    zassert_false(m->degraded,   "should not be degraded at exactly 0.5");
+    zassert_equal(m->confidence, 1.0f, "confidence should be 1.0 at quorum boundary");
 }
 
 /*
@@ -230,14 +252,14 @@ ZTEST(world_model, test_reconciliation)
 {
     /* Island A: element 0 has peer 2 at clock 5 */
     world_model_t wm_a;
-    init_wm(&wm_a, WM_MODE_AP);
+    init_wm(&wm_a, 0.0f);
     element_state_t p2_old = make_state(2, 70.0f, 50.0f, 5);
     wm_receive_gossip(&wm_a, &p2_old);
 
     /* Island B: element 1 has peer 2 at clock 15 (newer, different position) */
     world_model_t wm_b;
     element_state_t own_b = make_state(1, 40.0f, 50.0f, 1);
-    wm_init(&wm_b, 1, &own_b, WM_MODE_AP);
+    wm_init(&wm_b, 1, &own_b, 0.0f);
     element_state_t p2_new = make_state(2, 72.0f, 52.0f, 15);
     wm_receive_gossip(&wm_b, &p2_new);
 
@@ -289,7 +311,7 @@ ZTEST(world_model, test_reconciliation)
 ZTEST(world_model, test_nearest_elements)
 {
     world_model_t wm;
-    init_wm(&wm, WM_MODE_AP);
+    init_wm(&wm, 0.0f);
 
     /* Distances from (50, 50): peer 1 = 5.0, peer 2 ≈ 14.1, peer 3 = 30.0 */
     element_state_t p1 = make_state(1, 55.0f, 50.0f, 10);  /* dist  5.0 */
@@ -328,7 +350,7 @@ ZTEST(world_model, test_nearest_elements)
 ZTEST(world_model, test_collision_detection)
 {
     world_model_t wm;
-    init_wm(&wm, WM_MODE_AP);
+    init_wm(&wm, 0.0f);
 
     /* Peer 1: distance 1.0 — within MIN_SEPARATION (3.0) → collision */
     element_state_t p1 = make_state(1, 51.0f, 50.0f, 10);

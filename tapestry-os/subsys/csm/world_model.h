@@ -18,18 +18,21 @@
  *   - The owner element's own entry is always authoritative and never
  *     expires. All other entries are gossip-propagated replicas.
  *
- * Consistency modes:
- *   WM_MODE_AP — Available/Partition-tolerant.
- *     The element continues updating its own position and gossiping
- *     during a partition. World models in each partition island diverge.
- *     After reconnection, reconciliation uses logical clocks to merge.
- *     Convergence is fast but divergence during partition is high.
+ * Consistency modes — a continuous dial:
+ *   consistency_bias = 0.0  — Pure AP (Available/Partition-tolerant).
+ *     Quorum threshold is 0: the element never freezes.  World models
+ *     diverge freely during a partition; reconciliation converges after heal.
  *
- *   WM_MODE_CP — Consistent/Partition-tolerant.
- *     The element freezes its own position updates when it detects
- *     a partition (quorum loss). It continues gossiping within its
- *     island but does not move. After reconnection, no divergence
- *     in own-state exists, but coordination cost is higher.
+ *   consistency_bias = 1.0  — Pure CP (Consistent/Partition-tolerant).
+ *     Quorum threshold is WM_QUORUM_FRACTION (0.5): the element freezes when
+ *     fewer than 50% of known peers are fresh.  No divergence in own-state
+ *     during partition, at the cost of availability.
+ *
+ *   0.0 < consistency_bias < 1.0  — Hybrid.
+ *     Quorum threshold scales linearly: threshold = bias * WM_QUORUM_FRACTION.
+ *     The element degrades gracefully — it enters a reduced-confidence state
+ *     before fully freezing, rather than switching abruptly.  The confidence
+ *     metric reports how far from the freeze point the element currently is.
  *
  * Staleness:
  *   Each entry has an age_ms counter incremented each cycle. Entries
@@ -53,17 +56,9 @@
 #define WM_EXPIRE_THRESHOLD_MS   5000   /* Entry marked inactive after this   */
 #define WM_CYCLE_MS               100   /* World model update tick rate       */
 
-/* ── Quorum: fraction of known elements required to avoid CP freeze ───────── */
+/* ── Quorum fraction — maximum threshold, reached at consistency_bias=1.0 ── */
 
-#define WM_QUORUM_FRACTION       0.5f   /* Must hear from >50% of last-known  */
-                                        /* active elements to maintain quorum  */
-
-/* ── Consistency mode ────────────────────────────────────────────────────── */
-
-typedef enum {
-    WM_MODE_AP = 0,   /* Available + Partition tolerant — keep moving        */
-    WM_MODE_CP = 1,   /* Consistent + Partition tolerant — freeze on partition*/
-} wm_consistency_mode_t;
+#define WM_QUORUM_FRACTION       0.5f   /* Effective threshold = bias * 0.5   */
 
 /* ── World model entry ───────────────────────────────────────────────────── */
 /*
@@ -82,10 +77,16 @@ typedef struct {
 
 /* ── Consistency metric ──────────────────────────────────────────────────── */
 /*
- * Computed each cycle. Reported in telemetry. Drives CP quorum check.
- * fresh_ratio = active_fresh / active_total
- * A fresh_ratio of 1.0 means perfect world model accuracy.
- * A fresh_ratio below WM_QUORUM_FRACTION triggers CP freeze.
+ * Computed each cycle. Reported in telemetry.
+ *
+ * fresh_ratio  = active_fresh / active_total  [0.0, 1.0]
+ * quorum_held  = fresh_ratio >= (bias * WM_QUORUM_FRACTION)
+ * confidence   = fresh_ratio / quorum_threshold, clamped to [0.0, 1.0].
+ *                1.0 means the element is at or above quorum.
+ *                0.0 means no fresh peers at all (full partition).
+ *                Values in between indicate partial degradation.
+ *                Always 1.0 when consistency_bias == 0.0 (pure AP).
+ * degraded     = !quorum_held — element is below its quorum threshold.
  */
 
 typedef struct {
@@ -95,23 +96,24 @@ typedef struct {
     uint8_t  inactive_total;    /* Elements marked inactive (expired)         */
     uint8_t  collision_count;   /* Collisions detected this cycle             */
     float    fresh_ratio;       /* active_fresh / active_total [0.0, 1.0]    */
-    bool     quorum_held;       /* True if fresh_ratio >= WM_QUORUM_FRACTION  */
-    bool     cp_frozen;         /* True if CP mode and quorum lost            */
+    bool     quorum_held;       /* True if fresh_ratio >= effective threshold */
+    bool     degraded;          /* True when quorum lost (any bias > 0)       */
+    float    confidence;        /* Proximity to quorum [0.0, 1.0]            */
 } wm_consistency_metric_t;
 
 /* ── World model ─────────────────────────────────────────────────────────── */
 
 typedef struct {
-    element_id_t           owner_id;              /* This element's own ID   */
-    wm_entry_t             entries[MAX_ELEMENTS]; /* One slot per possible ID*/
-    uint8_t                known_count;           /* How many IDs ever seen  */
-    wm_consistency_mode_t  mode;                  /* AP or CP                */
-    wm_consistency_metric_t metric;               /* Current consistency state*/
-    uint32_t               cycle_count;           /* Total update cycles run */
+    element_id_t            owner_id;              /* This element's own ID   */
+    wm_entry_t              entries[MAX_ELEMENTS]; /* One slot per possible ID*/
+    uint8_t                 known_count;           /* How many IDs ever seen  */
+    float                   consistency_bias;      /* 0.0=AP .. 1.0=CP        */
+    wm_consistency_metric_t metric;                /* Current consistency state*/
+    uint32_t                cycle_count;           /* Total update cycles run */
 
     /* Reconciliation state — populated after partition heal */
-    uint32_t               last_reconcile_cycle;  /* Cycle when last reconcile*/
-    uint32_t               reconcile_duration_ms; /* How long reconcile took  */
+    uint32_t                last_reconcile_cycle;  /* Cycle when last reconcile*/
+    uint32_t                reconcile_duration_ms; /* How long reconcile took  */
 } world_model_t;
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
@@ -123,7 +125,7 @@ typedef struct {
 void wm_init(world_model_t *wm,
              element_id_t owner_id,
              const element_state_t *own_state,
-             wm_consistency_mode_t mode);
+             float consistency_bias);
 
 /*
  * wm_update_self — Update the owner's own entry.

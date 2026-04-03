@@ -51,16 +51,25 @@ static void recompute_metric(world_model_t *wm)
     m->inactive_total = inactive_total;
     /* collision_count is set by wm_check_collisions — not touched here */
 
+    float quorum_threshold = wm->consistency_bias * WM_QUORUM_FRACTION;
+
     if (active_total > 0) {
         m->fresh_ratio = (float)active_fresh / (float)active_total;
-        m->quorum_held = (m->fresh_ratio >= WM_QUORUM_FRACTION);
+        m->quorum_held = (m->fresh_ratio >= quorum_threshold);
+        if (quorum_threshold > 0.0f) {
+            m->confidence = m->fresh_ratio / quorum_threshold;
+            if (m->confidence > 1.0f) { m->confidence = 1.0f; }
+        } else {
+            m->confidence = 1.0f;   /* bias=0.0: pure AP, always confident */
+        }
     } else {
         /* No peers known — no partition to detect */
         m->fresh_ratio = 1.0f;
         m->quorum_held = true;
+        m->confidence  = 1.0f;
     }
 
-    m->cp_frozen = (wm->mode == WM_MODE_CP) && !m->quorum_held;
+    m->degraded = !m->quorum_held;
 }
 
 /* ── API implementation ──────────────────────────────────────────────────── */
@@ -68,7 +77,7 @@ static void recompute_metric(world_model_t *wm)
 void wm_init(world_model_t *wm,
              element_id_t owner_id,
              const element_state_t *own_state,
-             wm_consistency_mode_t mode)
+             float consistency_bias)
 {
     memset(wm, 0, sizeof(*wm));
 
@@ -77,8 +86,8 @@ void wm_init(world_model_t *wm,
         wm->entries[i].state.id = ELEMENT_ID_INVALID;
     }
 
-    wm->owner_id = owner_id;
-    wm->mode     = mode;
+    wm->owner_id          = owner_id;
+    wm->consistency_bias  = consistency_bias;
 
     /* Own entry is always authoritative and always active */
     wm_entry_t *self = &wm->entries[owner_id];

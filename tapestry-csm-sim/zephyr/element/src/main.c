@@ -12,7 +12,7 @@
  * Main loop (WM_CYCLE_MS per iteration):
  *   1. Drain inbox   — gossip + control messages from orchestrator
  *   2. wm_tick       — age entries, recompute consistency metric
- *   3. Movement      — random walk + repulsion (skipped if CP frozen
+ *   3. Movement      — random walk + repulsion (skipped if degraded
  *                      or power state is not POWER_ACTIVE)
  *   4. wm_update_self
  *   5. Send gossip   — every GOSSIP_INTERVAL_MS
@@ -31,8 +31,9 @@
 LOG_MODULE_REGISTER(element, LOG_LEVEL_INF);
 
 /* native_sim is a Linux process — host libc getenv is accessible */
-extern char *getenv(const char *name);
-extern int   atoi(const char *s);
+extern char   *getenv(const char *name);
+extern int     atoi(const char *s);
+extern double  atof(const char *s);
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -42,12 +43,19 @@ static int env_int(const char *name, int default_val)
     return (v != NULL) ? atoi(v) : default_val;
 }
 
+static float env_float(const char *name, float default_val)
+{
+    const char *v = getenv(name);
+    return (v != NULL) ? (float)atof(v) : default_val;
+}
+
 /* ── Main ────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
-    const int element_id = env_int("ELEMENT_ID", 0);
-    const int orch_port  = env_int("ORCH_PORT",  SIM_ORCH_PORT);
+    const int   element_id        = env_int("ELEMENT_ID",        0);
+    const int   orch_port         = env_int("ORCH_PORT",         SIM_ORCH_PORT);
+    const float consistency_bias  = env_float("CONSISTENCY_BIAS", 0.0f);
 
     /* ---- Initialise own state ------------------------------------------ */
     element_state_t own_state = {0};
@@ -70,7 +78,7 @@ int main(void)
 
     /* ---- Initialise world model --------------------------------------- */
     world_model_t wm;
-    wm_init(&wm, own_state.id, &own_state, WM_MODE_AP);
+    wm_init(&wm, own_state.id, &own_state, consistency_bias);
 
     /* ---- Initialise comms --------------------------------------------- */
     comms_t comms;
@@ -93,7 +101,7 @@ int main(void)
         /* 3. Update position (only when active and not CP-frozen) */
         const wm_consistency_metric_t *metric = wm_get_metric(&wm);
 
-        if (own_state.power_state == POWER_ACTIVE && !metric->cp_frozen) {
+        if (own_state.power_state == POWER_ACTIVE && !metric->degraded) {
             movement_tick(&own_state, &wm);
             wm_update_self(&wm, &own_state);
             /* wm_update_self increments the clock in its own copy of the
