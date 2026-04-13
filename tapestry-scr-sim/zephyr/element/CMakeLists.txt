@@ -1,0 +1,29 @@
+cmake_minimum_required(VERSION 3.20.0)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(scr_element)
+
+set(TAPESTRY_OS_ROOT  ${CMAKE_CURRENT_SOURCE_DIR}/../../../tapestry-os)
+set(TAPESTRY_OS_CSM   ${TAPESTRY_OS_ROOT}/subsys/csm)
+set(TAPESTRY_OS_SCR   ${TAPESTRY_OS_ROOT}/subsys/scr)
+set(TAPESTRY_CSM_SIM  ${CMAKE_CURRENT_SOURCE_DIR}/../../../tapestry-csm-sim)
+set(CSM_ELEM_SRC      ${TAPESTRY_CSM_SIM}/zephyr/element/src)
+
+target_sources(app PRIVATE
+    src/main.c
+    src/comms_scr.c
+    ${CSM_ELEM_SRC}/comms.c        # L4 UDP transport: reused verbatim
+    ${CSM_ELEM_SRC}/movement.c     # random walk + repulsion: reused verbatim
+    ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_SCR}/scr.c
+)
+
+target_include_directories(app PRIVATE
+    ${TAPESTRY_OS_ROOT}/include    # <tapestry/scr.h> (and transitively csm.h)
+    ${TAPESTRY_OS_CSM}             # internal: world_model.h, state.h
+    ${CSM_ELEM_SRC}                # comms.h, movement.h (from csm element)
+    ${TAPESTRY_CSM_SIM}            # sim_protocol.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/../.. # scr_protocol.h
+    src/                           # comms_scr.h
+)
+
+target_link_libraries(app PRIVATE m)

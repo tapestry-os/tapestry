@@ -102,70 +102,220 @@ properties:
 - Per-cycle efficacy metrics: fresh ratio, confidence, mean age, collision
   detection, min separation
 
+The public include is `#include <tapestry/csm.h>`. The implementation in
+`tapestry-os/subsys/csm/` is pure C99 with no OS dependencies.
+
+### Consistency bias
+
+The `CONSISTENCY_BIAS` environment variable (float, 0.0–1.0) sets each element's
+position on the AP/CP spectrum at startup. At 0.0 the element never freezes. At
+1.0 it freezes when fewer than `WM_QUORUM_FRACTION` of known peers are fresh.
+Intermediate values scale the quorum threshold linearly, producing a degraded
+state rather than a hard switch.
+
+### Telemetry columns
+
+| Column | Description |
+|---|---|
+| `fresh_ratio` | Fraction of active peers with non-stale world model entries |
+| `degraded` | 1 when element is below its quorum threshold |
+| `confidence` | Proximity to quorum threshold [0.0, 1.0] |
+| `mean_age_ms` | Average age of active peer entries (ms) |
+| `mean_position_error` | Mean distance between believed and actual peer positions (broker ground truth) |
+| `min_separation` | Closest peer distance this cycle (safety proxy) |
+| `collision_count` | Peers within MIN\_SEPARATION (3.0 units) this cycle |
+
+## L5 — Swarm Coordination Runtime
+
+The Swarm Coordination Runtime (SCR) sits above the CSM and provides two
+collective services that L4 deliberately does not attempt:
+
+**Quorum management** — classifies swarm health into three levels based on
+the number of fresh (non-stale) peers visible in the current world model
+snapshot:
+
+| State | Condition | Meaning |
+|---|---|---|
+| `HEALTHY` | fresh peers ≥ `quorum_target` | Full consensus available |
+| `DEGRADED` | fresh peers ≥ `quorum_min` | Proceed with reduced confidence |
+| `LOST` | fresh peers < `quorum_min` | Cannot form reliable consensus |
+
+`quorum_min` and `quorum_target` are peer counts (not fractions) supplied
+at init time. This separates domain knowledge about expected swarm size from
+the L4 protocol mechanics.
+
+**Role election** — every element independently elects the same leader
+without extra messages. The fresh peer (including self) with the lowest
+`element_id` is the leader. All elements compute this identically from their
+converged world model; convergence time is bounded by `WM_STALE_THRESHOLD_MS`
+(1500 ms). When a leader's entry goes stale the next `scr_tick()` automatically
+elects from the remaining fresh set.
+
+Roles: `SCR_ROLE_LEADER`, `SCR_ROLE_FOLLOWER`, `SCR_ROLE_NONE` (quorum lost).
+
+The public include is `#include <tapestry/scr.h>`, which transitively
+includes `<tapestry/csm.h>`. The implementation in `tapestry-os/subsys/scr/`
+is pure C99 with no OS dependencies.
+
 ## Repository layout
 
 ```
 tapestry/
 ├── tapestry-os/                   Tapestry OS framework (no sim dependencies)
 │   ├── include/tapestry/
-│   │   └── csm.h                  Public API boundary — consumers include this
+│   │   ├── csm.h                  L4 public API boundary
+│   │   └── scr.h                  L5 public API boundary (includes csm.h)
 │   ├── subsys/csm/
 │   │   ├── state.h                Core types: element_state_t, position_t, …
 │   │   ├── world_model.h          CSM internal API
 │   │   └── world_model.c          CSM implementation (pure C99, no OS deps)
+│   ├── subsys/scr/
+│   │   ├── scr.h                  SCR internal API: scr_state_t, roles, quorum
+│   │   └── scr.c                  SCR implementation (pure C99, no OS deps)
 │   └── tests/csm/
-│       └── src/main.c             ztest unit tests
+│       ├── CMakeLists.txt
+│       ├── prj.conf
+│       └── src/main.c             ztest unit tests for L4
 │
-└── tapestry-csm-sim/              Simulation harness (consumes tapestry-os)
-    ├── sim_protocol.h             Wire format shared by C elements and Python
-    ├── zephyr/element/            Zephyr native_sim element application
+├── tapestry-csm-sim/              L4 simulation harness
+│   ├── sim_protocol.h             Wire format shared by C elements and Python
+│   ├── zephyr/element/            Zephyr native_sim element application
+│   │   ├── CMakeLists.txt
+│   │   ├── prj.conf
+│   │   └── src/
+│   │       ├── main.c             Main loop: gossip, tick, movement, metrics
+│   │       ├── comms.c/h          UDP transport (zsock_* API)
+│   │       └── movement.c/h       Random walk + peer repulsion
+│   └── orchestrator/              Python asyncio gossip broker + telemetry
+│       ├── main.py                Entry point: launches elements, runs scenario
+│       ├── broker.py              Routes gossip by partition island, injects
+│       │                          ground-truth position error into metrics
+│       ├── protocol.py            Python mirror of sim_protocol.h wire structs
+│       ├── telemetry.py           Per-cycle CSV writer
+│       ├── scenarios.py           Timed partition/power injection scripts
+│       └── plot.py                5-panel matplotlib efficacy visualiser
+│
+└── tapestry-scr-sim/              L5 simulation harness
+    ├── scr_protocol.h             Wire format additions for L5 SCR metric
+    ├── zephyr/element/            Zephyr native_sim element (L4 + L5)
+    │   ├── CMakeLists.txt
+    │   ├── prj.conf
     │   └── src/
-    │       ├── main.c             Main loop: gossip, tick, movement, metrics
-    │       ├── comms.c/h          UDP transport (zsock_* API)
-    │       └── movement.c/h      Random walk + peer repulsion
-    └── orchestrator/              Python asyncio gossip broker + telemetry
-        ├── main.py                Entry point: launches elements, runs scenario
-        ├── broker.py              Routes gossip by partition island, injects
-        │                          ground-truth position error into metrics
-        ├── protocol.py            Python mirror of sim_protocol.h wire structs
-        ├── telemetry.py           Per-cycle CSV writer
-        ├── scenarios.py           Timed partition/power injection scripts
-        └── plot.py                5-panel matplotlib efficacy visualiser
+    │       ├── main.c             Main loop: gossip, L4 tick, L5 SCR tick, metrics
+    │       └── comms_scr.c/h      SCR metric send (extends csm-sim comms)
+    ├── orchestrator/              Python asyncio orchestrator for L5
+    │   ├── main.py                Entry point; --quorum-min, --quorum-target, --bias
+    │   ├── broker.py              Gossip routing + SCR metric dispatch
+    │   ├── protocol.py            Python mirror of sim_protocol.h + scr_protocol.h
+    │   ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
+    │   ├── scenarios.py           L4 scenarios + leader_loss, cascade
+    │   └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
+    └── tests/
+        ├── CMakeLists.txt
+        ├── prj.conf
+        └── src/main.c             ztest unit tests for L5 SCR
 ```
 
 ## Architectural boundary
 
-`tapestry/csm.h` is the framework's public include. It contains no Zephyr or
-OS-specific types. The adaptation layer (Zephyr main loop, zsock transport) lives
-exclusively in `tapestry-csm-sim/zephyr/element/src/` and is replaceable per
-platform without touching the CSM logic.
+`tapestry/csm.h` and `tapestry/scr.h` are the framework's public includes.
+Neither contains Zephyr or OS-specific types. The include hierarchy is:
+
+```
+<tapestry/scr.h>          L4 + L5 surface (element firmware that runs both layers)
+  └── <tapestry/csm.h>    L4 surface only (adaptation layer, movement, comms)
+        ├── subsys/csm/state.h
+        └── subsys/csm/world_model.h
+```
+
+The adaptation layer (Zephyr main loop, zsock transport) lives exclusively in
+`tapestry-csm-sim/zephyr/element/src/` and is replaceable per platform without
+touching the CSM or SCR logic.
 
 This boundary is intentional and load-bearing. Future ports to other RTOS targets
-(FreeRTOS, bare-metal) require only a new adaptation layer, while `tapestry-os/` compiles unchanged.
+(FreeRTOS, bare-metal) require only a new adaptation layer, while `tapestry-os/`
+compiles unchanged.
 
 The monorepo maintains a hard directory boundary between `tapestry-os/` (OS
-logic) and `tapestry-csm-sim/` (test harness). The path to independent
-repositories is preserved via `git subtree split` and `west.yml`.
+logic) and the simulation harnesses. The path to independent repositories is
+preserved via `git subtree split` and `west.yml`.
 
 ## Building
 
 Requires [Zephyr RTOS](https://docs.zephyrproject.org) with `west` and a Python
 ≥ 3.11 virtual environment. Tested on Raspberry Pi (aarch64, Zephyr 4.4.0-rc1).
 
+**L4 unit tests** — gossip, Lamport clocks, staleness, quorum, reconciliation,
+spatial queries:
+
 ```bash
-# Unit tests
 west build -b native_sim/native/64 \
     --build-dir tapestry-csm-sim/build/test-csm \
     tapestry-os/tests/csm
 ./tapestry-csm-sim/build/test-csm/zephyr/zephyr.exe
+```
 
-# Simulation element
+**L5 unit tests** — quorum classification, leader election, partition/heal,
+stale and expired peer exclusion, re-election on leader loss:
+
+```bash
+west build -b native_sim/native/64 \
+    --build-dir tapestry-scr-sim/build/tests \
+    tapestry-scr-sim/tests
+./tapestry-scr-sim/build/tests/zephyr/zephyr.exe
+```
+
+**L5 simulation element** — Zephyr native_sim binary that runs L4 gossip and
+L5 SCR tick, consumed by the SCR Python orchestrator:
+
+```bash
+west build -b native_sim/native/64 \
+    --build-dir tapestry-scr-sim/build/element \
+    tapestry-scr-sim/zephyr/element
+```
+
+**L4 simulation element** — Zephyr native_sim binary consumed by the L4 Python
+orchestrator:
+
+```bash
 west build -b native_sim/native/64 \
     --build-dir tapestry-csm-sim/build/element \
     tapestry-csm-sim/zephyr/element
 ```
 
-## Running the simulation
+## Running the L5 simulation
+
+```bash
+cd tapestry-scr-sim/orchestrator
+
+# Leader loss — partition element 0 (initial leader) at t=5s, heal at t=15s
+python main.py --elements 5 --scenario leader_loss --duration 30 --out leader_loss.csv
+
+# Cascade — sequential leader elimination
+python main.py --elements 5 --scenario cascade --duration 30 --out cascade.csv
+
+# Compare the two
+python plot.py leader_loss.csv cascade.csv --labels "Leader loss" Cascade --out scr_compare.png
+```
+
+Available scenarios: `leader_loss`, `cascade`, `default`, `flapping`, `asymmetric`, `sleep`.
+
+The `--quorum-min` and `--quorum-target` flags control the SCR quorum thresholds
+(peer counts, not fractions). The `--bias` flag sets the L4 consistency dial.
+
+### SCR telemetry columns
+
+| Column | Description |
+|---|---|
+| `role` | 0=NONE, 1=FOLLOWER, 2=LEADER |
+| `leader_id` | Elected leader element ID; 255 = no leader (quorum LOST) |
+| `quorum_state` | 0=LOST, 1=DEGRADED, 2=HEALTHY |
+| `fresh_count` | Non-self fresh peers visible this cycle |
+| `election_count` | Cumulative leader changes since element startup |
+
+Plus all L4 telemetry columns (see L4 section above).
+
+## Running the L4 simulation
 
 ```bash
 cd tapestry-csm-sim/orchestrator
@@ -181,23 +331,3 @@ python plot.py ap_run.csv cp_run.csv --labels AP CP --out ap_vs_cp.png
 ```
 
 Available scenarios: `default`, `flapping`, `asymmetric`, `sleep`.
-
-### Consistency bias
-
-The `CONSISTENCY_BIAS` environment variable (float, 0.0–1.0) sets each element's
-position on the AP/CP spectrum at startup. At 0.0 the element never freezes. At
-1.0 it freezes when fewer than `WM_QUORUM_FRACTION` of known peers are fresh. Intermediate values
-scale the quorum threshold linearly, producing a degraded state rather than a
-hard switch.
-
-## Telemetry columns
-
-| Column | Description |
-|---|---|
-| `fresh_ratio` | Fraction of active peers with non-stale world model entries |
-| `degraded` | 1 when element is below its quorum threshold |
-| `confidence` | Proximity to quorum threshold [0.0, 1.0] |
-| `mean_age_ms` | Average age of active peer entries (ms) |
-| `mean_position_error` | Mean distance between believed and actual peer positions (broker ground truth) |
-| `min_separation` | Closest peer distance this cycle (safety proxy) |
-| `collision_count` | Peers within MIN\_SEPARATION (3.0 units) this cycle |
