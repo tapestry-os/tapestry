@@ -161,7 +161,7 @@ is pure C99 with no OS dependencies.
 
 ```
 tapestry/
-├── tapestry-os/                   Tapestry OS framework (no sim dependencies)
+├── tapestry-os/                   Tapestry OS framework (pure C99, no OS dependencies)
 │   ├── include/tapestry/
 │   │   ├── csm.h                  L4 public API boundary
 │   │   └── scr.h                  L5 public API boundary (includes csm.h)
@@ -169,16 +169,16 @@ tapestry/
 │   │   ├── state.h                Core types: element_state_t, position_t, …
 │   │   ├── world_model.h          CSM internal API
 │   │   └── world_model.c          CSM implementation (pure C99, no OS deps)
-│   ├── subsys/scr/
-│   │   ├── scr.h                  SCR internal API: scr_state_t, roles, quorum
-│   │   └── scr.c                  SCR implementation (pure C99, no OS deps)
-│   └── tests/csm/
-│       ├── CMakeLists.txt
-│       ├── prj.conf
-│       └── src/main.c             ztest unit tests for L4
+│   └── subsys/scr/
+│       ├── scr.h                  SCR internal API: scr_state_t, roles, quorum
+│       └── scr.c                  SCR implementation (pure C99, no OS deps)
 │
 ├── tapestry-csm-sim/              L4 simulation harness
 │   ├── sim_protocol.h             Wire format shared by C elements and Python
+│   ├── tests/                     ztest unit tests for L4
+│   │   ├── CMakeLists.txt
+│   │   ├── prj.conf
+│   │   └── src/main.c
 │   ├── zephyr/element/            Zephyr native_sim element application
 │   │   ├── CMakeLists.txt
 │   │   ├── prj.conf
@@ -197,23 +197,23 @@ tapestry/
 │
 └── tapestry-scr-sim/              L5 simulation harness
     ├── scr_protocol.h             Wire format additions for L5 SCR metric
+    ├── tests/                     ztest unit tests for L5
+    │   ├── CMakeLists.txt
+    │   ├── prj.conf
+    │   └── src/main.c
     ├── zephyr/element/            Zephyr native_sim element (L4 + L5)
     │   ├── CMakeLists.txt
     │   ├── prj.conf
     │   └── src/
     │       ├── main.c             Main loop: gossip, L4 tick, L5 SCR tick, metrics
     │       └── comms_scr.c/h      SCR metric send (extends csm-sim comms)
-    ├── orchestrator/              Python asyncio orchestrator for L5
-    │   ├── main.py                Entry point; --quorum-min, --quorum-target, --bias
-    │   ├── broker.py              Gossip routing + SCR metric dispatch
-    │   ├── protocol.py            Python mirror of sim_protocol.h + scr_protocol.h
-    │   ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
-    │   ├── scenarios.py           L4 scenarios + leader_loss, cascade
-    │   └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
-    └── tests/
-        ├── CMakeLists.txt
-        ├── prj.conf
-        └── src/main.c             ztest unit tests for L5 SCR
+    └── orchestrator/              Python asyncio orchestrator for L5
+        ├── main.py                Entry point; --quorum-min, --quorum-target, --bias
+        ├── broker.py              Gossip routing + SCR metric dispatch
+        ├── protocol.py            Python mirror of sim_protocol.h + scr_protocol.h
+        ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
+        ├── scenarios.py           L4 scenarios + leader_loss, cascade
+        └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
 ```
 
 ## Architectural boundary
@@ -246,7 +246,7 @@ preserved via `git subtree split` and `west.yml`.
 
 ```bash
 # 1. Initialise west workspace
-west init -m https://github.com/<org>/tapestry --mr main tapestry-workspace
+west init -m https://github.com/tapestry-os/tapestry --mr main tapestry-workspace
 cd tapestry-workspace
 west update
 west zephyr-export
@@ -269,7 +269,7 @@ spatial queries:
 ```bash
 west build -b native_sim/native/64 \
     --build-dir tapestry/tapestry-csm-sim/build/test-csm \
-    tapestry/tapestry-os/tests/csm
+    tapestry/tapestry-csm-sim/tests
 ./tapestry/tapestry-csm-sim/build/test-csm/zephyr/zephyr.exe
 ```
 

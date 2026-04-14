@@ -23,6 +23,11 @@ jobs:
         with:
           path: tapestry
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       # Sets up a west workspace at $GITHUB_WORKSPACE, installs the
       # Zephyr SDK, and exports ZEPHYR_BASE.  The app-path tells the
       # action where the west.yml manifest lives.
@@ -39,7 +44,7 @@ jobs:
         run: |
           west build -b native_sim/native/64 \
             --build-dir tapestry/tapestry-csm-sim/build/test-csm \
-            tapestry/tapestry-os/tests/csm
+            tapestry/tapestry-csm-sim/tests
 
       - name: Run L4 unit tests
         working-directory: ${{ github.workspace }}
@@ -51,12 +56,12 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           west build -b native_sim/native/64 \
-            --build-dir tapestry/tapestry-scr-sim/build/tests \
+            --build-dir tapestry/tapestry-scr-sim/build/test-scr \
             tapestry/tapestry-scr-sim/tests
 
       - name: Run L5 unit tests
         working-directory: ${{ github.workspace }}
-        run: ./tapestry/tapestry-scr-sim/build/tests/zephyr/zephyr.exe
+        run: ./tapestry/tapestry-scr-sim/build/test-scr/zephyr/zephyr.exe
 
       # ── Simulation elements (compile-only) ──────────────────────────────
       # These are not run in CI (they require the Python orchestrator)

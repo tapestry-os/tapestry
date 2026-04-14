@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20.0)
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(test_csm)
 
-set(TAPESTRY_OS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
+set(TAPESTRY_OS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os)
 set(TAPESTRY_OS_CSM  ${TAPESTRY_OS_ROOT}/subsys/csm)
 
 target_sources(app PRIVATE

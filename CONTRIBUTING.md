@@ -16,7 +16,7 @@ Tested on Raspberry Pi aarch64 (Zephyr 4.4.0-rc1) and Ubuntu 22.04 x86_64.
 
 ```bash
 # 1. Initialise a west workspace with Tapestry as the manifest project
-west init -m https://github.com/<org>/tapestry --mr main tapestry-workspace
+west init -m https://github.com/tapestry-os/tapestry --mr main tapestry-workspace
 cd tapestry-workspace
 
 # 2. Fetch Zephyr and its modules
@@ -41,7 +41,7 @@ otherwise noted.
 # L4 unit tests
 west build -b native_sim/native/64 \
     --build-dir tapestry/tapestry-csm-sim/build/test-csm \
-    tapestry/tapestry-os/tests/csm
+    tapestry/tapestry-csm-sim/tests
 ./tapestry/tapestry-csm-sim/build/test-csm/zephyr/zephyr.exe
 
 # L5 unit tests
@@ -86,6 +86,8 @@ tapestry-os/include/tapestry/
 
 tapestry-<layer>-sim/
     tests/          ztest suite (must pass before merge)
+    orchestrator/   Python asyncio sim harness
+    zephyr/element/ Zephyr native_sim element
 ```
 
 **C style**
@@ -102,8 +104,8 @@ tapestry-<layer>-sim/
 
 **Tests**
 
-Every new API function needs at least one ztest. Tests live in the
-`tapestry-<layer>-sim/tests/` directory for the relevant layer.
+Every new API function needs at least one ztest. Tests live in
+`tapestry-<layer>-sim/tests/` for the relevant layer.
 CI runs all ztests on every push and PR — a failing test blocks merge.
 
 ## Submitting changes
