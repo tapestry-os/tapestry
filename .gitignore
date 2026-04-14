@@ -57,8 +57,15 @@ dkms.conf
 # build info
 build/
 __pycache__/
+*.pyc
 
-#byproducts
+# west workspace metadata (created by west init one level above the repo)
+.west/
+
+# Python virtual environment (if created inside the repo)
+.venv/
+
+# byproducts
 tmp/
 *.csv
 *.png

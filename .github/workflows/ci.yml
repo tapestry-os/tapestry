@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch so a fast-follow push
+# doesn't queue behind a stale run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ztests:
+    name: Zephyr unit tests
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Tapestry
+        uses: actions/checkout@v4
+        with:
+          path: tapestry
+
+      # Sets up a west workspace at $GITHUB_WORKSPACE, installs the
+      # Zephyr SDK, and exports ZEPHYR_BASE.  The app-path tells the
+      # action where the west.yml manifest lives.
+      - name: Set up Zephyr
+        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        with:
+          app-path: tapestry
+          toolchains: x86_64-zephyr-elf
+
+      # ── L4 CSM ──────────────────────────────────────────────────────────
+
+      - name: Build L4 unit tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/tapestry-csm-sim/build/test-csm \
+            tapestry/tapestry-os/tests/csm
+
+      - name: Run L4 unit tests
+        working-directory: ${{ github.workspace }}
+        run: ./tapestry/tapestry-csm-sim/build/test-csm/zephyr/zephyr.exe
+
+      # ── L5 SCR ──────────────────────────────────────────────────────────
+
+      - name: Build L5 unit tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/tapestry-scr-sim/build/tests \
+            tapestry/tapestry-scr-sim/tests
+
+      - name: Run L5 unit tests
+        working-directory: ${{ github.workspace }}
+        run: ./tapestry/tapestry-scr-sim/build/tests/zephyr/zephyr.exe
+
+      # ── Simulation elements (compile-only) ──────────────────────────────
+      # These are not run in CI (they require the Python orchestrator)
+      # but we verify they compile to catch regressions early.
+
+      - name: Build L4 simulation element
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/tapestry-csm-sim/build/element \
+            tapestry/tapestry-csm-sim/zephyr/element
+
+      - name: Build L5 simulation element
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/tapestry-scr-sim/build/element \
+            tapestry/tapestry-scr-sim/zephyr/element

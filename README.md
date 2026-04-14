@@ -240,19 +240,37 @@ The monorepo maintains a hard directory boundary between `tapestry-os/` (OS
 logic) and the simulation harnesses. The path to independent repositories is
 preserved via `git subtree split` and `west.yml`.
 
+## Getting started
+
+**Prerequisites:** [Zephyr SDK](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html) 0.17.0+, Python ≥ 3.11. Tested on Raspberry Pi aarch64 and Ubuntu 22.04 (Zephyr 4.4.0-rc1).
+
+```bash
+# 1. Initialise west workspace
+west init -m https://github.com/<org>/tapestry --mr main tapestry-workspace
+cd tapestry-workspace
+west update
+west zephyr-export
+
+# 2. Python dependencies for the simulation orchestrators
+cd tapestry
+python3 -m venv .venv && source .venv/bin/activate
+pip install pandas matplotlib
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup details.
+
 ## Building
 
-Requires [Zephyr RTOS](https://docs.zephyrproject.org) with `west` and a Python
-≥ 3.11 virtual environment. Tested on Raspberry Pi (aarch64, Zephyr 4.4.0-rc1).
+All `west build` commands run from the workspace root (`tapestry-workspace/`).
 
 **L4 unit tests** — gossip, Lamport clocks, staleness, quorum, reconciliation,
 spatial queries:
 
 ```bash
 west build -b native_sim/native/64 \
-    --build-dir tapestry-csm-sim/build/test-csm \
-    tapestry-os/tests/csm
-./tapestry-csm-sim/build/test-csm/zephyr/zephyr.exe
+    --build-dir tapestry/tapestry-csm-sim/build/test-csm \
+    tapestry/tapestry-os/tests/csm
+./tapestry/tapestry-csm-sim/build/test-csm/zephyr/zephyr.exe
 ```
 
 **L5 unit tests** — quorum classification, leader election, partition/heal,
@@ -260,9 +278,9 @@ stale and expired peer exclusion, re-election on leader loss:
 
 ```bash
 west build -b native_sim/native/64 \
-    --build-dir tapestry-scr-sim/build/tests \
-    tapestry-scr-sim/tests
-./tapestry-scr-sim/build/tests/zephyr/zephyr.exe
+    --build-dir tapestry/tapestry-scr-sim/build/tests \
+    tapestry/tapestry-scr-sim/tests
+./tapestry/tapestry-scr-sim/build/tests/zephyr/zephyr.exe
 ```
 
 **L5 simulation element** — Zephyr native_sim binary that runs L4 gossip and
@@ -270,8 +288,8 @@ L5 SCR tick, consumed by the SCR Python orchestrator:
 
 ```bash
 west build -b native_sim/native/64 \
-    --build-dir tapestry-scr-sim/build/element \
-    tapestry-scr-sim/zephyr/element
+    --build-dir tapestry/tapestry-scr-sim/build/element \
+    tapestry/tapestry-scr-sim/zephyr/element
 ```
 
 **L4 simulation element** — Zephyr native_sim binary consumed by the L4 Python
@@ -279,8 +297,8 @@ orchestrator:
 
 ```bash
 west build -b native_sim/native/64 \
-    --build-dir tapestry-csm-sim/build/element \
-    tapestry-csm-sim/zephyr/element
+    --build-dir tapestry/tapestry-csm-sim/build/element \
+    tapestry/tapestry-csm-sim/zephyr/element
 ```
 
 ## Running the L5 simulation

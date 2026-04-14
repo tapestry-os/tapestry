@@ -1,0 +1,16 @@
+manifest:
+  # Tapestry lives at <workspace>/tapestry/ within a west workspace.
+  # To initialise a fresh workspace:
+  #
+  #   west init -m https://github.com/<org>/tapestry --mr main tapestry-workspace
+  #   cd tapestry-workspace
+  #   west update
+  #
+  self:
+    path: tapestry
+
+  projects:
+    - name: zephyr
+      url: https://github.com/zephyrproject-rtos/zephyr
+      revision: v4.4.0-rc1
+      import: true   # pulls in Zephyr's own manifest (HAL modules, etc.)
