@@ -301,6 +301,67 @@ west build -b native_sim/native/64 \
     tapestry/tapestry-csm-sim/zephyr/element
 ```
 
+## Phase 1 — Hardware validation
+
+The L4 and L5 test suites run unchanged on physical hardware. Board-specific
+`prj.conf` overlays in each `tests/boards/` directory supply the FPU and
+stack-size settings needed; the test source and CMakeLists.txt are untouched.
+
+This validates the core architectural claim: `world_model.c` and `scr.c` are
+pure C99 and compile correctly for any Zephyr-supported MCU.
+
+**Additional SDK toolchains required** (install via `zephyr-sdk-setup.sh`):
+- `xtensa-espressif_esp32_zephyr-elf` — for ESP-WROVER-KIT
+- `arm-zephyr-eabi` — for EK-RA8D1
+
+### ESP-WROVER-KIT (ESP32 / Xtensa LX6)
+
+```bash
+# Build L4 tests
+west build -b esp_wrover_kit/esp32/procpu \
+    --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm \
+    tapestry/tapestry-csm-sim/tests
+
+# Flash and monitor
+west flash --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm
+west espressif monitor --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm
+
+# Build L5 tests
+west build -b esp_wrover_kit/esp32/procpu \
+    --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr \
+    tapestry/tapestry-scr-sim/tests
+
+west flash --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr
+west espressif monitor --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr
+```
+
+### Renesas EK-RA8D1 (RA8D1 / Cortex-M85)
+
+The EK-RA8D1 has a J-Link OB debugger on board. `west flash` uses it
+automatically; connect the USB debug port before running.
+
+```bash
+# Build L4 tests
+west build -b ek_ra8d1 \
+    --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm \
+    tapestry/tapestry-csm-sim/tests
+
+# Flash and open serial terminal (115200 8N1)
+west flash --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm
+west debug --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm
+
+# Build L5 tests
+west build -b ek_ra8d1 \
+    --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr \
+    tapestry/tapestry-scr-sim/tests
+
+west flash --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr
+```
+
+Ztest output appears on the board's UART console (USB CDC-ACM or the
+J-Link virtual COM port at 115200 baud). A passing run ends with:
+`PROJECT EXECUTION SUCCESSFUL`.
+
 ## Running the L5 simulation
 
 ```bash

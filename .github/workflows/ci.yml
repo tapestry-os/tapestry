@@ -80,3 +80,59 @@ jobs:
           west build -b native_sim/native/64 \
             --build-dir tapestry/tapestry-scr-sim/build/element \
             tapestry/tapestry-scr-sim/zephyr/element
+
+  # Compile the test suites for both Phase 1 hardware targets.
+  # These builds are compile-only (no run): they verify that the pure C99
+  # L4/L5 core compiles cleanly for Xtensa (ESP32) and Cortex-M85 (RA8D1).
+  hw-build:
+    name: Hardware target compile check
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Tapestry
+        uses: actions/checkout@v4
+        with:
+          path: tapestry
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Zephyr
+        uses: zephyrproject-rtos/action-zephyr-setup@v1
+        with:
+          app-path: tapestry
+          toolchains: xtensa-espressif_esp32_zephyr-elf;arm-zephyr-eabi
+
+      # ── ESP-WROVER-KIT (ESP32 / Xtensa LX6) ────────────────────────────
+
+      - name: Build L4 tests — esp_wrover_kit
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b esp_wrover_kit/esp32/procpu \
+            --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm \
+            tapestry/tapestry-csm-sim/tests
+
+      - name: Build L5 tests — esp_wrover_kit
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b esp_wrover_kit/esp32/procpu \
+            --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr \
+            tapestry/tapestry-scr-sim/tests
+
+      # ── Renesas EK-RA8D1 (RA8D1 / Cortex-M85) ──────────────────────────
+
+      - name: Build L4 tests — ek_ra8d1
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b ek_ra8d1 \
+            --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm \
+            tapestry/tapestry-csm-sim/tests
+
+      - name: Build L5 tests — ek_ra8d1
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b ek_ra8d1 \
+            --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr \
+            tapestry/tapestry-scr-sim/tests
