@@ -1,0 +1,17 @@
+# wifi.conf.example — template for WiFi credentials
+#
+# Copy to wifi.conf, fill in your network details, then build with:
+#
+#   west build -b esp_wrover_kit/esp32/procpu \
+#       --build-dir tapestry/tapestry-scr-hw/build/hw-esp \
+#       --pristine always \
+#       --extra-conf tapestry/tapestry-scr-hw/wifi.conf \
+#       tapestry/tapestry-scr-hw
+#
+# wifi.conf is listed in .gitignore — never commit credentials.
+
+CONFIG_TAPESTRY_WIFI_SSID="your_ssid_here"
+CONFIG_TAPESTRY_WIFI_PSK="your_password_here"
+CONFIG_TAPESTRY_ORCH_IP="192.168.x.x"
+# Subnet directed broadcast — must reach all elements on the same L2 segment:
+CONFIG_TAPESTRY_GOSSIP_BCAST="192.168.x.255"

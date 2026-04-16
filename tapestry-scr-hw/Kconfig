@@ -1,0 +1,66 @@
+# Kconfig — Tapestry hardware element configuration
+#
+# Values are baked into the firmware at build time via CONFIG_* macros.
+# WiFi credentials are sensitive: supply them via a gitignored wifi.conf
+# passed with  west build --extra-conf tapestry/tapestry-scr-hw/wifi.conf
+
+# Pull in all Zephyr Kconfig symbols (NETWORKING, WIFI, LOG, …).
+# Without this every standard symbol appears "undefined".
+source "Kconfig.zephyr"
+
+config TAPESTRY_ELEMENT_ID
+	int "Element ID [0..4]"
+	range 0 4
+	default 0
+	help
+	  Unique identity for this physical element. Determines leader
+	  election priority (lowest ID wins) and gossip source tagging.
+	  Set to 0 for ESP-WROVER-KIT, 1 for EK-RA8D1.
+
+config TAPESTRY_GOSSIP_PORT
+	int "UDP port for gossip broadcast/receive"
+	default 5000
+
+config TAPESTRY_GOSSIP_BCAST
+	string "Gossip broadcast address"
+	default "255.255.255.255"
+	help
+	  Destination address for gossip UDP datagrams.  The limited broadcast
+	  (255.255.255.255) is NOT forwarded between WiFi and Ethernet segments
+	  by most home routers.  Set this to the subnet directed broadcast
+	  (e.g. 192.168.86.255 for a 192.168.86.0/24 network) so that gossip
+	  crosses the WiFi/Ethernet boundary.
+
+
+config TAPESTRY_METRIC_PORT
+	int "UDP port for telemetry metrics (unicast to collector)"
+	default 5100
+
+config TAPESTRY_ORCH_IP
+	string "Telemetry collector IP address"
+	default ""
+	help
+	  IPv4 address of the machine running telemetry/collect.py.
+	  Metrics are silently dropped when this is left empty.
+
+config TAPESTRY_QUORUM_MIN
+	int "SCR minimum fresh peers for DEGRADED state"
+	range 0 4
+	default 1
+
+config TAPESTRY_QUORUM_TARGET
+	int "SCR minimum fresh peers for HEALTHY state"
+	range 0 4
+	default 1
+
+if WIFI
+
+config TAPESTRY_WIFI_SSID
+	string "WiFi SSID"
+	default ""
+
+config TAPESTRY_WIFI_PSK
+	string "WiFi pre-shared key (WPA2)"
+	default ""
+
+endif # WIFI

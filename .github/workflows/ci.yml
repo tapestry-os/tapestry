@@ -103,7 +103,7 @@ jobs:
         uses: zephyrproject-rtos/action-zephyr-setup@v1
         with:
           app-path: tapestry
-          toolchains: xtensa-espressif_esp32_zephyr-elf;arm-zephyr-eabi
+          toolchains: xtensa-espressif_esp32_zephyr-elf:arm-zephyr-eabi
 
       # ── ESP-WROVER-KIT (ESP32 / Xtensa LX6) ────────────────────────────
 
@@ -136,3 +136,29 @@ jobs:
           west build -b ek_ra8d1 \
             --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr \
             tapestry/tapestry-scr-sim/tests
+
+      # ── Phase 2 hardware element (tapestry-scr-hw) ──────────────────────
+      # WiFi credentials are not needed for a compile-only check; a dummy
+      # wifi.conf supplies the required Kconfig strings.
+      # The ESP32 WiFi driver requires binary blobs from Espressif.
+
+      - name: Fetch ESP32 WiFi blobs
+        working-directory: ${{ github.workspace }}
+        run: west blobs fetch hal_espressif
+
+      - name: Build Phase 2 element — esp_wrover_kit
+        working-directory: ${{ github.workspace }}
+        run: |
+          printf 'CONFIG_TAPESTRY_WIFI_SSID="ci"\nCONFIG_TAPESTRY_WIFI_PSK="ci"\n' \
+            > /tmp/ci_wifi.conf
+          west build -b esp_wrover_kit/esp32/procpu \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-esp \
+            --extra-conf /tmp/ci_wifi.conf \
+            tapestry/tapestry-scr-hw
+
+      - name: Build Phase 2 element — ek_ra8d1
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b ek_ra8d1 \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-ra8d1 \
+            tapestry/tapestry-scr-hw

@@ -63,14 +63,14 @@ layers above it are unaware of and independent from the choice below.
   declared, not hard-coded.
 - **L2 (Element Runtime)** — priority-based task scheduler with deterministic
   interrupt latency, power state management (active/idle/sleep), and a POSIX
-  socket API (`zsock_*`) used as the L3 transport primitive in simulation.
+  socket API (`zsock_*`) used as the L3 transport primitive in simulation and on hardware.
 
 **What Zephyr does not provide** — and where Tapestry begins:
 
 Zephyr is a single-element OS. It has no concept of other elements, a shared
 physical world state, collective objectives, quorum, or partition tolerance.
 Everything from L3 upward is Tapestry's responsibility. The boundary is made
-explicit in code: `#include <tapestry/csm.h>` pulls in no Zephyr types and
+explicit in code: `#include <tapestry/csm.h>` does not pull in any Zephyr types and
 compiles cleanly against any C99 toolchain.
 
 **Portability:** replacing Zephyr with FreeRTOS, a bare-metal HAL, or any other OS requires
@@ -79,10 +79,20 @@ only rewriting the adaptation layer (`comms.c`, `main.c`). The CSM logic in
 micro and nanoscale targets, L1–L2 implementations will evolve — potentially
 to custom ASICs or biochemical state machines — while L3–L7 remain stable.
 
-## L3 - Inter-Element Communication
+## L3 — Inter-Element Communication
 
-The mechanism for elements to communicate with each other is currently a simulation scaffold.
-It will eventually need to be replaced with a real mesh implementation before running on physical hardware. 
+L3 is implemented as **UDP broadcast gossip** over the local network, running
+on both the simulation harness and physical hardware.  Each element
+broadcasts its state to the subnet on a fixed port; any element within the
+same L2 segment receives it with no addressing or routing configuration.
+
+This is a single-hop, infrastructure-dependent transport — elements must share
+a broadcast domain.  It correctly validates the L4/L5 protocol stack on real
+hardware and models the semantics of short-range mesh radio (any element within
+range receives the transmission).  A future L3 evolution would replace UDP
+broadcast with a true multi-hop mesh protocol (e.g. 802.15.4, BLE mesh, or
+custom RF) to remove the infrastructure dependency and extend range beyond a
+single L2 segment — without touching L4 or above.
 
 ## L4 — Collective State Manager
 
@@ -310,7 +320,7 @@ stack-size settings needed; the test source and CMakeLists.txt are untouched.
 This validates the core architectural claim: `world_model.c` and `scr.c` are
 pure C99 and compile correctly for any Zephyr-supported MCU.
 
-**Additional SDK toolchains required** (install via `zephyr-sdk-setup.sh`):
+**Different and representative compute boards have been used to validate the franework.** Additional SDK toolchains required (install via `zephyr-sdk-setup.sh`):
 - `xtensa-espressif_esp32_zephyr-elf` — for ESP-WROVER-KIT
 - `arm-zephyr-eabi` — for EK-RA8D1
 
@@ -361,6 +371,109 @@ west flash --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr
 Ztest output appears on the board's UART console (USB CDC-ACM or the
 J-Link virtual COM port at 115200 baud). A passing run ends with:
 `PROJECT EXECUTION SUCCESSFUL`.
+
+## Phase 2 — Hardware swarm validation
+
+Two physical boards gossip **directly** over the LAN via UDP broadcast
+with no broker in the path.  The ESP32 uses WiFi; the RA8D1 uses Ethernet;
+both must connect to the same router so they share a single L2 segment
+(standard home routers bridge WiFi and Ethernet ports correctly; mesh
+systems vary).
+
+```
+[ESP32] ──UDP broadcast :5000──► [RA8D1]
+[RA8D1] ──UDP broadcast :5000──► [ESP32]
+
+[ESP32] ──UDP unicast──► collector :5100   (L4+L5 metrics → collect.py)
+[RA8D1] ──UDP unicast──► collector :5100
+```
+
+This models real mesh-radio broadcast semantics: an element transmits its
+state and any element within range receives it — no relay, no addressing.
+
+The firmware automatically disables WiFi power save after connecting.
+Without this, the AP buffers broadcast frames until the DTIM beacon
+interval (potentially 10–20 s on some routers), which exceeds the
+1500 ms world-model stale threshold and causes spurious LOST/HEALTHY
+oscillation.
+
+### Build — ESP-WROVER-KIT (element 0, WiFi)
+
+Create `tapestry/tapestry-scr-hw/wifi.conf` from the example template and
+fill in your network credentials:
+
+```bash
+cp tapestry/tapestry-scr-hw/wifi.conf.example \
+   tapestry/tapestry-scr-hw/wifi.conf
+# edit wifi.conf — wifi.conf is gitignored
+```
+
+Set `CONFIG_TAPESTRY_ORCH_IP` to the collector machine's LAN IP in `wifi.conf` to gather telemetry (not required in an actual deployment):
+
+```
+CONFIG_TAPESTRY_WIFI_SSID="your_ssid"
+CONFIG_TAPESTRY_WIFI_PSK="your_password"
+CONFIG_TAPESTRY_ORCH_IP="192.168.x.x"   # machine running collect.py
+```
+
+Build and flash:
+
+```bash
+west build -b esp_wrover_kit/esp32/procpu \
+    --build-dir tapestry/tapestry-scr-hw/build/hw-esp \
+    -s tapestry/tapestry-scr-hw \
+    -- -DEXTRA_CONF_FILE="$(pwd)/tapestry/tapestry-scr-hw/wifi.conf"
+
+west flash \
+    --build-dir tapestry/tapestry-scr-hw/build/hw-esp \
+    --esp-device /dev/ttyUSB1
+```
+
+### Build — EK-RA8D1 (element 1, Ethernet)
+
+Set `CONFIG_TAPESTRY_ORCH_IP` to gather telemetry for the RA8D1 build on the command line:
+
+```bash
+west build -b ek_ra8d1 \
+    --build-dir tapestry/tapestry-scr-hw/build/hw-ra8d1 \
+    -s tapestry/tapestry-scr-hw \
+    -- -DCONFIG_TAPESTRY_ORCH_IP='"192.168.x.x"'
+
+west flash --build-dir tapestry/tapestry-scr-hw/build/hw-ra8d1
+```
+
+### Run the telemetry collector
+
+On the laptop (must be on the same LAN as both boards):
+
+```bash
+cd tapestry/tapestry-scr-hw/telemetry
+pip install pandas matplotlib   # one-time
+python collect.py --out hw_run.csv
+```
+
+### Proof point — physical partition
+
+1. Both boards running: `fresh_ratio = 1.0`, `quorum_state = HEALTHY`,
+   leader = element 0 (lowest ID).
+2. **Reset (POR) the ESP32** to simulate a partition (or move it out of communication range):
+   - RA8D1 ages the ESP32 entry: fresh → stale → inactive (~1500 ms)
+   - `quorum_state` drops HEALTHY → DEGRADED → LOST
+   - RA8D1 assigns NONE role, `election_count` increments
+3. **ESP32 reconnects** (after WiFi association + DHCP, ~5–10 s):
+   - First gossip broadcast triggers `wm_receive_gossip()`
+   - Lamport clock merge reconciles both world models
+   - Quorum recovers, leader re-elected, `election_count` increments again
+
+### Plot results
+
+```bash
+python plot.py hw_run.csv --out hw_run.png
+```
+
+The plot shows fresh ratio, quorum state, role, elected leader, and mean
+peer age across both elements — the partition event appears as a cliff in
+all five panels, and the recovery as a step back up.
 
 ## Running the L5 simulation
 
