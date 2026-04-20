@@ -58,6 +58,7 @@ dkms.conf
 build/
 __pycache__/
 *.pyc
+wifi.conf
 
 # west workspace metadata (created by west init one level above the repo)
 .west/

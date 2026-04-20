@@ -224,6 +224,18 @@ tapestry/
         ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
         ├── scenarios.py           L4 scenarios + leader_loss, cascade
         └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
+│
+└── tapestry-scr-hw/               Hardware swarm firmware (Phase 1 + Phase 2)
+    ├── README.md                  Build, flash, and telemetry instructions
+    ├── Kconfig                    Element configuration (ID, ports, WiFi, ORCH_IP)
+    ├── src/
+    │   ├── main.c                 Element main loop (L4 + L5, no broker)
+    │   ├── comms.c/h              UDP broadcast gossip + unicast metrics
+    │   └── net_init.c/h           WiFi / Ethernet bring-up (Zephyr net_mgmt)
+    └── telemetry/
+        ├── collect.py             UDP metric collector → CSV
+        ├── protocol.py            Python mirror of wire structs
+        └── plot.py                5-panel hardware telemetry visualiser
 ```
 
 ## Architectural boundary
@@ -293,15 +305,6 @@ west build -b native_sim/native/64 \
 ./tapestry/tapestry-scr-sim/build/tests/zephyr/zephyr.exe
 ```
 
-**L5 simulation element** — Zephyr native_sim binary that runs L4 gossip and
-L5 SCR tick, consumed by the SCR Python orchestrator:
-
-```bash
-west build -b native_sim/native/64 \
-    --build-dir tapestry/tapestry-scr-sim/build/element \
-    tapestry/tapestry-scr-sim/zephyr/element
-```
-
 **L4 simulation element** — Zephyr native_sim binary consumed by the L4 Python
 orchestrator:
 
@@ -311,169 +314,31 @@ west build -b native_sim/native/64 \
     tapestry/tapestry-csm-sim/zephyr/element
 ```
 
-## Phase 1 — Hardware validation
-
-The L4 and L5 test suites run unchanged on physical hardware. Board-specific
-`prj.conf` overlays in each `tests/boards/` directory supply the FPU and
-stack-size settings needed; the test source and CMakeLists.txt are untouched.
-
-This validates the core architectural claim: `world_model.c` and `scr.c` are
-pure C99 and compile correctly for any Zephyr-supported MCU.
-
-**Different and representative compute boards have been used to validate the franework.** Additional SDK toolchains required (install via `zephyr-sdk-setup.sh`):
-- `xtensa-espressif_esp32_zephyr-elf` — for ESP-WROVER-KIT
-- `arm-zephyr-eabi` — for EK-RA8D1
-
-### ESP-WROVER-KIT (ESP32 / Xtensa LX6)
+**L5 simulation element** — Zephyr native_sim binary that runs L4 gossip and
+L5 SCR tick, consumed by the SCR Python orchestrator:
 
 ```bash
-# Build L4 tests
-west build -b esp_wrover_kit/esp32/procpu \
-    --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm \
-    tapestry/tapestry-csm-sim/tests
-
-# Flash and monitor
-west flash --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm
-west espressif monitor --build-dir tapestry/tapestry-csm-sim/build/hw-esp-test-csm
-
-# Build L5 tests
-west build -b esp_wrover_kit/esp32/procpu \
-    --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr \
-    tapestry/tapestry-scr-sim/tests
-
-west flash --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr
-west espressif monitor --build-dir tapestry/tapestry-scr-sim/build/hw-esp-test-scr
+west build -b native_sim/native/64 \
+    --build-dir tapestry/tapestry-scr-sim/build/element \
+    tapestry/tapestry-scr-sim/zephyr/element
 ```
 
-### Renesas EK-RA8D1 (RA8D1 / Cortex-M85)
-
-The EK-RA8D1 has a J-Link OB debugger on board. `west flash` uses it
-automatically; connect the USB debug port before running.
+## Running the L4 simulation
 
 ```bash
-# Build L4 tests
-west build -b ek_ra8d1 \
-    --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm \
-    tapestry/tapestry-csm-sim/tests
+cd tapestry-csm-sim/orchestrator
 
-# Flash and open serial terminal (115200 8N1)
-west flash --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm
-west debug --build-dir tapestry/tapestry-csm-sim/build/hw-ra8d1-test-csm
+# AP mode (bias=0.0, default) — elements keep moving through partitions
+python main.py --elements 5 --scenario default --duration 60 --out ap_run.csv
 
-# Build L5 tests
-west build -b ek_ra8d1 \
-    --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr \
-    tapestry/tapestry-scr-sim/tests
+# CP mode (bias=1.0) — elements freeze on quorum loss
+CONSISTENCY_BIAS=1.0 python main.py --elements 5 --scenario default --duration 60 --out cp_run.csv
 
-west flash --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr
+# Compare
+python plot.py ap_run.csv cp_run.csv --labels AP CP --out ap_vs_cp.png
 ```
 
-Ztest output appears on the board's UART console (USB CDC-ACM or the
-J-Link virtual COM port at 115200 baud). A passing run ends with:
-`PROJECT EXECUTION SUCCESSFUL`.
-
-## Phase 2 — Hardware swarm validation
-
-Two physical boards gossip **directly** over the LAN via UDP broadcast
-with no broker in the path.  The ESP32 uses WiFi; the RA8D1 uses Ethernet;
-both must connect to the same router so they share a single L2 segment
-(standard home routers bridge WiFi and Ethernet ports correctly; mesh
-systems vary).
-
-```
-[ESP32] ──UDP broadcast :5000──► [RA8D1]
-[RA8D1] ──UDP broadcast :5000──► [ESP32]
-
-[ESP32] ──UDP unicast──► collector :5100   (L4+L5 metrics → collect.py)
-[RA8D1] ──UDP unicast──► collector :5100
-```
-
-This models real mesh-radio broadcast semantics: an element transmits its
-state and any element within range receives it — no relay, no addressing.
-
-The firmware automatically disables WiFi power save after connecting.
-Without this, the AP buffers broadcast frames until the DTIM beacon
-interval (potentially 10–20 s on some routers), which exceeds the
-1500 ms world-model stale threshold and causes spurious LOST/HEALTHY
-oscillation.
-
-### Build — ESP-WROVER-KIT (element 0, WiFi)
-
-Create `tapestry/tapestry-scr-hw/wifi.conf` from the example template and
-fill in your network credentials:
-
-```bash
-cp tapestry/tapestry-scr-hw/wifi.conf.example \
-   tapestry/tapestry-scr-hw/wifi.conf
-# edit wifi.conf — wifi.conf is gitignored
-```
-
-Set `CONFIG_TAPESTRY_ORCH_IP` to the collector machine's LAN IP in `wifi.conf` to gather telemetry (not required in an actual deployment):
-
-```
-CONFIG_TAPESTRY_WIFI_SSID="your_ssid"
-CONFIG_TAPESTRY_WIFI_PSK="your_password"
-CONFIG_TAPESTRY_ORCH_IP="192.168.x.x"   # machine running collect.py
-```
-
-Build and flash:
-
-```bash
-west build -b esp_wrover_kit/esp32/procpu \
-    --build-dir tapestry/tapestry-scr-hw/build/hw-esp \
-    -s tapestry/tapestry-scr-hw \
-    -- -DEXTRA_CONF_FILE="$(pwd)/tapestry/tapestry-scr-hw/wifi.conf"
-
-west flash \
-    --build-dir tapestry/tapestry-scr-hw/build/hw-esp \
-    --esp-device /dev/ttyUSB1
-```
-
-### Build — EK-RA8D1 (element 1, Ethernet)
-
-Set `CONFIG_TAPESTRY_ORCH_IP` to gather telemetry for the RA8D1 build on the command line:
-
-```bash
-west build -b ek_ra8d1 \
-    --build-dir tapestry/tapestry-scr-hw/build/hw-ra8d1 \
-    -s tapestry/tapestry-scr-hw \
-    -- -DCONFIG_TAPESTRY_ORCH_IP='"192.168.x.x"'
-
-west flash --build-dir tapestry/tapestry-scr-hw/build/hw-ra8d1
-```
-
-### Run the telemetry collector
-
-On the laptop (must be on the same LAN as both boards):
-
-```bash
-cd tapestry/tapestry-scr-hw/telemetry
-pip install pandas matplotlib   # one-time
-python collect.py --out hw_run.csv
-```
-
-### Proof point — physical partition
-
-1. Both boards running: `fresh_ratio = 1.0`, `quorum_state = HEALTHY`,
-   leader = element 0 (lowest ID).
-2. **Reset (POR) the ESP32** to simulate a partition (or move it out of communication range):
-   - RA8D1 ages the ESP32 entry: fresh → stale → inactive (~1500 ms)
-   - `quorum_state` drops HEALTHY → DEGRADED → LOST
-   - RA8D1 assigns NONE role, `election_count` increments
-3. **ESP32 reconnects** (after WiFi association + DHCP, ~5–10 s):
-   - First gossip broadcast triggers `wm_receive_gossip()`
-   - Lamport clock merge reconciles both world models
-   - Quorum recovers, leader re-elected, `election_count` increments again
-
-### Plot results
-
-```bash
-python plot.py hw_run.csv --out hw_run.png
-```
-
-The plot shows fresh ratio, quorum state, role, elected leader, and mean
-peer age across both elements — the partition event appears as a cliff in
-all five panels, and the recovery as a step back up.
+Available scenarios: `default`, `flapping`, `asymmetric`, `sleep`.
 
 ## Running the L5 simulation
 
@@ -507,19 +372,16 @@ The `--quorum-min` and `--quorum-target` flags control the SCR quorum thresholds
 
 Plus all L4 telemetry columns (see L4 section above).
 
-## Running the L4 simulation
+## Hardware validation
 
-```bash
-cd tapestry-csm-sim/orchestrator
+The L4/L5 stack has been validated on physical hardware in two phases:
 
-# AP mode (bias=0.0, default) — elements keep moving through partitions
-python main.py --elements 5 --scenario default --duration 60 --out ap_run.csv
+- **Phase 1** — the ztest suites run unchanged on real MCUs, confirming that
+  `world_model.c` and `scr.c` are pure C99 and compile correctly for any
+  Zephyr-supported target.
+- **Phase 2** — a two-element swarm runs on real boards gossiping via UDP
+  broadcast over a shared LAN, demonstrating partition detection (~1.5 s),
+  autonomous leader election, and recovery with no simulation broker.
 
-# CP mode (bias=1.0) — elements freeze on quorum loss
-CONSISTENCY_BIAS=1.0 python main.py --elements 5 --scenario default --duration 60 --out cp_run.csv
-
-# Compare
-python plot.py ap_run.csv cp_run.csv --labels AP CP --out ap_vs_cp.png
-```
-
-Available scenarios: `default`, `flapping`, `asymmetric`, `sleep`.
+See [`tapestry-scr-hw/README.md`](tapestry-scr-hw/README.md) for specific hardware build,
+flash, and telemetry instructions.
