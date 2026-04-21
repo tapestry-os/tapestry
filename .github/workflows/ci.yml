@@ -137,6 +137,23 @@ jobs:
             --build-dir tapestry/tapestry-scr-sim/build/hw-ra8d1-test-scr \
             tapestry/tapestry-scr-sim/tests
 
+      # ── BBC micro:bit V2 (nRF52833 / Cortex-M4F) ────────────────────────
+      # Phase 1: verify that the pure C99 L4/L5 core compiles for nRF52833.
+
+      - name: Build L4 tests — bbc_microbit_v2
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b bbc_microbit_v2 \
+            --build-dir tapestry/tapestry-csm-sim/build/hw-mb-test-csm \
+            tapestry/tapestry-csm-sim/tests
+
+      - name: Build L5 tests — bbc_microbit_v2
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b bbc_microbit_v2 \
+            --build-dir tapestry/tapestry-scr-sim/build/hw-mb-test-scr \
+            tapestry/tapestry-scr-sim/tests
+
       # ── Phase 2 hardware element (tapestry-scr-hw) ──────────────────────
       # WiFi credentials are not needed for a compile-only check; a dummy
       # wifi.conf supplies the required Kconfig strings.
@@ -162,3 +179,21 @@ jobs:
           west build -b ek_ra8d1 \
             --build-dir tapestry/tapestry-scr-hw/build/hw-ra8d1 \
             tapestry/tapestry-scr-hw
+
+      # ── BBC micro:bit V2 Phase 2 element ────────────────────────────────
+      # BLE gossip transport + Cutebot motor driver, built from tapestry-scr-hw.
+
+      - name: Build Phase 2 element — bbc_microbit_v2 (elem 0)
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b bbc_microbit_v2 \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-mb0 \
+            tapestry/tapestry-scr-hw
+
+      - name: Build Phase 2 element — bbc_microbit_v2 (elem 1)
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b bbc_microbit_v2 \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-mb1 \
+            tapestry/tapestry-scr-hw \
+            -- -DCONFIG_TAPESTRY_ELEMENT_ID=1
