@@ -1,6 +1,7 @@
 # Tapestry
 
 An open source operating system framework for physically reconfigurable matter.
+For more details, refer to the [project documentation](https://tapestry-os.com/documentation).
 
 ## Vision
 
@@ -8,21 +9,20 @@ Tapestry is a scale-invariant system software framework that provides
 programmability over physically reconfigurable matter: distributed collections
 of elements that sense, move, and coordinate without central control.
 
-Its domain spans a new class of system where the compute substrate is not
-silicon but physical reality itself — from drone swarms and warehouse automation
+Its architecture draws from modern operating systems and edge compute platforms to address a spectrum of heterogeneous collective systems from drone swarms and warehouse automation
 in the near term, to microrobotics and precision agriculture in the mid term, to
 smart materials, surgical nanobots, and molecular machines on a 15–20 year
 horizon.
 
-The landscape of programmable physical systems is profoundly fragmented. Every
-research group reinvents the control plane from scratch. There is no Android, no
-Linux, no POSIX, indeed no agreed-upon abstraction boundary between physical elements
+The landscape of programmable physical systems is fragmented. Every
+research group reinvents the control plane from scratch. There is
+no agreed-upon abstraction boundary between physical elements
 and the software that programs them. That gap is where Tapestry lives.
 
 Just as Android abstracted over diverse mobile hardware so that developers could
 target a single API regardless of the underlying silicon, Tapestry abstracts over
 diverse element hardware, communication substrates, and physical actuation
-mechanisms: enabling an entirely new class of developer to directly program
+mechanisms: enabling a new class of developer to directly program
 physical reality.
 
 ## The Tapestry Stack — Seven Layers
@@ -96,7 +96,7 @@ single L2 segment — without touching L4 or above.
 
 ## L4 — Collective State Manager
 
-The Collective State Manager (CSM) is the most technically novel layer in Tapestry. It maintains the
+The Collective State Manager (CSM) maintains the
 distributed world model — the shared understanding of the system's physical state
 that no single element could maintain alone.
 
@@ -107,8 +107,8 @@ properties:
 - Gossip-based state propagation with configurable staleness thresholds
 - Lamport clock ordering and partition-aware reconciliation
 - A continuous `consistency_bias` dial from pure AP (always available, keep
-  moving during partition) to pure CP (always consistent, freeze on quorum loss), replacing the
-  traditional binary mode switch
+  moving during partition) to pure CP (always consistent, freeze on quorum loss), 
+  extending the traditional binary mode switch
 - Per-cycle efficacy metrics: fresh ratio, confidence, mean age, collision
   detection, min separation
 
@@ -281,6 +281,47 @@ pip install pandas matplotlib
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for full setup details.
 
+## Quickstart — L5 swarm sim in under 5 minutes
+
+After completing setup above, run these commands from the workspace root
+(`tapestry-workspace/`). They build the simulation element binary, launch a
+5-element swarm through the `leader_loss` scenario, and produce a telemetry
+plot.
+
+```bash
+# 1. Build the L5 simulation element
+west build -b native_sim/native/64 \
+    --build-dir tapestry/tapestry-scr-sim/build/element \
+    tapestry/tapestry-scr-sim/zephyr/element
+
+# 2. Run the L5 orchestrator — 5 elements, 30 s, leader_loss scenario
+cd tapestry/tapestry-scr-sim/orchestrator
+python main.py --elements 5 --scenario leader_loss --duration 30 --out run.csv
+
+# 3. Plot the results
+python plot.py run.csv --out run.png
+```
+
+`run.png` shows five panels: quorum agreement across elements, elected leader
+ID over time, per-element role transitions, fresh peer count, and L4 consistency
+confidence. You should see all elements elect element 0 as leader, then
+re-elect element 1 automatically when element 0 is partitioned at t≈5 s and
+recover back to element 0 at t≈15 s.
+
+To try the L4 consistency dial:
+
+```bash
+# AP mode: elements keep moving through the partition (bias=0.0, default)
+python main.py --elements 5 --scenario leader_loss --duration 30 \
+    --bias 0.0 --out ap.csv
+
+# CP mode: elements freeze on quorum loss (bias=1.0)
+python main.py --elements 5 --scenario leader_loss --duration 30 \
+    --bias 1.0 --out cp.csv
+
+python plot.py ap.csv cp.csv --labels AP CP --out ap_vs_cp.png
+```
+
 ## Building
 
 All `west build` commands run from the workspace root (`tapestry-workspace/`).
@@ -385,3 +426,15 @@ The L4/L5 stack has been validated on physical hardware in two phases:
 
 See [`tapestry-scr-hw/README.md`](tapestry-scr-hw/README.md) for specific hardware build,
 flash, and telemetry instructions.
+
+## License
+
+Tapestry is released under the [Apache 2.0 License](LICENSE).
+
+Copyright 2026 James V Steele.
+
+## Acknowledgments
+
+Tapestry was designed and developed by James V Steele.
+[Claude](https://claude.ai) (Anthropic) was used as a development 
+tool during initial implementation phases.
