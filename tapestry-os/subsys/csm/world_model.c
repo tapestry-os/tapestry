@@ -131,22 +131,26 @@ bool wm_receive_gossip(world_model_t *wm, const element_state_t *received)
         return false;
     }
 
-    wm_entry_t *e    = &wm->entries[id];
-    bool        is_new = (e->state.id == ELEMENT_ID_INVALID);
+    wm_entry_t *e        = &wm->entries[id];
+    bool        is_new      = (e->state.id == ELEMENT_ID_INVALID);
+    bool        is_inactive = !is_new && !e->is_active;
 
-    /* Reject if received clock is not strictly newer than what we hold */
-    if (!is_new && received->logical_clock <= e->state.logical_clock) {
+    /* Reject if received clock is not strictly newer than what we hold.
+     * Skip for inactive entries: the peer may have rebooted and reset its
+     * clock — accept any clock when the entry was presumed dead. */
+    if (!is_new && !is_inactive && received->logical_clock <= e->state.logical_clock) {
         return false;
     }
 
     /*
      * Lamport receive rule: merged_clock = max(local, received) + 1.
-     * Save local clock before overwriting entry.
+     * For inactive entries use local=0: the pre-reboot clock is from a dead
+     * process instance and must not block subsequent post-reboot gossip.
      */
-    uint32_t local_clock   = is_new ? 0 : e->state.logical_clock;
-    uint32_t merged_clock  = (local_clock > received->logical_clock
-                              ? local_clock
-                              : received->logical_clock) + 1;
+    uint32_t local_clock  = (is_new || is_inactive) ? 0 : e->state.logical_clock;
+    uint32_t merged_clock = (local_clock > received->logical_clock
+                             ? local_clock
+                             : received->logical_clock) + 1;
 
     if (is_new) {
         wm->known_count++;

@@ -32,6 +32,9 @@ int cutebot_init(void);
 /* Set left and right motor speeds.  Values clamped to [-100, 100]. */
 void cutebot_drive(int left_pct, int right_pct);
 
+/* Set both RGB LEDs to the given colour directly. */
+void cutebot_set_leds(uint8_t r, uint8_t g, uint8_t b);
+
 /* Set the two RGB LEDs to reflect Tapestry state:
  *   HEALTHY  + LEADER   → green, motors forward
  *   HEALTHY  + FOLLOWER → blue, motors slow

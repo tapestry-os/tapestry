@@ -41,8 +41,11 @@ static const struct device *i2c_dev;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
-static void set_leds(uint8_t r, uint8_t g, uint8_t b)
+void cutebot_set_leds(uint8_t r, uint8_t g, uint8_t b)
 {
+    if (!i2c_dev) {
+        return;
+    }
     uint8_t buf_r[] = { LED_RIGHT_CMD, r, g, b };
     uint8_t buf_l[] = { LED_LEFT_CMD,  r, g, b };
     int ret;
@@ -88,7 +91,7 @@ int cutebot_init(void)
     }
 
     set_motors(0, 0);
-    set_leds(0, 0, 0);
+    cutebot_set_leds(0, 0, 0);
 
     LOG_INF("Cutebot ready on I2C addr 0x%02X", CUTEBOT_I2C_ADDR);
     return 0;
@@ -111,25 +114,25 @@ void cutebot_update(scr_role_t role, scr_quorum_state_t quorum)
     switch (quorum) {
     case SCR_QUORUM_HEALTHY:
         if (role == SCR_ROLE_LEADER) {
-            set_leds(0, 200, 0);          /* green */
-            set_motors(70, 70);           /* drive forward */
+            cutebot_set_leds(0, 200, 0);          /* green */
+            set_motors(70, 70);
         } else if (role == SCR_ROLE_FOLLOWER) {
-            set_leds(0, 0, 200);          /* blue */
-            set_motors(50, 50);           /* slow forward */
+            cutebot_set_leds(0, 0, 200);          /* blue */
+            set_motors(50, 50);
         } else {
-            set_leds(50, 50, 50);         /* white-ish (NONE but healthy) */
+            cutebot_set_leds(50, 50, 50);         /* white-ish (NONE but healthy) */
             set_motors(0, 0);
         }
         break;
 
     case SCR_QUORUM_DEGRADED:
-        set_leds(200, 80, 0);             /* orange */
+        cutebot_set_leds(200, 80, 0);             /* orange */
         set_motors(0, 0);
         break;
 
     case SCR_QUORUM_LOST:
     default:
-        set_leds(200, 0, 0);              /* red */
+        cutebot_set_leds(200, 0, 0);              /* red */
         set_motors(0, 0);
         break;
     }
