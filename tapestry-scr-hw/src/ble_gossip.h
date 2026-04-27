@@ -32,6 +32,22 @@ void ble_gossip_send(const element_state_t *own_state);
  * Returns the number of frames processed. */
 int ble_gossip_drain(world_model_t *wm, element_id_t own_id);
 
+/* ── Auto-ID discovery ───────────────────────────────────────────────────── */
+
+/* Advertise a discovery beacon (gossip packet with id=ELEMENT_ID_INVALID,
+ * hardware nonce in update_seq).  Call during the boot window before
+ * element_id is known.  ble_gossip_send() switches back to normal gossip. */
+void ble_gossip_advertise_nonce(uint32_t nonce);
+
+/* Drain hardware nonces collected from co-booting peers into out[0..max-1].
+ * Returns count written. */
+int ble_gossip_drain_nonces(uint32_t *out, int max);
+
+/* Drain the gossip queue without a world model, marking which element IDs
+ * have been seen advertising.  claimed_out must be a zeroed bool array of
+ * at least max_id elements.  Returns frames drained. */
+int ble_gossip_drain_claimed(bool *claimed_out, int max_id);
+
 #ifdef __cplusplus
 }
 #endif

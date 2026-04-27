@@ -1,10 +1,1 @@
 source "Kconfig.zephyr"
-
-config TAPESTRY_ELEMENT_ID
-	int "Element ID [0..3]"
-	range 0 3
-	default 0
-	help
-	  Unique identity for this robot. Determines starting position in the
-	  logical world and leader election priority (lowest ID wins if L5 is
-	  ever added). Override at build time with -DCONFIG_TAPESTRY_ELEMENT_ID=N.

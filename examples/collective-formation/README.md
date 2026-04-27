@@ -33,32 +33,31 @@ No L5 SCR — formation is a pure L4 emergent behaviour.
 
 ## Build and flash
 
-Build one binary per robot, varying `TAPESTRY_ELEMENT_ID` (0–3):
+One binary runs on all robots — no per-robot build flags needed:
 
 ```sh
-# Element 0
 west build -b bbc_microbit_v2 tapestry/examples/collective-formation
+# Flash to every robot with the same .hex
 west flash
-
-# Element 1
-west build -b bbc_microbit_v2 tapestry/examples/collective-formation \
-    -- -DCONFIG_TAPESTRY_ELEMENT_ID=1
-west flash
-
-# Elements 2 and 3 — repeat with IDs 2 and 3
 ```
+
+## Auto-ID
+
+During a 4-second boot window each robot advertises its FICR hardware nonce
+and listens for peers.  After the window:
+
+1. **Nonce rank** among co-booting robots → candidate rank (lower nonce = lower rank).
+2. **Claimed IDs** from already-running robots (live gossip) are avoided.
+3. **element_id** = rank-th unclaimed ID.
+
+A rebooting robot sees which IDs are already claimed and reclaims the lowest
+free slot — so it rejoins without conflicting with live peers.
 
 ## Starting positions
 
-Robots boot at the four corners of the equilibrium square (logical 100×100 world),
-so spring forces are near-zero at startup and there is no violent initial spread.
-
-| Element | Logical start |
-|---|---|
-| 0 | (25, 25) |
-| 1 | (75, 25) |
-| 2 | (25, 75) |
-| 3 | (75, 75) |
+Each robot starts at its vertex of a regular N-gon whose side length equals
+`DEMO_TARGET_SPACING`.  Robots therefore boot at their spring equilibrium
+positions, minimising initial forces.
 
 ## Calibration constants
 

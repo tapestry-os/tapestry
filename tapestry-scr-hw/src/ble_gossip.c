@@ -40,7 +40,8 @@ LOG_MODULE_REGISTER(ble_gossip, LOG_LEVEL_INF);
 
 #define RX_QUEUE_DEPTH  8
 
-K_MSGQ_DEFINE(ble_gossip_rx_q, sizeof(sim_gossip_payload_t), RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(ble_gossip_rx_q,   sizeof(sim_gossip_payload_t), RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(ble_discovery_rx_q, sizeof(uint32_t),            RX_QUEUE_DEPTH, 4);
 
 static uint8_t mfr_data[MFR_DATA_SIZE];
 
@@ -88,8 +89,14 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
     bt_data_parse(buf, parse_ad_element, &ctx);
 
     if (ctx.found) {
-        if (k_msgq_put(&ble_gossip_rx_q, &ctx.gossip, K_NO_WAIT) != 0) {
-            LOG_WRN("BLE RX queue full — frame dropped");
+        if (ctx.gossip.id == ELEMENT_ID_INVALID) {
+            /* Discovery beacon from a co-booting peer: extract nonce. */
+            uint32_t nonce = ctx.gossip.update_seq;
+            k_msgq_put(&ble_discovery_rx_q, &nonce, K_NO_WAIT);
+        } else {
+            if (k_msgq_put(&ble_gossip_rx_q, &ctx.gossip, K_NO_WAIT) != 0) {
+                LOG_WRN("BLE RX queue full — frame dropped");
+            }
         }
     }
 }
@@ -186,6 +193,38 @@ int ble_gossip_drain(world_model_t *wm, element_id_t own_id)
     }
 
     return processed;
+}
+
+void ble_gossip_advertise_nonce(uint32_t nonce)
+{
+    sim_gossip_payload_t *p = (sim_gossip_payload_t *)(mfr_data + MFR_OFF_GOSSIP);
+    memset(p, 0, sizeof(*p));
+    p->id         = ELEMENT_ID_INVALID;
+    p->update_seq = nonce;
+    bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), NULL, 0);
+}
+
+int ble_gossip_drain_nonces(uint32_t *out, int max)
+{
+    uint32_t nonce;
+    int n = 0;
+    while (n < max && k_msgq_get(&ble_discovery_rx_q, &nonce, K_NO_WAIT) == 0) {
+        out[n++] = nonce;
+    }
+    return n;
+}
+
+int ble_gossip_drain_claimed(bool *claimed_out, int max_id)
+{
+    sim_gossip_payload_t g;
+    int n = 0;
+    while (k_msgq_get(&ble_gossip_rx_q, &g, K_NO_WAIT) == 0) {
+        if (g.id < (uint8_t)max_id) {
+            claimed_out[g.id] = true;
+        }
+        n++;
+    }
+    return n;
 }
 
 #endif /* CONFIG_BT */
