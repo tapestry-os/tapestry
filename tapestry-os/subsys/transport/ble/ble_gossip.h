@@ -1,12 +1,17 @@
 /*
- * ble_gossip.h — optional BLE advertising/scanning gossip transport
+ * tapestry-os/subsys/transport/ble/ble_gossip.h
+ * Tapestry L3 BLE advertising/scanning gossip transport
  *
- * On boards that have CONFIG_BT=y (currently: ESP32-WROVER-KIT), this layer
- * runs alongside the UDP comms layer so the element participates in both the
- * LAN swarm (via UDP) and the BLE swarm (via advertising).
+ * Implements gossip over BLE Manufacturer-Specific advertising records.
+ * Elements simultaneously advertise their own state and passively scan
+ * for peer advertisements — no connections, no pairing.
  *
- * The wire format is shared across all board targets so a micro:bit element
- * interoperates directly with the ESP32 element without any bridge process.
+ * Wire identification: TAPESTRY_BLE_COMPANY_ID (from <tapestry/wire.h>)
+ * Payload:            tapestry_gossip_frame_t packed into 19 manufacturer bytes
+ * Total AD record:    22 bytes — fits within the 31-byte legacy ADV payload
+ *
+ * Boards that have CONFIG_BT=y compile this transport.
+ * Boards without Bluetooth omit it entirely — the guard below is intentional.
  */
 
 #ifndef TAPESTRY_BLE_GOSSIP_H
@@ -15,7 +20,7 @@
 #ifdef CONFIG_BT
 
 #include <tapestry/csm.h>
-#include "sim_protocol.h"
+#include <tapestry/wire.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,7 +39,7 @@ int ble_gossip_drain(world_model_t *wm, element_id_t own_id);
 
 /* ── Auto-ID discovery ───────────────────────────────────────────────────── */
 
-/* Advertise a discovery beacon (gossip packet with id=ELEMENT_ID_INVALID,
+/* Advertise a discovery beacon (gossip frame with id=ELEMENT_ID_INVALID,
  * hardware nonce in update_seq).  Call during the boot window before
  * element_id is known.  ble_gossip_send() switches back to normal gossip. */
 void ble_gossip_advertise_nonce(uint32_t nonce);

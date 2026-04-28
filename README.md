@@ -73,26 +73,34 @@ Everything from L3 upward is Tapestry's responsibility. The boundary is made
 explicit in code: `#include <tapestry/csm.h>` does not pull in any Zephyr types and
 compiles cleanly against any C99 toolchain.
 
-**Portability:** replacing Zephyr with FreeRTOS, a bare-metal HAL, or any other OS requires
-only rewriting the adaptation layer (`comms.c`, `main.c`). The CSM logic in
-`tapestry-os/subsys/csm/` is unchanged. As physical scale decreases toward
-micro and nanoscale targets, L1–L2 implementations will evolve — potentially
-to custom ASICs or biochemical state machines — while L3–L7 remain stable.
+**Portability:** The pure C99 core (`tapestry-os/subsys/csm/`, `tapestry-os/subsys/scr/`)
+and wire protocol (`tapestry/wire.h`) compile against any C99 toolchain with no Zephyr
+dependency. The transport implementations in `tapestry-os/subsys/transport/` use Zephyr's
+`zsock_*` and `bt_*` APIs and require porting alongside the board adaptation layer
+(`net_init.c`, `main.c`) when targeting a different RTOS. As physical scale decreases toward
+micro and nanoscale targets, L1–L2 implementations will evolve — potentially to custom ASICs
+or biochemical state machines — while L3–L7 remain stable.
 
 ## L3 — Inter-Element Communication
 
-L3 is implemented as **UDP broadcast gossip** over the local network, running
-on both the simulation harness and physical hardware.  Each element
-broadcasts its state to the subnet on a fixed port; any element within the
-same L2 segment receives it with no addressing or routing configuration.
+L3 is implemented by two transport backends, both in `tapestry-os/subsys/transport/`:
 
-This is a single-hop, infrastructure-dependent transport — elements must share
-a broadcast domain.  It correctly validates the L4/L5 protocol stack on real
-hardware and models the semantics of short-range mesh radio (any element within
-range receives the transmission).  A future L3 evolution would replace UDP
-broadcast with a true multi-hop mesh protocol (e.g. 802.15.4, BLE mesh, or
-custom RF) to remove the infrastructure dependency and extend range beyond a
-single L2 segment — without touching L4 or above.
+- **UDP broadcast** (`udp/udp_gossip.c`) — each element broadcasts its state to the subnet
+  on a fixed port; any element within the same L2 segment receives it with no addressing
+  or routing configuration. Used by the simulation harness and the WiFi/Ethernet hardware
+  elements (ESP32, RA8D1).
+- **BLE advertising** (`ble/ble_gossip.c`) — each element advertises its state in a
+  non-connectable BLE manufacturer-specific record; any element within radio range (~10 m)
+  receives it passively. Used by micro:bit elements and as a secondary transport on the
+  ESP32 bridge element.
+
+The on-wire frame format for both transports is defined in `tapestry/wire.h`
+(`tapestry_gossip_frame_t`, 19 bytes packed). Both transports feed received frames
+directly into `wm_receive_gossip()` — L4 and above see no difference.
+
+Both are single-hop transports. A future L3 evolution would replace them with a true
+multi-hop mesh protocol (e.g. 802.15.4, BLE mesh, or custom RF) to remove range and
+infrastructure dependencies — without touching L4 or above.
 
 ## L4 — Collective State Manager
 
@@ -171,20 +179,29 @@ is pure C99 with no OS dependencies.
 
 ```
 tapestry/
-├── tapestry-os/                   Tapestry OS framework (pure C99, no OS dependencies)
+├── tapestry-os/                   Tapestry OS framework
 │   ├── include/tapestry/
-│   │   ├── csm.h                  L4 public API boundary
-│   │   └── scr.h                  L5 public API boundary (includes csm.h)
+│   │   ├── csm.h                  L4 public API boundary (pure C99, no OS deps)
+│   │   ├── scr.h                  L5 public API boundary (includes csm.h)
+│   │   └── wire.h                 L3 on-wire frame format (pure C99, no OS deps)
 │   ├── subsys/csm/
 │   │   ├── state.h                Core types: element_state_t, position_t, …
 │   │   ├── world_model.h          CSM internal API
-│   │   └── world_model.c          CSM implementation (pure C99, no OS deps)
-│   └── subsys/scr/
-│       ├── scr.h                  SCR internal API: scr_state_t, roles, quorum
-│       └── scr.c                  SCR implementation (pure C99, no OS deps)
+│   │   └── world_model.c          CSM implementation (pure C99)
+│   ├── subsys/scr/
+│   │   ├── scr.h                  SCR internal API: scr_state_t, roles, quorum
+│   │   └── scr.c                  SCR implementation (pure C99)
+│   └── subsys/transport/
+│       ├── ble/
+│       │   ├── ble_gossip.h       BLE advertising gossip transport API
+│       │   └── ble_gossip.c       BLE implementation (Zephyr bt_* API)
+│       └── udp/
+│           ├── udp_gossip.h       UDP broadcast gossip transport API
+│           └── udp_gossip.c       UDP implementation (Zephyr zsock_* API)
 │
 ├── tapestry-csm-sim/              L4 simulation harness
-│   ├── sim_protocol.h             Wire format shared by C elements and Python
+│   ├── sim_protocol.h             Sim-only additions: ports, control protocol,
+│   │                              compat aliases over <tapestry/wire.h>
 │   ├── tests/                     ztest unit tests for L4
 │   │   ├── CMakeLists.txt
 │   │   ├── prj.conf
@@ -194,69 +211,72 @@ tapestry/
 │   │   ├── prj.conf
 │   │   └── src/
 │   │       ├── main.c             Main loop: gossip, tick, movement, metrics
-│   │       ├── comms.c/h          UDP transport (zsock_* API)
+│   │       ├── comms.c/h          Sim-specific UDP transport (loopback → orchestrator)
 │   │       └── movement.c/h       Random walk + peer repulsion
 │   └── orchestrator/              Python asyncio gossip broker + telemetry
 │       ├── main.py                Entry point: launches elements, runs scenario
 │       ├── broker.py              Routes gossip by partition island, injects
 │       │                          ground-truth position error into metrics
-│       ├── protocol.py            Python mirror of sim_protocol.h wire structs
+│       ├── protocol.py            Python mirror of wire.h + sim_protocol.h structs
 │       ├── telemetry.py           Per-cycle CSV writer
 │       ├── scenarios.py           Timed partition/power injection scripts
 │       └── plot.py                5-panel matplotlib efficacy visualiser
 │
-└── tapestry-scr-sim/              L5 simulation harness
-    ├── scr_protocol.h             Wire format additions for L5 SCR metric
-    ├── tests/                     ztest unit tests for L5
-    │   ├── CMakeLists.txt
-    │   ├── prj.conf
-    │   └── src/main.c
-    ├── zephyr/element/            Zephyr native_sim element (L4 + L5)
-    │   ├── CMakeLists.txt
-    │   ├── prj.conf
-    │   └── src/
-    │       ├── main.c             Main loop: gossip, L4 tick, L5 SCR tick, metrics
-    │       └── comms_scr.c/h      SCR metric send (extends csm-sim comms)
-    └── orchestrator/              Python asyncio orchestrator for L5
-        ├── main.py                Entry point; --quorum-min, --quorum-target, --bias
-        ├── broker.py              Gossip routing + SCR metric dispatch
-        ├── protocol.py            Python mirror of sim_protocol.h + scr_protocol.h
-        ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
-        ├── scenarios.py           L4 scenarios + leader_loss, cascade
-        └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
+├── tapestry-scr-sim/              L5 simulation harness
+│   ├── scr_protocol.h             Sim-only compat aliases over <tapestry/wire.h>
+│   ├── tests/                     ztest unit tests for L5
+│   │   ├── CMakeLists.txt
+│   │   ├── prj.conf
+│   │   └── src/main.c
+│   ├── zephyr/element/            Zephyr native_sim element (L4 + L5)
+│   │   ├── CMakeLists.txt
+│   │   ├── prj.conf
+│   │   └── src/
+│   │       ├── main.c             Main loop: gossip, L4 tick, L5 SCR tick, metrics
+│   │       └── comms_scr.c/h      SCR metric send (extends csm-sim comms)
+│   └── orchestrator/              Python asyncio orchestrator for L5
+│       ├── main.py                Entry point; --quorum-min, --quorum-target, --bias
+│       ├── broker.py              Gossip routing + SCR metric dispatch
+│       ├── protocol.py            Python mirror of wire.h + scr_protocol.h structs
+│       ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
+│       ├── scenarios.py           L4 scenarios + leader_loss, cascade
+│       └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
 │
 └── tapestry-scr-hw/               Hardware swarm firmware (Phase 1 + Phase 2)
     ├── README.md                  Build, flash, and telemetry instructions
     ├── Kconfig                    Element configuration (ID, ports, WiFi, ORCH_IP)
     ├── src/
-    │   ├── main.c                 Element main loop (L4 + L5, no broker)
-    │   ├── comms.c/h              UDP broadcast gossip + unicast metrics
+    │   ├── main.c                 Element main loop (L4 + L5); wires OS transport
+    │   │                          and adaptation layers together
     │   └── net_init.c/h           WiFi / Ethernet bring-up (Zephyr net_mgmt)
     └── telemetry/
         ├── collect.py             UDP metric collector → CSV
-        ├── protocol.py            Python mirror of wire structs
+        ├── protocol.py            Python mirror of wire.h structs
         └── plot.py                5-panel hardware telemetry visualiser
 ```
 
 ## Architectural boundary
 
-`tapestry/csm.h` and `tapestry/scr.h` are the framework's public includes.
-Neither contains Zephyr or OS-specific types. The include hierarchy is:
+The public includes are `tapestry/csm.h`, `tapestry/scr.h`, and `tapestry/wire.h`.
+None contains Zephyr or OS-specific types. The include hierarchy is:
 
 ```
-<tapestry/scr.h>          L4 + L5 surface (element firmware that runs both layers)
-  └── <tapestry/csm.h>    L4 surface only (adaptation layer, movement, comms)
+<tapestry/scr.h>          L4 + L5 surface (firmware that runs both layers)
+  └── <tapestry/csm.h>    L4 surface only
         ├── subsys/csm/state.h
         └── subsys/csm/world_model.h
+
+<tapestry/wire.h>         L3 on-wire frame format (pure C99; no OS deps)
+  ↑ included by:
+    subsys/transport/ble/ble_gossip.h   (Zephyr bt_* dependent)
+    subsys/transport/udp/udp_gossip.h   (Zephyr zsock_* dependent)
 ```
 
-The adaptation layer (Zephyr main loop, zsock transport) lives exclusively in
-`tapestry-csm-sim/zephyr/element/src/` and is replaceable per platform without
-touching the CSM or SCR logic.
-
-This boundary is intentional and load-bearing. Future ports to other RTOS targets
-(FreeRTOS, bare-metal) require only a new adaptation layer, while `tapestry-os/`
-compiles unchanged.
+`tapestry-os/subsys/csm/` and `tapestry-os/subsys/scr/` are pure C99 and
+compile against any toolchain. `tapestry-os/subsys/transport/` contains the
+Zephyr-dependent transport implementations; porting to a different RTOS requires
+replacing those files and the board adaptation layer (`net_init.c`, `main.c`),
+while the CSM, SCR, and wire protocol are unchanged.
 
 The monorepo maintains a hard directory boundary between `tapestry-os/` (OS
 logic) and the simulation harnesses. The path to independent repositories is

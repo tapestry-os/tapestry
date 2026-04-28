@@ -238,10 +238,8 @@ void demo_set_leds(const world_model_t *wm)
         last_fresh = fresh;
     }
 
-    switch (fresh) {
-    case 3:  cutebot_set_leds(255, 255, 255); break; /* white  — full formation */
-    case 2:  cutebot_set_leds(0,   200,   0); break; /* green  — 3 robots      */
-    case 1:  cutebot_set_leds(200, 200,   0); break; /* yellow — 2 robots      */
-    default: cutebot_set_leds(200,   0,   0); break; /* red    — isolated      */
-    }
+    if      (fresh >= 3) cutebot_set_leds(255, 255, 255); /* white  — 3+ peers */
+    else if (fresh == 2) cutebot_set_leds(0,   200,   0); /* green  — 2 peers  */
+    else if (fresh == 1) cutebot_set_leds(200, 200,   0); /* yellow — 1 peer   */
+    else                 cutebot_set_leds(200,   0,   0); /* red    — isolated */
 }

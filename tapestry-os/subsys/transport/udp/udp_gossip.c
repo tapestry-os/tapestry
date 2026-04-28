@@ -1,8 +1,9 @@
 /*
- * comms.c — UDP transport for Tapestry hardware elements
+ * tapestry-os/subsys/transport/udp/udp_gossip.c
+ * Tapestry L3 UDP broadcast gossip transport
  */
 
-#include "comms.h"
+#include "udp_gossip.h"
 
 #include <errno.h>
 #include <string.h>
@@ -10,13 +11,13 @@
 #include <zephyr/net/net_ip.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(comms, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(udp_gossip, LOG_LEVEL_INF);
 
 #define BROADCAST_ADDR  CONFIG_TAPESTRY_GOSSIP_BCAST
 
 /* Single-threaded main loop — no locking needed. */
-static uint8_t tx_buf[SIM_HEADER_SIZE + SIM_METRIC_SIZE];
-static uint8_t rx_buf[SIM_HEADER_SIZE + SIM_GOSSIP_SIZE];
+static uint8_t tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE];
+static uint8_t rx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE];
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -30,7 +31,7 @@ static void fill_addr(struct sockaddr_in *a, const char *ip, uint16_t port)
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
-int comms_init(hw_comms_t *c)
+int udp_gossip_init(udp_gossip_ctx_t *c)
 {
     /* ── Gossip socket: bound, broadcast-enabled ── */
     c->gossip_sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -65,7 +66,7 @@ int comms_init(hw_comms_t *c)
         }
     }
 
-    LOG_INF("comms ready — gossip broadcast :%d, metrics → %s:%d",
+    LOG_INF("UDP gossip ready — gossip broadcast :%d, metrics → %s:%d",
             CONFIG_TAPESTRY_GOSSIP_PORT,
             strlen(CONFIG_TAPESTRY_ORCH_IP) > 0
                 ? CONFIG_TAPESTRY_ORCH_IP : "(disabled)",
@@ -73,15 +74,15 @@ int comms_init(hw_comms_t *c)
     return 0;
 }
 
-void comms_send_gossip(const hw_comms_t *c, const element_state_t *own_state)
+void udp_gossip_send(const udp_gossip_ctx_t *c, const element_state_t *own_state)
 {
-    sim_msg_header_t *hdr = (sim_msg_header_t *)tx_buf;
-    hdr->type        = SIM_MSG_GOSSIP;
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->type        = TAPESTRY_MSG_GOSSIP;
     hdr->src_id      = own_state->id;
-    hdr->payload_len = SIM_GOSSIP_SIZE;
+    hdr->payload_len = TAPESTRY_GOSSIP_FRAME_SIZE;
 
-    sim_gossip_payload_t *p =
-        (sim_gossip_payload_t *)(tx_buf + SIM_HEADER_SIZE);
+    tapestry_gossip_frame_t *p =
+        (tapestry_gossip_frame_t *)(tx_buf + TAPESTRY_MSG_HEADER_SIZE);
     p->id               = own_state->id;
     p->x                = own_state->position.x;
     p->y                = own_state->position.y;
@@ -93,12 +94,12 @@ void comms_send_gossip(const hw_comms_t *c, const element_state_t *own_state)
     struct sockaddr_in dst;
     fill_addr(&dst, BROADCAST_ADDR, CONFIG_TAPESTRY_GOSSIP_PORT);
     zsock_sendto(c->gossip_sock, tx_buf,
-                 SIM_HEADER_SIZE + SIM_GOSSIP_SIZE, 0,
+                 TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE, 0,
                  (struct sockaddr *)&dst, sizeof(dst));
 }
 
-int comms_drain_inbox(const hw_comms_t *c, world_model_t *wm,
-                      element_id_t own_id)
+int udp_gossip_drain(const udp_gossip_ctx_t *c, world_model_t *wm,
+                     element_id_t own_id)
 {
     int processed = 0;
 
@@ -113,27 +114,27 @@ int comms_drain_inbox(const hw_comms_t *c, world_model_t *wm,
             break;
         }
 
-        if (len < (ssize_t)SIM_HEADER_SIZE) {
+        if (len < (ssize_t)TAPESTRY_MSG_HEADER_SIZE) {
             continue;
         }
 
-        const sim_msg_header_t *hdr = (const sim_msg_header_t *)rx_buf;
+        const tapestry_msg_header_t *hdr = (const tapestry_msg_header_t *)rx_buf;
 
         /* Discard own broadcasts reflected back by the network stack. */
         if (hdr->src_id == own_id) {
             continue;
         }
 
-        if (hdr->type != SIM_MSG_GOSSIP) {
+        if (hdr->type != TAPESTRY_MSG_GOSSIP) {
             continue;
         }
 
-        if (len < (ssize_t)(SIM_HEADER_SIZE + SIM_GOSSIP_SIZE)) {
+        if (len < (ssize_t)(TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE)) {
             continue;
         }
 
-        const sim_gossip_payload_t *g =
-            (const sim_gossip_payload_t *)(rx_buf + SIM_HEADER_SIZE);
+        const tapestry_gossip_frame_t *g =
+            (const tapestry_gossip_frame_t *)(rx_buf + TAPESTRY_MSG_HEADER_SIZE);
 
         element_state_t received = {0};
         received.id            = g->id;
@@ -151,8 +152,8 @@ int comms_drain_inbox(const hw_comms_t *c, world_model_t *wm,
     return processed;
 }
 
-void comms_send_metric(const hw_comms_t *c, const world_model_t *wm,
-                       element_id_t element_id)
+void udp_gossip_send_metric(const udp_gossip_ctx_t *c, const world_model_t *wm,
+                            element_id_t element_id)
 {
     if (c->metric_sock < 0) {
         return;
@@ -160,7 +161,6 @@ void comms_send_metric(const hw_comms_t *c, const world_model_t *wm,
 
     const wm_consistency_metric_t *m = wm_get_metric(wm);
 
-    /* Compute mean age and min separation from world model entries. */
     float   age_sum  = 0.0f;
     uint8_t age_cnt  = 0;
     float   min_sep  = 200.0f;   /* > any realistic separation */
@@ -186,16 +186,16 @@ void comms_send_metric(const hw_comms_t *c, const world_model_t *wm,
         }
     }
 
-    float    mean_age   = age_cnt > 0 ? age_sum / (float)age_cnt : 0.0f;
+    float    mean_age    = age_cnt > 0 ? age_sum / (float)age_cnt : 0.0f;
     uint16_t min_sep_enc = has_peer ? (uint16_t)(min_sep * 100.0f) : 0xFFFFu;
 
-    sim_msg_header_t *hdr = (sim_msg_header_t *)tx_buf;
-    hdr->type        = SIM_MSG_METRIC;
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->type        = TAPESTRY_MSG_METRIC;
     hdr->src_id      = element_id;
-    hdr->payload_len = SIM_METRIC_SIZE;
+    hdr->payload_len = TAPESTRY_METRIC_FRAME_SIZE;
 
-    sim_metric_payload_t *p =
-        (sim_metric_payload_t *)(tx_buf + SIM_HEADER_SIZE);
+    tapestry_metric_frame_t *p =
+        (tapestry_metric_frame_t *)(tx_buf + TAPESTRY_MSG_HEADER_SIZE);
     p->element_id          = element_id;
     p->active_total        = m->active_total;
     p->active_fresh        = m->active_fresh;
@@ -215,26 +215,26 @@ void comms_send_metric(const hw_comms_t *c, const world_model_t *wm,
     fill_addr(&dst, CONFIG_TAPESTRY_ORCH_IP, CONFIG_TAPESTRY_METRIC_PORT);
 
     zsock_sendto(c->metric_sock, tx_buf,
-                 SIM_HEADER_SIZE + SIM_METRIC_SIZE, 0,
+                 TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE, 0,
                  (struct sockaddr *)&dst, sizeof(dst));
 }
 
-void comms_send_scr_metric(const hw_comms_t *c, const scr_state_t *scr,
-                           uint32_t election_count)
+void udp_gossip_send_scr_metric(const udp_gossip_ctx_t *c, const scr_state_t *scr,
+                                uint32_t election_count)
 {
     if (c->metric_sock < 0) {
         return;
     }
 
-    static uint8_t scr_tx_buf[SIM_HEADER_SIZE + SIM_SCR_METRIC_SIZE];
+    static uint8_t scr_tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_SCR_METRIC_FRAME_SIZE];
 
-    sim_msg_header_t *hdr = (sim_msg_header_t *)scr_tx_buf;
-    hdr->type        = (uint8_t)SIM_MSG_SCR_METRIC;
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)scr_tx_buf;
+    hdr->type        = (uint8_t)TAPESTRY_MSG_SCR_METRIC;
     hdr->src_id      = scr->own_id;
-    hdr->payload_len = (uint16_t)SIM_SCR_METRIC_SIZE;
+    hdr->payload_len = (uint16_t)TAPESTRY_SCR_METRIC_FRAME_SIZE;
 
-    sim_scr_metric_payload_t *p =
-        (sim_scr_metric_payload_t *)(scr_tx_buf + SIM_HEADER_SIZE);
+    tapestry_scr_metric_frame_t *p =
+        (tapestry_scr_metric_frame_t *)(scr_tx_buf + TAPESTRY_MSG_HEADER_SIZE);
     p->element_id     = scr->own_id;
     p->role           = (uint8_t)scr->role;
     p->leader_id      = scr->leader_valid ? scr->leader_id

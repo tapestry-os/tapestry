@@ -34,7 +34,6 @@
 #include "ble_gossip.h"
 #include "cutebot.h"
 #include "formation.h"
-#include "sim_protocol.h"
 
 LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
 

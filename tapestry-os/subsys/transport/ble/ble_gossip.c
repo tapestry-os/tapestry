@@ -1,17 +1,16 @@
 /*
- * ble_gossip.c — BLE advertising/scanning gossip transport for ESP32
+ * tapestry-os/subsys/transport/ble/ble_gossip.c
+ * Tapestry L3 BLE advertising/scanning gossip transport
  *
- * Runs alongside the existing UDP comms layer.  The ESP32 simultaneously:
- *   • UDP-broadcasts gossip to the RA8D1 (Ethernet element)
- *   • BLE-advertises gossip to micro:bit elements in range
+ * Runs alongside the UDP transport on boards that have both (ESP32).
+ * On BLE-only boards (micro:bit) this is the sole gossip medium.
  *
- * Wire format is shared with the micro:bit board path (same source tree)
- * so all board targets interoperate over BLE without any host-side bridge.
+ * All boards using this transport interoperate over BLE without any bridge.
  *
  * Manufacturer-specific AD layout:
- *   [0-1] TAPESTRY_COMPANY_ID  (0xD7, 0x08)
- *   [2]   SIM_MSG_GOSSIP (1)
- *   [3-21] sim_gossip_payload_t (19 bytes, packed)
+ *   [0-1] TAPESTRY_BLE_COMPANY_ID  (0xD7, 0x08)
+ *   [2]   TAPESTRY_MSG_GOSSIP (1)
+ *   [3-21] tapestry_gossip_frame_t (19 bytes, packed)
  *
  * Total manufacturer data = 22 bytes; fits in 31-byte legacy ADV payload.
  */
@@ -26,22 +25,17 @@
 #include <zephyr/bluetooth/hci.h>
 #include <zephyr/logging/log.h>
 
-#include "sim_protocol.h"
-
 LOG_MODULE_REGISTER(ble_gossip, LOG_LEVEL_INF);
-
-#define TAPESTRY_COMPANY_ID_LO  0xD7u
-#define TAPESTRY_COMPANY_ID_HI  0x08u
 
 #define MFR_OFF_COMPANY  0
 #define MFR_OFF_TYPE     2
 #define MFR_OFF_GOSSIP   3
-#define MFR_DATA_SIZE    (MFR_OFF_GOSSIP + SIM_GOSSIP_SIZE)   /* 22 */
+#define MFR_DATA_SIZE    (MFR_OFF_GOSSIP + TAPESTRY_GOSSIP_FRAME_SIZE)   /* 22 */
 
 #define RX_QUEUE_DEPTH  8
 
-K_MSGQ_DEFINE(ble_gossip_rx_q,   sizeof(sim_gossip_payload_t), RX_QUEUE_DEPTH, 4);
-K_MSGQ_DEFINE(ble_discovery_rx_q, sizeof(uint32_t),            RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(ble_gossip_rx_q,    sizeof(tapestry_gossip_frame_t), RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(ble_discovery_rx_q, sizeof(uint32_t),                RX_QUEUE_DEPTH, 4);
 
 static uint8_t mfr_data[MFR_DATA_SIZE];
 
@@ -51,8 +45,8 @@ static struct bt_data adv_data[] = {
 
 
 struct parse_ctx {
-    bool                 found;
-    sim_gossip_payload_t gossip;
+    bool                    found;
+    tapestry_gossip_frame_t gossip;
 };
 
 static bool parse_ad_element(struct bt_data *data, void *user_data)
@@ -67,9 +61,9 @@ static bool parse_ad_element(struct bt_data *data, void *user_data)
     }
 
     const uint8_t *d = data->data;
-    if (d[MFR_OFF_COMPANY]     != TAPESTRY_COMPANY_ID_LO ||
-        d[MFR_OFF_COMPANY + 1] != TAPESTRY_COMPANY_ID_HI ||
-        d[MFR_OFF_TYPE]        != SIM_MSG_GOSSIP) {
+    if (d[MFR_OFF_COMPANY]     != TAPESTRY_BLE_COMPANY_ID_LO ||
+        d[MFR_OFF_COMPANY + 1] != TAPESTRY_BLE_COMPANY_ID_HI ||
+        d[MFR_OFF_TYPE]        != TAPESTRY_MSG_GOSSIP) {
         return true;
     }
 
@@ -103,10 +97,10 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 
 int ble_gossip_init(void)
 {
-    mfr_data[MFR_OFF_COMPANY]     = TAPESTRY_COMPANY_ID_LO;
-    mfr_data[MFR_OFF_COMPANY + 1] = TAPESTRY_COMPANY_ID_HI;
-    mfr_data[MFR_OFF_TYPE]        = SIM_MSG_GOSSIP;
-    memset(mfr_data + MFR_OFF_GOSSIP, 0, SIM_GOSSIP_SIZE);
+    mfr_data[MFR_OFF_COMPANY]     = TAPESTRY_BLE_COMPANY_ID_LO;
+    mfr_data[MFR_OFF_COMPANY + 1] = TAPESTRY_BLE_COMPANY_ID_HI;
+    mfr_data[MFR_OFF_TYPE]        = TAPESTRY_MSG_GOSSIP;
+    memset(mfr_data + MFR_OFF_GOSSIP, 0, TAPESTRY_GOSSIP_FRAME_SIZE);
 
     int ret = bt_enable(NULL);
     if (ret) {
@@ -153,8 +147,8 @@ int ble_gossip_init(void)
 
 void ble_gossip_send(const element_state_t *own_state)
 {
-    sim_gossip_payload_t *p =
-        (sim_gossip_payload_t *)(mfr_data + MFR_OFF_GOSSIP);
+    tapestry_gossip_frame_t *p =
+        (tapestry_gossip_frame_t *)(mfr_data + MFR_OFF_GOSSIP);
 
     p->id               = own_state->id;
     p->x                = own_state->position.x;
@@ -172,7 +166,7 @@ void ble_gossip_send(const element_state_t *own_state)
 
 int ble_gossip_drain(world_model_t *wm, element_id_t own_id)
 {
-    sim_gossip_payload_t g;
+    tapestry_gossip_frame_t g;
     int processed = 0;
 
     while (k_msgq_get(&ble_gossip_rx_q, &g, K_NO_WAIT) == 0) {
@@ -197,7 +191,7 @@ int ble_gossip_drain(world_model_t *wm, element_id_t own_id)
 
 void ble_gossip_advertise_nonce(uint32_t nonce)
 {
-    sim_gossip_payload_t *p = (sim_gossip_payload_t *)(mfr_data + MFR_OFF_GOSSIP);
+    tapestry_gossip_frame_t *p = (tapestry_gossip_frame_t *)(mfr_data + MFR_OFF_GOSSIP);
     memset(p, 0, sizeof(*p));
     p->id         = ELEMENT_ID_INVALID;
     p->update_seq = nonce;
@@ -216,7 +210,7 @@ int ble_gossip_drain_nonces(uint32_t *out, int max)
 
 int ble_gossip_drain_claimed(bool *claimed_out, int max_id)
 {
-    sim_gossip_payload_t g;
+    tapestry_gossip_frame_t g;
     int n = 0;
     while (k_msgq_get(&ble_gossip_rx_q, &g, K_NO_WAIT) == 0) {
         if (g.id < (uint8_t)max_id) {

@@ -21,7 +21,7 @@
  * Startup sequence:
  *   1. cutebot_init()     — (I2C) stop motors, LEDs off
  *   2. net_connect()      — (NETWORKING) acquire IPv4 via DHCP/WiFi
- *   3. comms_init()       — (NETWORKING) open gossip + metric sockets
+ *   3. udp_gossip_init()  — (NETWORKING) open gossip + metric sockets
  *   4. ble_gossip_init()  — (BT) enable BT, start scan + advertising
  *   5. wm_init()          — initialise L4 world model
  *   6. scr_init()         — initialise L5 quorum and role tracker
@@ -43,11 +43,9 @@
 #include <tapestry/scr.h>
 
 #include "net_init.h"
-#include "comms.h"
+#include "udp_gossip.h"
 #include "ble_gossip.h"
 #include "cutebot.h"
-#include "sim_protocol.h"
-#include "scr_protocol.h"
 
 LOG_MODULE_REGISTER(element, LOG_LEVEL_INF);
 
@@ -146,9 +144,9 @@ int main(void)
 
     /* ── UDP comms (ESP32 + RA8D1) ─────────────────────────────────────── */
 #ifdef CONFIG_NETWORKING
-    hw_comms_t comms;
-    if (comms_init(&comms) != 0) {
-        LOG_ERR("comms_init failed — halting");
+    udp_gossip_ctx_t comms;
+    if (udp_gossip_init(&comms) != 0) {
+        LOG_ERR("udp_gossip_init failed — halting");
         return -1;
     }
 #endif
@@ -169,15 +167,17 @@ int main(void)
 
     /* ── Main loop ─────────────────────────────────────────────────────── */
     uint32_t     gossip_accum_ms  = 0;
-    uint32_t     metric_accum_ms  = 0;
     uint32_t     election_count   = 0;
+#ifndef CONFIG_NETWORKING
+    uint32_t     metric_accum_ms  = 0;
+#endif
     element_id_t last_leader      = ELEMENT_ID_INVALID;
 
     while (true) {
 
         /* 1. Receive gossip */
 #ifdef CONFIG_NETWORKING
-        comms_drain_inbox(&comms, &wm, element_id);
+        udp_gossip_drain(&comms, &wm, element_id);
 #endif
 #ifdef CONFIG_BT
         ble_gossip_drain(&wm, element_id);
@@ -210,7 +210,7 @@ int main(void)
         if (gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
             own_state.update_seq++;
 #ifdef CONFIG_NETWORKING
-            comms_send_gossip(&comms, &own_state);
+            udp_gossip_send(&comms, &own_state);
 #endif
 #ifdef CONFIG_BT
             ble_gossip_send(&own_state);
@@ -225,8 +225,8 @@ int main(void)
 
         /* 7. Send metrics */
 #ifdef CONFIG_NETWORKING
-        comms_send_metric(&comms, &wm, element_id);
-        comms_send_scr_metric(&comms, &scr, election_count);
+        udp_gossip_send_metric(&comms, &wm, element_id);
+        udp_gossip_send_scr_metric(&comms, &scr, election_count);
 #else
         metric_accum_ms += WM_CYCLE_MS;
         if (metric_accum_ms >= GOSSIP_INTERVAL_MS) {

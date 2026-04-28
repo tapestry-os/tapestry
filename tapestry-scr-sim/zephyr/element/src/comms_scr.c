@@ -11,21 +11,21 @@
 LOG_MODULE_DECLARE(element, LOG_LEVEL_INF);
 
 /* Static TX buffer — single-threaded; no concurrency. */
-static uint8_t scr_tx_buf[SIM_HEADER_SIZE + SIM_SCR_METRIC_SIZE];
+static uint8_t scr_tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_SCR_METRIC_FRAME_SIZE];
 
 void comms_send_scr_metric(const comms_t *c,
                            const scr_state_t *scr,
                            uint32_t election_count)
 {
     /* ── Header ──────────────────────────────────────────────────────────── */
-    sim_msg_header_t *hdr = (sim_msg_header_t *)scr_tx_buf;
-    hdr->type        = (uint8_t)SIM_MSG_SCR_METRIC;
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)scr_tx_buf;
+    hdr->type        = (uint8_t)TAPESTRY_MSG_SCR_METRIC;
     hdr->src_id      = scr->own_id;
-    hdr->payload_len = (uint16_t)SIM_SCR_METRIC_SIZE;
+    hdr->payload_len = (uint16_t)TAPESTRY_SCR_METRIC_FRAME_SIZE;
 
     /* ── Payload ─────────────────────────────────────────────────────────── */
-    sim_scr_metric_payload_t *p =
-        (sim_scr_metric_payload_t *)(scr_tx_buf + SIM_HEADER_SIZE);
+    tapestry_scr_metric_frame_t *p =
+        (tapestry_scr_metric_frame_t *)(scr_tx_buf + TAPESTRY_MSG_HEADER_SIZE);
 
     p->element_id     = scr->own_id;
     p->role           = (uint8_t)scr->role;

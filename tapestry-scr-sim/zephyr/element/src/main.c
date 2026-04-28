@@ -29,7 +29,6 @@
 #include "comms.h"
 #include "comms_scr.h"
 #include "sim_protocol.h"
-#include "scr_protocol.h"
 
 LOG_MODULE_REGISTER(element, LOG_LEVEL_INF);
 

@@ -8,12 +8,14 @@
 #include <zephyr/net/net_ip.h>
 #include <zephyr/logging/log.h>
 #include "comms.h"
+#include "sim_protocol.h"
+#include <tapestry/wire.h>
 
 LOG_MODULE_REGISTER(comms, LOG_LEVEL_INF);
 
 /* Scratch buffers — single-threaded main loop, no concurrency concern */
-static uint8_t tx_buf[SIM_MAX_MSG_SIZE];
-static uint8_t rx_buf[SIM_MAX_MSG_SIZE];
+static uint8_t tx_buf[TAPESTRY_MAX_MSG_SIZE];
+static uint8_t rx_buf[TAPESTRY_MAX_MSG_SIZE];
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 
@@ -55,13 +57,13 @@ int comms_init(comms_t *c, element_id_t element_id, uint16_t orch_port)
 
 void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
 {
-    sim_msg_header_t *hdr = (sim_msg_header_t *)tx_buf;
-    hdr->type        = SIM_MSG_GOSSIP;
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->type        = TAPESTRY_MSG_GOSSIP;
     hdr->src_id      = own_state->id;
-    hdr->payload_len = SIM_GOSSIP_SIZE;
+    hdr->payload_len = TAPESTRY_GOSSIP_FRAME_SIZE;
 
-    sim_gossip_payload_t *p =
-        (sim_gossip_payload_t *)(tx_buf + SIM_HEADER_SIZE);
+    tapestry_gossip_frame_t *p =
+        (tapestry_gossip_frame_t *)(tx_buf + TAPESTRY_MSG_HEADER_SIZE);
     p->id               = own_state->id;
     p->x                = own_state->position.x;
     p->y                = own_state->position.y;
@@ -73,7 +75,8 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);
 
-    zsock_sendto(c->sock, tx_buf, SIM_HEADER_SIZE + SIM_GOSSIP_SIZE, 0,
+    zsock_sendto(c->sock, tx_buf,
+                 TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE, 0,
                  (struct sockaddr *)&orch_addr, sizeof(orch_addr));
 }
 
@@ -117,13 +120,13 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
                            : 0xFFFFu;
 
     /* ── Pack and send ── */
-    sim_msg_header_t *hdr = (sim_msg_header_t *)tx_buf;
-    hdr->type        = SIM_MSG_METRIC;
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->type        = TAPESTRY_MSG_METRIC;
     hdr->src_id      = element_id;
-    hdr->payload_len = SIM_METRIC_SIZE;
+    hdr->payload_len = TAPESTRY_METRIC_FRAME_SIZE;
 
-    sim_metric_payload_t *p =
-        (sim_metric_payload_t *)(tx_buf + SIM_HEADER_SIZE);
+    tapestry_metric_frame_t *p =
+        (tapestry_metric_frame_t *)(tx_buf + TAPESTRY_MSG_HEADER_SIZE);
     p->element_id           = element_id;
     p->active_total         = m->active_total;
     p->active_fresh         = m->active_fresh;
@@ -142,7 +145,8 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);
 
-    zsock_sendto(c->sock, tx_buf, SIM_HEADER_SIZE + SIM_METRIC_SIZE, 0,
+    zsock_sendto(c->sock, tx_buf,
+                 TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE, 0,
                  (struct sockaddr *)&orch_addr, sizeof(orch_addr));
 }
 
@@ -162,21 +166,21 @@ int comms_drain_inbox(const comms_t *c, world_model_t *wm,
             break;
         }
 
-        if (len < (ssize_t)SIM_HEADER_SIZE) {
+        if (len < (ssize_t)TAPESTRY_MSG_HEADER_SIZE) {
             continue;   /* too short to be a valid message */
         }
 
-        const sim_msg_header_t *hdr = (const sim_msg_header_t *)rx_buf;
-        const uint8_t *payload      = rx_buf + SIM_HEADER_SIZE;
+        const tapestry_msg_header_t *hdr = (const tapestry_msg_header_t *)rx_buf;
+        const uint8_t *payload           = rx_buf + TAPESTRY_MSG_HEADER_SIZE;
 
         switch ((sim_msg_type_t)hdr->type) {
 
         case SIM_MSG_GOSSIP: {
-            if (len < (ssize_t)(SIM_HEADER_SIZE + SIM_GOSSIP_SIZE)) {
+            if (len < (ssize_t)(TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE)) {
                 break;
             }
-            const sim_gossip_payload_t *g =
-                (const sim_gossip_payload_t *)payload;
+            const tapestry_gossip_frame_t *g =
+                (const tapestry_gossip_frame_t *)payload;
 
             element_state_t received = {0};
             received.id               = g->id;
@@ -192,7 +196,7 @@ int comms_drain_inbox(const comms_t *c, world_model_t *wm,
         }
 
         case SIM_MSG_CONTROL: {
-            if (len < (ssize_t)(SIM_HEADER_SIZE + SIM_CTRL_SIZE)) {
+            if (len < (ssize_t)(TAPESTRY_MSG_HEADER_SIZE + SIM_CTRL_SIZE)) {
                 break;
             }
             const sim_ctrl_payload_t *ctrl =

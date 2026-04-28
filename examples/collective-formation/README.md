@@ -1,6 +1,6 @@
 # Demo — Collective Formation
 
-Four BBC micro:bit V2 + Cutebot Mini robots self-organise into a square formation
+BBC micro:bit V2 + Cutebot Mini robots self-organise into a regular formation
 using the Tapestry L4 world model and BLE gossip. No central controller.
 No L5 SCR — formation is a pure L4 emergent behaviour.
 
@@ -15,11 +15,11 @@ No L5 SCR — formation is a pure L4 emergent behaviour.
    oscillation near equilibrium and absorb gossip-propagated micro-corrections.
 5. The micro:bit 5×5 LED matrix displays the robot's dead-reckoning position
    in real time (one lit pixel = estimated location in the 100×100 logical world).
-6. Cutebot LEDs reflect how many fresh peers are visible:
+6. Cutebot LEDs reflect how many fresh peers are currently visible:
    - Red — isolated (0 peers)
-   - Yellow — 2-robot pair
-   - Green — 3-robot triangle
-   - White — full 4-robot square
+   - Yellow — 1 peer
+   - Green — 2 peers
+   - White — 3 or more peers
 
 ## Hardware
 

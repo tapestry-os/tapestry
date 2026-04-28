@@ -16,7 +16,6 @@
 
 #include <stdint.h>
 #include <tapestry/csm.h>
-#include "sim_protocol.h"
 
 typedef struct {
     int      sock;        /* UDP socket fd                          */
