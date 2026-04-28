@@ -1,36 +1,48 @@
 cmake_minimum_required(VERSION 3.20.0)
+
+# Board overlays from tapestry-os pair hardware drivers with their devicetree
+# requirements.  Must be set before find_package(Zephyr).
+if("${BOARD}" STREQUAL "bbc_microbit_v2")
+    list(APPEND EXTRA_DT_OVERLAY_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os/boards/bbc_microbit_v2/bbc_microbit_v2.overlay)
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(tapestry_collective_formation)
 
 set(TAPESTRY_OS_ROOT      ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os)
 set(TAPESTRY_OS_CSM       ${TAPESTRY_OS_ROOT}/subsys/csm)
-set(TAPESTRY_OS_SCR       ${TAPESTRY_OS_ROOT}/subsys/scr)
 set(TAPESTRY_OS_TRANSPORT ${TAPESTRY_OS_ROOT}/subsys/transport)
-set(TAPESTRY_HW           ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-scr-hw/src)
+set(TAPESTRY_OS_BOARDS    ${TAPESTRY_OS_ROOT}/boards)
 
-# Core L4 stack — no L5 SCR compiled or linked.
+# Core L4 stack + transport multiplexer — always compiled.
 target_sources(app PRIVATE
     src/main.c
     src/formation.c
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_TRANSPORT}/transport.c
 )
 
-# BLE gossip transport — micro:bit only (CONFIG_BT=y in board overlay).
+# BLE gossip backend — micro:bit only (CONFIG_BT=y in board overlay).
 if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/ble/ble_gossip.c)
 endif()
 
-# Cutebot motor/LED driver — micro:bit only (CONFIG_I2C=y in board overlay).
+# Actuation: Cutebot on micro:bit, null stub everywhere else.
 if(CONFIG_I2C)
-    target_sources(app PRIVATE ${TAPESTRY_HW}/cutebot.c)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/actuation_cutebot.c
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot.c
+    )
+else()
+    target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/actuation_null.c)
 endif()
 
 target_include_directories(app PRIVATE
-    ${TAPESTRY_OS_ROOT}/include          # <tapestry/csm.h>, <tapestry/scr.h>, <tapestry/wire.h>
-    ${TAPESTRY_OS_CSM}                   # state.h, world_model.h
-    ${TAPESTRY_OS_SCR}                   # scr.h type defs (needed by cutebot.h)
-    ${TAPESTRY_OS_TRANSPORT}/ble         # ble_gossip.h
-    ${TAPESTRY_HW}                       # cutebot.h
+    ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/transport.h>, <tapestry/actuation.h>
+    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h (used by transport.c)
+    ${TAPESTRY_OS_TRANSPORT}/ble                   # ble_gossip.h (used by transport.c)
+    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h (used by actuation_cutebot.c)
     src
 )
 

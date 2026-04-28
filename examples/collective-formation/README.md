@@ -62,13 +62,13 @@ positions, minimising initial forces.
 ## Calibration constants
 
 Defined in [src/formation.h](src/formation.h). Override at build time with
-`-- -DDEMO1_<CONSTANT>=<value>`.
+`-- -DDEMO_<CONSTANT>=<value>`.
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `DEMO1_SPEED_SCALE` | 250.0 | Logical units/s at 100% motor speed |
-| `DEMO1_WHEEL_TRACK` | 28.0 | Wheel-centre to wheel-centre, logical units |
-| `DEMO1_TARGET_SPACING` | 59.0 | Desired peer spacing (→ ~150 mm side) |
+| `DEMO_SPEED_SCALE` | 250.0 | Logical units/s at 100% motor speed |
+| `DEMO_WHEEL_TRACK` | 28.0 | Wheel-centre to wheel-centre, logical units |
+| `DEMO_TARGET_SPACING` | 59.0 | Desired peer spacing (→ ~150 mm side) |
 
 **Recalibrating for a different arena:**
 ```
@@ -81,16 +81,8 @@ Cutebot Mini wheel track: ~85 mm.
 ## Tuning tips
 
 - **Robots won't move** — `FORCE_START` too high relative to `SPRING_K`.
-  Reduce `FORCE_START` or increase `SPRING_K`.
+  Edit the values directly in `src/formation.c` (these are hardcoded `#define`s
+  without `#ifndef` guards and cannot be overridden at build time).
 - **Oscillation / overshoot** — `FORCE_START` too low. Raise it above the
   force produced by a one-cycle overshoot: `overshoot_units × SPRING_K × peer_count`.
-- **Formation too tight / too spread** — adjust `DEMO1_TARGET_SPACING`.
-
-## Motor test helper
-
-[`../motor-test/`](../motor-test/) is a standalone binary that ramps motor speed
-from 20% to 100% in steps for speed characterisation. Build it the same way:
-
-```sh
-west build -b bbc_microbit_v2 tapestry/examples/motor-test
-```
+- **Formation too tight / too spread** — adjust `DEMO_TARGET_SPACING`.
