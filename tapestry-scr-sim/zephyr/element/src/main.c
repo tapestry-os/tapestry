@@ -25,6 +25,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <tapestry/scr.h>
+#include <tapestry/app.h>
 #include "movement.h"
 #include "comms.h"
 #include "comms_scr.h"
@@ -87,6 +88,18 @@ int main(void)
              (uint8_t)quorum_min,
              (uint8_t)quorum_target);
 
+    /* ── Initialise L6/L7 SDK ───────────────────────────────────────────── */
+    tapestry_init(own_state.id);
+    {
+        tapestry_goal_t goal = {
+            .type   = TAPESTRY_GOAL_FORM,
+            .target = { .x = 50.0f, .y = 50.0f },
+            .radius = 30.0f,
+            .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
+        };
+        tapestry_submit_goal(&goal);
+    }
+
     /* ── Initialise comms ───────────────────────────────────────────────── */
     comms_t comms;
     if (comms_init(&comms, own_state.id, (uint16_t)orch_port) != 0) {
@@ -119,7 +132,12 @@ int main(void)
             last_leader = scr.leader_id;
         }
 
-        /* 4. Update position — only when active and L4 not frozen */
+        /* 4. BSE tick — synthesise per-element behavioral directive */
+        tapestry_tick(&wm, &scr);
+
+        /* 5. Update position — only when active and L4 not frozen.
+         * movement_tick() drives the sim random-walk; tapestry_get_directive()
+         * provides the BSE directive for future physics-aware integration. */
         const wm_consistency_metric_t *metric = wm_get_metric(&wm);
         if (own_state.power_state == POWER_ACTIVE && !metric->degraded) {
             movement_tick(&own_state, &wm);

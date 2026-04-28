@@ -6,12 +6,16 @@ set(TAPESTRY_OS_ROOT      ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os)
 set(TAPESTRY_OS_CSM       ${TAPESTRY_OS_ROOT}/subsys/csm)
 set(TAPESTRY_OS_SCR       ${TAPESTRY_OS_ROOT}/subsys/scr)
 set(TAPESTRY_OS_TRANSPORT ${TAPESTRY_OS_ROOT}/subsys/transport)
+set(TAPESTRY_OS_BSE       ${TAPESTRY_OS_ROOT}/subsys/bse)
+set(TAPESTRY_SDK          ${CMAKE_CURRENT_SOURCE_DIR}/../sdk)
 
-# Core L4/L5 stack — always compiled.
+# Core L4/L5 stack + L6 BSE stub + L7 SDK stub — always compiled.
 target_sources(app PRIVATE
     src/main.c
     ${TAPESTRY_OS_CSM}/world_model.c
     ${TAPESTRY_OS_SCR}/scr.c
+    ${TAPESTRY_OS_BSE}/bse_stub.c
+    ${TAPESTRY_SDK}/src/app_stub.c
 )
 
 # UDP gossip transport + network bring-up — ESP32 and RA8D1 only.
@@ -33,7 +37,8 @@ if(CONFIG_I2C)
 endif()
 
 target_include_directories(app PRIVATE
-    ${TAPESTRY_OS_ROOT}/include          # <tapestry/csm.h>, <tapestry/scr.h>, <tapestry/wire.h>
+    ${TAPESTRY_OS_ROOT}/include          # <tapestry/csm.h>, <tapestry/scr.h>, <tapestry/wire.h>, <tapestry/bse.h>
+    ${TAPESTRY_SDK}/include              # <tapestry/app.h>
     ${TAPESTRY_OS_CSM}                   # world_model.h, state.h
     ${TAPESTRY_OS_SCR}                   # scr.h internals
     ${TAPESTRY_OS_TRANSPORT}/udp         # udp_gossip.h

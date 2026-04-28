@@ -5,6 +5,8 @@ project(scr_element)
 set(TAPESTRY_OS_ROOT  ${CMAKE_CURRENT_SOURCE_DIR}/../../../tapestry-os)
 set(TAPESTRY_OS_CSM   ${TAPESTRY_OS_ROOT}/subsys/csm)
 set(TAPESTRY_OS_SCR   ${TAPESTRY_OS_ROOT}/subsys/scr)
+set(TAPESTRY_OS_BSE   ${TAPESTRY_OS_ROOT}/subsys/bse)
+set(TAPESTRY_SDK      ${CMAKE_CURRENT_SOURCE_DIR}/../../../sdk)
 set(TAPESTRY_CSM_SIM  ${CMAKE_CURRENT_SOURCE_DIR}/../../../tapestry-csm-sim)
 set(CSM_ELEM_SRC      ${TAPESTRY_CSM_SIM}/zephyr/element/src)
 
@@ -15,14 +17,16 @@ target_sources(app PRIVATE
     ${CSM_ELEM_SRC}/movement.c     # random walk + repulsion: reused verbatim
     ${TAPESTRY_OS_CSM}/world_model.c
     ${TAPESTRY_OS_SCR}/scr.c
+    ${TAPESTRY_OS_BSE}/bse_stub.c
+    ${TAPESTRY_SDK}/src/app_stub.c
 )
 
 target_include_directories(app PRIVATE
-    ${TAPESTRY_OS_ROOT}/include    # <tapestry/scr.h> (and transitively csm.h)
+    ${TAPESTRY_OS_ROOT}/include    # <tapestry/scr.h>, <tapestry/bse.h>
+    ${TAPESTRY_SDK}/include        # <tapestry/app.h>
     ${TAPESTRY_OS_CSM}             # internal: world_model.h, state.h
     ${CSM_ELEM_SRC}                # comms.h, movement.h (from csm element)
     ${TAPESTRY_CSM_SIM}            # sim_protocol.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/../.. # scr_protocol.h
     src/                           # comms_scr.h
 )
 

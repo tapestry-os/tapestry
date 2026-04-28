@@ -41,6 +41,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <tapestry/scr.h>
+#include <tapestry/app.h>
 
 #include "net_init.h"
 #include "udp_gossip.h"
@@ -142,6 +143,19 @@ int main(void)
              (uint8_t)CONFIG_TAPESTRY_QUORUM_MIN,
              (uint8_t)CONFIG_TAPESTRY_QUORUM_TARGET);
 
+    /* ── Initialise L6/L7 SDK ──────────────────────────────────────────── */
+    tapestry_init(element_id);
+    {
+        tapestry_goal_t goal = {
+            .type   = TAPESTRY_GOAL_FORM,
+            .target = { .x = 50.0f, .y = 50.0f },
+            .radius = 30.0f,
+            .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
+        };
+        tapestry_submit_goal(&goal);
+        LOG_INF("default goal: FORM circle r=30 @ (50,50)");
+    }
+
     /* ── UDP comms (ESP32 + RA8D1) ─────────────────────────────────────── */
 #ifdef CONFIG_NETWORKING
     udp_gossip_ctx_t comms;
@@ -205,7 +219,10 @@ int main(void)
         /* 4. Update own entry in world model */
         wm_update_self(&wm, &own_state);
 
-        /* 5. Send gossip on interval */
+        /* 5. BSE tick — synthesise per-element behavioral directive */
+        tapestry_tick(&wm, &scr);
+
+        /* 6. Send gossip on interval */
         gossip_accum_ms += WM_CYCLE_MS;
         if (gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
             own_state.update_seq++;
@@ -218,12 +235,22 @@ int main(void)
             gossip_accum_ms = 0;
         }
 
-        /* 6. Drive Cutebot from L5 state (micro:bit only) */
+        /* 7. Drive Cutebot from L5 state (micro:bit only).
+         * tapestry_get_directive() is available here for future odometry-
+         * based motor control; see examples/collective-formation for the
+         * dead-reckoning + spring-field integration pattern.
+         *
+         * TODO: replace board-specific #ifdef blocks in main.c with a thin
+         * actuation HAL (actuation_init / actuation_update) so main.c
+         * contains only application logic.  actuation_update() would accept
+         * tapestry_get_directive() and translate it to cutebot / null
+         * commands via CMakeLists-selected source files.  Prerequisite:
+         * odometry integration for directive-driven motor control. */
 #ifdef CONFIG_I2C
         cutebot_update(scr.role, scr.quorum_state);
 #endif
 
-        /* 7. Send metrics */
+        /* 8. Send metrics */
 #ifdef CONFIG_NETWORKING
         udp_gossip_send_metric(&comms, &wm, element_id);
         udp_gossip_send_scr_metric(&comms, &scr, election_count);
