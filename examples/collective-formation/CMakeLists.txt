@@ -15,17 +15,29 @@ set(TAPESTRY_OS_CSM       ${TAPESTRY_OS_ROOT}/subsys/csm)
 set(TAPESTRY_OS_TRANSPORT ${TAPESTRY_OS_ROOT}/subsys/transport)
 set(TAPESTRY_OS_BOARDS    ${TAPESTRY_OS_ROOT}/boards)
 
-# Core L4 stack + transport multiplexer — always compiled.
+# Core L4 stack + transport.
 target_sources(app PRIVATE
     src/main.c
     src/formation.c
     ${TAPESTRY_OS_CSM}/world_model.c
     ${TAPESTRY_OS_TRANSPORT}/transport.c
+    ${TAPESTRY_OS_TRANSPORT}/gossip.c
 )
 
-# BLE gossip backend — micro:bit only (CONFIG_BT=y in board overlay).
+# BLE transceiver — micro:bit only (CONFIG_BT=y in board overlay).
 if(CONFIG_BT)
-    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/ble/ble_gossip.c)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)
+endif()
+
+# Stub transceiver backends (not active in any current build).
+if(CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_acoustic.c)
+endif()
+if(CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_optical.c)
+endif()
+if(CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_chemical.c)
 endif()
 
 # Substrate: Cutebot on micro:bit, null stub everywhere else.
@@ -40,9 +52,9 @@ endif()
 
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/transport.h>, <tapestry/substrate.h>
-    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h (used by transport.c)
-    ${TAPESTRY_OS_TRANSPORT}/ble                   # ble_gossip.h (used by transport.c)
-    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h (used by substrate_cutebot.c)
+    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h
+    ${TAPESTRY_OS_TRANSPORT}                       # gossip.h, transceiver_ble.h, net_init.h
+    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h
     src
 )
 

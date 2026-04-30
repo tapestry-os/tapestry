@@ -1,23 +1,26 @@
 /*
  * tapestry/transceiver.h — Tapestry L1 Communication Transceiver Interface
  *
- * Abstract PHY layer: the boundary between the communication protocol (L3)
- * and the physical medium (RF, acoustic, optical, chemical).
+ * Defines the vtable that every transceiver backend must implement.
  *
- * Status: interface contract only.
+ * All implementations live in tapestry-os/subsys/transport/transceiver_<medium>.c,
+ * gated on the appropriate Kconfig symbol.  Board-specific peripheral
+ * configuration (pin assignments, DMA channels, clocks) belongs in the
+ * board's Kconfig overlay, not in a separate file hierarchy.
  *
- *   The current L3 backends (ble_gossip.c, udp_gossip.c) drive their hardware
- *   directly and have not yet been refactored to call into this API.
- *   That separation is tracked as part of the L3 implementation pass.
+ * To add a new transceiver backend:
+ *   1. Create tapestry-os/subsys/transport/transceiver_<medium>.c.
+ *   2. Define a const tapestry_transceiver_t instance with all ops populated.
+ *   3. Declare it in transceiver_<medium>.h (private to the transport subsystem).
+ *   4. Register it in transport.c under the appropriate Kconfig guard.
  *
- * Intended wire-up when the L3 refactor lands:
- *   L3 transport.c  ──calls──►  transceiver_tx / transceiver_rx
- *   L1 impls        ──drive──►  BLE stack / UDP socket / acoustic DAC / ...
- *
- * Add a new transceiver backend:
- *   1. Create tapestry-os/boards/<board>/transceiver_<medium>.c
- *   2. Implement every function declared below.
- *   3. Wire it into your app's CMakeLists.txt, gated on the appropriate Kconfig.
+ * The tx/rx contract for gossip frames:
+ *   tx — caller passes raw tapestry_gossip_frame_t bytes; the backend wraps
+ *        them in whatever medium-specific framing is needed (BLE AD record,
+ *        UDP header, etc.) before transmitting.
+ *   rx — backend strips medium-specific framing and returns raw
+ *        tapestry_gossip_frame_t bytes.  Returns 0 when nothing is pending
+ *        (non-blocking); gossip.c calls in a tight loop until 0.
  */
 
 #ifndef TAPESTRY_TRANSCEIVER_H
@@ -39,39 +42,27 @@ typedef enum {
     TRANSCEIVER_TYPE_CHEMICAL = 4,
 } transceiver_type_t;
 
-/* ── API ─────────────────────────────────────────────────────────────────── */
+/* ── Vtable ───────────────────────────────────────────────────────────────── */
 
-/*
- * transceiver_type — Report which physical medium this implementation drives.
- */
-transceiver_type_t transceiver_type(void);
+typedef struct {
+    transceiver_type_t type;
 
-/*
- * transceiver_init — Bring up the transceiver hardware.
- * Returns 0 on success, negative errno on failure.
- */
-int transceiver_init(void);
+    /* Bring up hardware.  Called once by transport_init().
+     * Returns 0 on success, negative errno on failure. */
+    int (*init)(void);
 
-/*
- * transceiver_tx — Transmit len bytes from data.
- * Non-blocking where the hardware supports it.
- * Returns 0 on success, negative errno if the medium is unavailable.
- */
-int transceiver_tx(const uint8_t *data, uint16_t len);
+    /* Transmit len bytes of gossip-frame payload.  Non-blocking where hardware
+     * supports it.  Returns 0 on success, negative errno on failure. */
+    int (*tx)(const uint8_t *data, uint16_t len);
 
-/*
- * transceiver_rx — Copy up to max_len bytes of the next received frame into buf.
- * Non-blocking: returns 0 immediately if nothing is available.
- * Returns number of bytes written to buf, or negative errno on hardware error.
- */
-int transceiver_rx(uint8_t *buf, uint16_t max_len);
+    /* Copy one received gossip-frame payload (medium framing stripped) into buf.
+     * Non-blocking: returns 0 immediately when nothing is available.
+     * Returns bytes written on success, negative errno on hardware error. */
+    int (*rx)(uint8_t *buf, uint16_t max_len);
 
-/*
- * transceiver_set_power — Set transmit power, normalized [0.0, 1.0].
- * 0.0 = minimum (or off), 1.0 = maximum.
- * No-op if power control is unsupported by the medium.
- */
-void transceiver_set_power(float level);
+    /* Set normalised [0.0, 1.0] transmit power.  No-op if unsupported. */
+    void (*set_power)(float level);
+} tapestry_transceiver_t;
 
 #ifdef __cplusplus
 }

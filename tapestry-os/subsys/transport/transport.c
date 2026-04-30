@@ -2,29 +2,47 @@
  * tapestry-os/subsys/transport/transport.c
  * Tapestry L3 transport multiplexer
  *
- * Implements <tapestry/transport.h> by fanning out to whichever gossip
- * backends are compiled in for this board.  All Kconfig guards live here;
- * application code is unconditionally clean.
+ * Implements <tapestry/transport.h>.  Registers the active transceiver
+ * backends into the gossip framing layer and routes telemetry to the
+ * appropriate channel.
  *
- *   CONFIG_BT              → ble_gossip.c  (BLE advertising / scan)
- *   CONFIG_NETWORKING      → udp_gossip.c + net_init.c  (UDP broadcast)
- *   Both                   → both backends; transport_drain() merges frames
+ * To add a new medium: create transceiver_<medium>.c, declare the vtable in
+ * transceiver_<medium>.h, and register it below under the appropriate Kconfig
+ * guard.  No changes to transport.h or any caller.
+ *
+ *   CONFIG_BT              → transceiver_ble.c  (BLE advertising / scan)
+ *   CONFIG_NETWORKING      → transceiver_udp.c + net_init.c  (UDP broadcast)
+ *   Both                   → both backends; gossip_drain merges frames
+ *   CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC → transceiver_acoustic.c (stub)
+ *   CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL  → transceiver_optical.c  (stub)
+ *   CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL → transceiver_chemical.c (stub)
  *
  * Telemetry routing:
- *   CONFIG_NETWORKING      → UDP unicast to collector (every cycle)
- *   BLE-only               → serial CSV to stdout (throttled to GOSSIP_INTERVAL_MS)
+ *   CONFIG_NETWORKING → UDP unicast to collector (every cycle)
+ *   BLE-only          → serial CSV to stdout (throttled to GOSSIP_INTERVAL_MS)
  */
 
 #include <tapestry/transport.h>
 #include <tapestry/csm.h>
-
-#ifdef CONFIG_BT
-#include "ble/ble_gossip.h"
-#endif
+#include "gossip.h"
 
 #ifdef CONFIG_NETWORKING
-#include "udp/udp_gossip.h"
-#include "udp/net_init.h"
+#include "transceiver_udp.h"
+#include "net_init.h"
+#endif
+
+#ifdef CONFIG_BT
+#include "transceiver_ble.h"
+#endif
+
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC
+#include "transceiver_acoustic.h"
+#endif
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL
+#include "transceiver_optical.h"
+#endif
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL
+#include "transceiver_chemical.h"
 #endif
 
 #include <zephyr/kernel.h>
@@ -32,14 +50,16 @@
 
 LOG_MODULE_REGISTER(transport, LOG_LEVEL_INF);
 
+/* ── Transceiver registry ────────────────────────────────────────────────── */
+
+#define MAX_TRANSCEIVERS 8
+
+static const tapestry_transceiver_t *active[MAX_TRANSCEIVERS];
+static int n_active;
+
 /* ── Private state ───────────────────────────────────────────────────────── */
 
-#ifdef CONFIG_NETWORKING
-static udp_gossip_ctx_t udp_ctx;
-#endif
-
 #ifndef CONFIG_NETWORKING
-/* Throttle serial metric output to avoid flooding the UART. */
 static uint32_t serial_metric_accum_ms;
 #endif
 
@@ -47,28 +67,48 @@ static uint32_t serial_metric_accum_ms;
 
 int transport_init(void)
 {
+    n_active = 0;
+
 #ifdef CONFIG_NETWORKING
     if (net_connect() != 0) {
         LOG_ERR("network bring-up failed");
         return -1;
     }
-    if (udp_gossip_init(&udp_ctx) != 0) {
-        LOG_ERR("udp_gossip_init failed");
-        return -1;
-    }
+    active[n_active++] = &transceiver_udp;
 #endif
 
 #ifdef CONFIG_BT
-    if (ble_gossip_init() != 0) {
-        LOG_WRN("BLE gossip init failed — BLE peers will not be heard");
-    }
+    active[n_active++] = &transceiver_ble;
 #endif
 
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC
+    active[n_active++] = &transceiver_acoustic;
+#endif
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL
+    active[n_active++] = &transceiver_optical;
+#endif
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL
+    active[n_active++] = &transceiver_chemical;
+#endif
+
+    for (int i = 0; i < n_active; i++) {
+        int ret = active[i]->init();
+        if (ret != 0) {
+            if (active[i]->type == TRANSCEIVER_TYPE_UDP) {
+                LOG_ERR("UDP transceiver init failed: %d", ret);
+                return ret;
+            }
+            LOG_WRN("transceiver type=%d init failed: %d — peers on this medium "
+                    "will not be heard", (int)active[i]->type, ret);
+        }
+    }
+
+    gossip_register_transceivers(active, n_active);
+
 #ifndef CONFIG_NETWORKING
-    /* Print CSV header once so collect_serial.py can identify columns. */
     printk("HEADER,uptime_ms,element_id,fresh_ratio,quorum_state,role,"
            "leader_id,election_count,mean_age_ms\n");
-    serial_metric_accum_ms = GOSSIP_INTERVAL_MS;   /* emit immediately on first call */
+    serial_metric_accum_ms = GOSSIP_INTERVAL_MS;
 #endif
 
     return 0;
@@ -78,26 +118,14 @@ int transport_init(void)
 
 void transport_send(const element_state_t *own_state)
 {
-#ifdef CONFIG_NETWORKING
-    udp_gossip_send(&udp_ctx, own_state);
-#endif
-#ifdef CONFIG_BT
-    ble_gossip_send(own_state);
-#endif
+    gossip_send(own_state);
 }
 
 /* ── transport_drain ─────────────────────────────────────────────────────── */
 
 int transport_drain(world_model_t *wm, element_id_t own_id)
 {
-    int total = 0;
-#ifdef CONFIG_NETWORKING
-    total += udp_gossip_drain(&udp_ctx, wm, own_id);
-#endif
-#ifdef CONFIG_BT
-    total += ble_gossip_drain(wm, own_id);
-#endif
-    return total;
+    return gossip_drain(wm, own_id);
 }
 
 /* ── Auto-ID (BLE discovery window) ─────────────────────────────────────── */
@@ -105,7 +133,7 @@ int transport_drain(world_model_t *wm, element_id_t own_id)
 void transport_advertise_nonce(uint32_t nonce)
 {
 #ifdef CONFIG_BT
-    ble_gossip_advertise_nonce(nonce);
+    ble_transceiver_advertise_nonce(nonce);
 #else
     ARG_UNUSED(nonce);
 #endif
@@ -114,7 +142,7 @@ void transport_advertise_nonce(uint32_t nonce)
 int transport_drain_nonces(uint32_t *out, int max)
 {
 #ifdef CONFIG_BT
-    return ble_gossip_drain_nonces(out, max);
+    return ble_transceiver_drain_nonces(out, max);
 #else
     ARG_UNUSED(out);
     ARG_UNUSED(max);
@@ -125,7 +153,7 @@ int transport_drain_nonces(uint32_t *out, int max)
 int transport_drain_claimed(bool *claimed_out, int max_id)
 {
 #ifdef CONFIG_BT
-    return ble_gossip_drain_claimed(claimed_out, max_id);
+    return ble_transceiver_drain_claimed(claimed_out, max_id);
 #else
     ARG_UNUSED(claimed_out);
     ARG_UNUSED(max_id);
@@ -140,16 +168,15 @@ int transport_drain_claimed(bool *claimed_out, int max_id)
 void transport_send_telemetry(const world_model_t *wm, element_id_t element_id,
                               const scr_state_t *scr, uint32_t election_count)
 {
-    udp_gossip_send_metric(&udp_ctx, wm, element_id);
+    udp_transceiver_send_metric(wm, element_id);
     if (scr != NULL) {
-        udp_gossip_send_scr_metric(&udp_ctx, scr, election_count);
+        udp_transceiver_send_scr_metric(scr, election_count);
     }
 }
 
 #else /* BLE-only: emit serial CSV */
 
-#include <zephyr/kernel.h>   /* k_uptime_get_32 */
-#include "../../subsys/csm/world_model.h"
+#include "world_model.h"
 
 static void emit_serial_metric(element_id_t element_id,
                                 const world_model_t *wm,
@@ -158,8 +185,8 @@ static void emit_serial_metric(element_id_t element_id,
 {
     const wm_consistency_metric_t *m = wm_get_metric(wm);
 
-    float    age_sum = 0.0f;
-    uint8_t  age_cnt = 0;
+    float   age_sum = 0.0f;
+    uint8_t age_cnt = 0;
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
         if (e->state.id == ELEMENT_ID_INVALID || e->is_self || !e->is_active) {
@@ -170,10 +197,9 @@ static void emit_serial_metric(element_id_t element_id,
     }
     float mean_age = age_cnt > 0 ? age_sum / (float)age_cnt : 0.0f;
 
-    uint8_t  quorum_state  = 0;
-    uint8_t  role          = 0;
-    uint8_t  leader_id     = 0xFFu;
-    uint32_t elections     = election_count;
+    uint8_t  quorum_state = 0;
+    uint8_t  role         = 0;
+    uint8_t  leader_id    = 0xFFu;
 
     if (scr != NULL) {
         quorum_state = (uint8_t)scr->quorum_state;
@@ -188,7 +214,7 @@ static void emit_serial_metric(element_id_t element_id,
            (unsigned)quorum_state,
            (unsigned)role,
            (unsigned)leader_id,
-           (unsigned)elections,
+           (unsigned)election_count,
            (double)mean_age);
 }
 

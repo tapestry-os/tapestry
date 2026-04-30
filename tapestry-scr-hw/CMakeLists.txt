@@ -12,7 +12,7 @@ set(TAPESTRY_OS_RUNTIME   ${TAPESTRY_OS_ROOT}/subsys/runtime)
 set(TAPESTRY_OS_BOARDS    ${TAPESTRY_OS_ROOT}/boards)
 set(TAPESTRY_SDK          ${CMAKE_CURRENT_SOURCE_DIR}/../sdk)
 
-# Core L2 runtime + L4/L5 stack + L6 BSE stub + L7 SDK stub + transport multiplexer.
+# Core L2 runtime + L4/L5 stack + L6 BSE stub + L7 SDK stub + transport.
 target_sources(app PRIVATE
     src/main.c
     ${TAPESTRY_OS_RUNTIME}/runtime.c
@@ -22,19 +22,32 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_BSE}/bse_stub.c
     ${TAPESTRY_SDK}/src/app_stub.c
     ${TAPESTRY_OS_TRANSPORT}/transport.c
+    ${TAPESTRY_OS_TRANSPORT}/gossip.c
 )
 
-# UDP gossip backend + network bring-up — ESP32 and RA8D1 only.
+# UDP transceiver + network bring-up — ESP32 and RA8D1 only.
 if(CONFIG_NETWORKING)
     target_sources(app PRIVATE
-        ${TAPESTRY_OS_TRANSPORT}/udp/udp_gossip.c
-        ${TAPESTRY_OS_TRANSPORT}/udp/net_init.c
+        ${TAPESTRY_OS_TRANSPORT}/transceiver_udp.c
+        ${TAPESTRY_OS_TRANSPORT}/net_init.c
     )
 endif()
 
-# BLE gossip backend — ESP32 (bridge) and micro:bit.
+# BLE transceiver — ESP32 (bridge) and micro:bit.
 if(CONFIG_BT)
-    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/ble/ble_gossip.c)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)
+endif()
+
+# Stub transceiver backends (compiled when the matching Kconfig symbol is set
+# by a board overlay; not active in any current build).
+if(CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_acoustic.c)
+endif()
+if(CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_optical.c)
+endif()
+if(CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_chemical.c)
 endif()
 
 # Substrate: Cutebot on micro:bit, null stub everywhere else.
@@ -50,12 +63,11 @@ endif()
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/scr.h>, <tapestry/transport.h>, <tapestry/substrate.h>, <tapestry/bse.h>, <tapestry/runtime.h>
     ${TAPESTRY_SDK}/include                        # <tapestry/app.h>
-    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h (used by transport.c and runtime.c)
-    ${TAPESTRY_OS_SCR}                             # scr.h internals (used by runtime.c)
-    ${TAPESTRY_OS_RUNTIME}                         # power.h (internal, used by runtime.c)
-    ${TAPESTRY_OS_TRANSPORT}/ble                   # ble_gossip.h (used by transport.c)
-    ${TAPESTRY_OS_TRANSPORT}/udp                   # udp_gossip.h, net_init.h (used by transport.c)
-    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h (used by substrate_cutebot.c)
+    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h
+    ${TAPESTRY_OS_SCR}                             # scr.h internals
+    ${TAPESTRY_OS_RUNTIME}                         # power.h (internal)
+    ${TAPESTRY_OS_TRANSPORT}                       # gossip.h, transceiver_ble.h, transceiver_udp.h, net_init.h
+    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h
     src
 )
 
