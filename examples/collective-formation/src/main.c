@@ -31,7 +31,7 @@
 #include <string.h>
 #include <tapestry/csm.h>
 #include <tapestry/transport.h>
-#include <tapestry/actuation.h>
+#include <tapestry/substrate.h>
 
 #include "formation.h"
 
@@ -156,8 +156,8 @@ static element_id_t auto_assign_id(uint32_t own_nonce, int *n_total_out)
 
 int main(void)
 {
-    if (actuation_init() != 0) {
-        LOG_WRN("actuation init failed — movement and LEDs disabled");
+    if (substrate_init() != 0) {
+        LOG_WRN("substrate init failed — movement and signal disabled");
     }
 
     if (transport_init() != 0) {
@@ -189,8 +189,8 @@ int main(void)
     demo_odometry_t odo;
     demo_odometry_init(&odo, sx, sy);
 
-    int      left_cmd     = 0;
-    int      right_cmd    = 0;
+    float    speed_cmd    = 0.0f;
+    float    rate_cmd     = 0.0f;
     uint32_t gossip_accum = GOSSIP_INTERVAL_MS;   /* send immediately on first tick */
 
     LOG_INF("Demo ready — entering main loop");
@@ -199,13 +199,17 @@ int main(void)
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
 
-        demo_odometry_update(&odo, left_cmd, right_cmd, WM_CYCLE_MS);
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
         own_state.position.x = odo.x;
         own_state.position.y = odo.y;
         wm_update_self(&wm, &own_state);
 
-        demo_compute_drive(&wm, &odo, &left_cmd, &right_cmd);
-        actuation_drive(left_cmd, right_cmd);
+        demo_compute_drive(&wm, &odo, &speed_cmd, &rate_cmd);
+        substrate_twist_t twist = {
+            .linear  = { .x = speed_cmd },
+            .angular = { .z = rate_cmd  },
+        };
+        substrate_move(&twist);
         demo_set_leds(&wm);
         demo_display_position(&odo);
 

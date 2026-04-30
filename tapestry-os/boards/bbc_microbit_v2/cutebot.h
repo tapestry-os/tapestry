@@ -18,8 +18,6 @@
 #define TAPESTRY_CUTEBOT_H
 
 #include <stdint.h>
-#include <stdbool.h>
-#include <tapestry/scr.h>   /* scr_role_t, scr_quorum_state_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,14 +32,6 @@ void cutebot_drive(int left_pct, int right_pct);
 
 /* Set both RGB LEDs to the given colour directly. */
 void cutebot_set_leds(uint8_t r, uint8_t g, uint8_t b);
-
-/* Set the two RGB LEDs to reflect Tapestry state:
- *   HEALTHY  + LEADER   → green, motors forward
- *   HEALTHY  + FOLLOWER → blue, motors slow
- *   DEGRADED (any role) → orange, motors stop
- *   LOST     (any role) → red, motors stop
- * Call once per main-loop cycle. */
-void cutebot_update(scr_role_t role, scr_quorum_state_t quorum);
 
 #ifdef __cplusplus
 }

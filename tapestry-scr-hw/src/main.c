@@ -9,7 +9,7 @@
  *   ESP-WROVER-KIT    — BLE + UDP gossip bridge, no actuators, UDP telemetry
  *
  * Startup sequence:
- *   1. actuation_init() — stop motors, LEDs off (no-op on non-Cutebot boards)
+ *   1. substrate_init() — stop motors, signal off (no-op on non-Cutebot boards)
  *   2. transport_init() — network + BLE bring-up, open sockets
  *   3. wm_init()        — initialise L4 world model
  *   4. scr_init()       — initialise L5 quorum and role tracker
@@ -23,7 +23,7 @@
  *   4. wm_update_self()           — refresh own entry
  *   5. tapestry_tick()            — BSE: synthesise per-element directive
  *   6. transport_send()           — broadcast gossip on interval
- *   7. actuation_update()         — drive motors/LEDs from L5 state
+ *   7. substrate_set_signal/move() — drive signal and motors from L5 state
  *   8. transport_send_telemetry() — metric frames to collector (UDP or serial)
  *   9. k_msleep()
  */
@@ -32,7 +32,7 @@
 #include <zephyr/logging/log.h>
 #include <tapestry/scr.h>
 #include <tapestry/transport.h>
-#include <tapestry/actuation.h>
+#include <tapestry/substrate.h>
 #include <tapestry/app.h>
 
 LOG_MODULE_REGISTER(element, LOG_LEVEL_INF);
@@ -55,8 +55,8 @@ int main(void)
             CONFIG_TAPESTRY_QUORUM_MIN,
             CONFIG_TAPESTRY_QUORUM_TARGET);
 
-    if (actuation_init() != 0) {
-        LOG_WRN("actuation init failed — physical movement disabled");
+    if (substrate_init() != 0) {
+        LOG_WRN("substrate init failed — movement and signal disabled");
     }
 
     if (transport_init() != 0) {
@@ -141,8 +141,18 @@ int main(void)
             gossip_accum_ms = 0;
         }
 
-        /* 7. Drive actuators from L5 state */
-        actuation_update(scr.role, scr.quorum_state);
+        /* 7. Signal quorum state and drive motors from L5 role */
+        substrate_signal_t sig;
+        if      (scr.quorum_state == SCR_QUORUM_HEALTHY)  sig = SUBSTRATE_SIGNAL_ACTIVE;
+        else if (scr.quorum_state == SCR_QUORUM_DEGRADED) sig = SUBSTRATE_SIGNAL_DEGRADED;
+        else                                               sig = SUBSTRATE_SIGNAL_FAILED;
+        substrate_set_signal(sig);
+
+        substrate_twist_t twist = {0};
+        if (scr.quorum_state == SCR_QUORUM_HEALTHY) {
+            twist.linear.x = (scr.role == SCR_ROLE_LEADER) ? 0.7f : 0.5f;
+        }
+        substrate_move(&twist);
 
         /* 8. Send telemetry (UDP unicast or serial CSV, per transport) */
         transport_send_telemetry(&wm, element_id, &scr, election_count);

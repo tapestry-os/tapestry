@@ -105,35 +105,3 @@ void cutebot_drive(int left_pct, int right_pct)
     set_motors(left_pct, right_pct);
 }
 
-void cutebot_update(scr_role_t role, scr_quorum_state_t quorum)
-{
-    if (!i2c_dev) {
-        return;
-    }
-
-    switch (quorum) {
-    case SCR_QUORUM_HEALTHY:
-        if (role == SCR_ROLE_LEADER) {
-            cutebot_set_leds(0, 200, 0);          /* green */
-            set_motors(70, 70);
-        } else if (role == SCR_ROLE_FOLLOWER) {
-            cutebot_set_leds(0, 0, 200);          /* blue */
-            set_motors(50, 50);
-        } else {
-            cutebot_set_leds(50, 50, 50);         /* white-ish (NONE but healthy) */
-            set_motors(0, 0);
-        }
-        break;
-
-    case SCR_QUORUM_DEGRADED:
-        cutebot_set_leds(200, 80, 0);             /* orange */
-        set_motors(0, 0);
-        break;
-
-    case SCR_QUORUM_LOST:
-    default:
-        cutebot_set_leds(200, 0, 0);              /* red */
-        set_motors(0, 0);
-        break;
-    }
-}

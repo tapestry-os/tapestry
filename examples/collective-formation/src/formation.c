@@ -3,7 +3,6 @@
  */
 
 #include "formation.h"
-#include <tapestry/actuation.h>
 
 #include <math.h>
 #include <zephyr/display/mb_display.h>
@@ -49,11 +48,6 @@ static float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
-static int clampi(int v, int lo, int hi)
-{
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
 /* ── Odometry ─────────────────────────────────────────────────────────────── */
 
 void demo_odometry_init(demo_odometry_t *odo, float x, float y)
@@ -64,17 +58,12 @@ void demo_odometry_init(demo_odometry_t *odo, float x, float y)
 }
 
 void demo_odometry_update(demo_odometry_t *odo,
-                           int left_pct, int right_pct,
+                           float speed_norm, float rate_norm,
                            uint32_t dt_ms)
 {
-    float dt    = (float)dt_ms * 0.001f;
-    float scale = DEMO_SPEED_SCALE / 100.0f;
-
-    float vl = (float)left_pct  * scale;   /* logical units/s */
-    float vr = (float)right_pct * scale;
-
-    float v_center = (vl + vr) * 0.5f;
-    float omega    = (vr - vl) / DEMO_WHEEL_TRACK;   /* rad/s */
+    float dt       = (float)dt_ms * 0.001f;
+    float v_center = speed_norm * DEMO_MAX_SPEED;   /* logical units/s */
+    float omega    = rate_norm  * DEMO_MAX_OMEGA;   /* rad/s           */
 
     odo->heading += omega * dt;
 
@@ -96,7 +85,7 @@ void demo_odometry_update(demo_odometry_t *odo,
 
 void demo_compute_drive(const world_model_t *wm,
                          const demo_odometry_t *odo,
-                         int *left_out, int *right_out)
+                         float *speed_out, float *rate_out)
 {
     float fx         = 0.0f;
     float fy         = 0.0f;
@@ -133,8 +122,8 @@ void demo_compute_drive(const world_model_t *wm,
         /* No peers visible: hold position and wait for BLE gossip.
          * BLE scanning is passive — physical movement does not help
          * discovery, and wandering corrupts the dead-reckoning origin. */
-        *left_out  = 0;
-        *right_out = 0;
+        *speed_out = 0.0f;
+        *rate_out  = 0.0f;
         return;
     }
 
@@ -150,8 +139,8 @@ void demo_compute_drive(const world_model_t *wm,
     }
 
     if (!moving) {
-        *left_out  = 0;
-        *right_out = 0;
+        *speed_out = 0.0f;
+        *rate_out  = 0.0f;
         return;
     }
 
@@ -182,13 +171,13 @@ void demo_compute_drive(const world_model_t *wm,
         speed = -(float)MIN_STICTION;
     }
 
-    *left_out  = clampi((int)(speed - turn), -100, 100);
-    *right_out = clampi((int)(speed + turn), -100, 100);
+    *speed_out = speed / 100.0f;
+    *rate_out  = turn  / 100.0f;
 
-    LOG_DBG("fx=%.2f fy=%.2f fwd=%.2f lat=%.2f L=%d R=%d peers=%d",
+    LOG_DBG("fx=%.2f fy=%.2f fwd=%.2f lat=%.2f spd=%.2f rate=%.2f peers=%d",
             (double)fx, (double)fy,
             (double)f_fwd, (double)f_lat,
-            *left_out, *right_out, peer_count);
+            (double)*speed_out, (double)*rate_out, peer_count);
 }
 
 /* ── Position display (micro:bit 5×5 matrix) ─────────────────────────────── */
@@ -232,14 +221,15 @@ void demo_set_leds(const world_model_t *wm)
 
     static int last_fresh = -1;
     if (fresh != last_fresh) {
-        static const char *const colors[] = { "red", "yellow", "green", "white" };
-        LOG_INF("peers=%d  LED=%s", fresh,
-                colors[fresh < 3 ? fresh : 3]);
+        static const char *const labels[] = { "failed", "degraded", "active" };
+        int idx = fresh >= 2 ? 2 : fresh;
+        LOG_INF("peers=%d  signal=%s", fresh, labels[idx]);
         last_fresh = fresh;
     }
 
-    if      (fresh >= 3) actuation_set_leds(255, 255, 255); /* white  — 3+ peers */
-    else if (fresh == 2) actuation_set_leds(0,   200,   0); /* green  — 2 peers  */
-    else if (fresh == 1) actuation_set_leds(200, 200,   0); /* yellow — 1 peer   */
-    else                 actuation_set_leds(200,   0,   0); /* red    — isolated */
+    substrate_signal_t sig;
+    if      (fresh >= 2) sig = SUBSTRATE_SIGNAL_ACTIVE;
+    else if (fresh == 1) sig = SUBSTRATE_SIGNAL_DEGRADED;
+    else                 sig = SUBSTRATE_SIGNAL_FAILED;
+    substrate_set_signal(sig);
 }

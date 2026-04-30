@@ -29,17 +29,23 @@
 
 #include <stdint.h>
 #include <tapestry/csm.h>
+#include <tapestry/substrate.h>
 
 /* ── Calibration defaults ───────────────────────────────────────────────── */
-
-#ifndef DEMO_SPEED_SCALE
-#define DEMO_SPEED_SCALE  250.0f   /* logical units/s at 100% speed (0.3 m arena,
-                                     * measured: 450 mm in 3 s at 20% → 750 mm/s @ 100%) */
-#endif
 
 #ifndef DEMO_WHEEL_TRACK
 #define DEMO_WHEEL_TRACK   28.0f   /* logical units, wheel-to-wheel (0.3 m arena) */
 #endif
+
+#ifndef DEMO_MAX_SPEED
+#define DEMO_MAX_SPEED    250.0f   /* logical units/s at speed_norm=1.0
+                                     * Formula: robot_speed_mm_per_s * 100 / WORLD_MM
+                                     * 0.3 m arena, ~0.75 m/s max: 750 * 100 / 300 = 250 */
+#endif
+
+/* Maximum yaw rate (rad/s) at rate_norm=1.0 — derived from wheel track and max speed.
+ * Not overridable: change DEMO_MAX_SPEED or DEMO_WHEEL_TRACK instead. */
+#define DEMO_MAX_OMEGA    (2.0f * DEMO_MAX_SPEED / DEMO_WHEEL_TRACK)
 
 #ifndef DEMO_TARGET_SPACING
 #define DEMO_TARGET_SPACING 59.0f  /* desired peer spacing, logical units →
@@ -58,42 +64,41 @@ typedef struct {
 void demo_odometry_init(demo_odometry_t *odo, float x, float y);
 
 /*
- * Update dead-reckoning estimate from the last motor command.
- *   left_pct / right_pct: [-100, 100] percent.
+ * Update dead-reckoning estimate from the last motion command.
+ *   speed_norm: forward velocity [-1.0, 1.0], passed to substrate_move().
+ *   rate_norm:  yaw rate         [-1.0, 1.0], positive = CCW (turn left).
  *   dt_ms: elapsed milliseconds since last call (typically WM_CYCLE_MS).
  */
 void demo_odometry_update(demo_odometry_t *odo,
-                           int left_pct, int right_pct,
+                           float speed_norm, float rate_norm,
                            uint32_t dt_ms);
 
 /* ── Formation control ──────────────────────────────────────────────────── */
 
 /*
- * Compute differential drive command from the L4 world model.
+ * Compute motion command from the L4 world model.
  *
  * For each active, non-stale, non-self peer in wm, a spring force is applied:
  *   force = (distance - TARGET_SPACING) * SPRING_K
  *   direction = unit vector from own position toward peer
  *
- * The summed force vector is projected onto the robot frame and mapped to
- * differential motor speeds.  When no peers are visible, the robot wanders
- * slowly forward.
- *
- * Writes motor commands to *left_out and *right_out in [-100, 100].
+ * The summed force vector is projected onto the robot frame and written to
+ * *speed_out (forward velocity) and *rate_out (yaw rate), both normalized
+ * [-1.0, 1.0].  Pass these directly to substrate_move() via substrate_twist_t.
+ * When no peers are visible, the robot holds position (both outputs zero).
  */
 void demo_compute_drive(const world_model_t *wm,
                          const demo_odometry_t *odo,
-                         int *left_out,
-                         int *right_out);
+                         float *speed_out,
+                         float *rate_out);
 
-/* ── LED feedback ───────────────────────────────────────────────────────── */
+/* ── Signal feedback ────────────────────────────────────────────────────── */
 
 /*
- * Set Cutebot LEDs to reflect L4 world model peer visibility.
- *   3 fresh peers → white   (full 4-robot formation)
- *   2 fresh peers → green
- *   1 fresh peer  → yellow
- *   0 fresh peers → red     (isolated / starting up)
+ * Set substrate signal to reflect L4 world model peer visibility.
+ *   >=2 fresh peers → SUBSTRATE_SIGNAL_ACTIVE   (formation viable)
+ *    1 fresh peer   → SUBSTRATE_SIGNAL_DEGRADED (partial)
+ *    0 fresh peers  → SUBSTRATE_SIGNAL_FAILED   (isolated / starting up)
  */
 void demo_set_leds(const world_model_t *wm);
 

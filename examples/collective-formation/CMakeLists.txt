@@ -28,21 +28,21 @@ if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/ble/ble_gossip.c)
 endif()
 
-# Actuation: Cutebot on micro:bit, null stub everywhere else.
+# Substrate: Cutebot on micro:bit, null stub everywhere else.
 if(CONFIG_I2C)
     target_sources(app PRIVATE
-        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/actuation_cutebot.c
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot.c
         ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot.c
     )
 else()
-    target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/actuation_null.c)
+    target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/substrate_null.c)
 endif()
 
 target_include_directories(app PRIVATE
-    ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/transport.h>, <tapestry/actuation.h>
+    ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/transport.h>, <tapestry/substrate.h>
     ${TAPESTRY_OS_CSM}                             # world_model.h, state.h (used by transport.c)
     ${TAPESTRY_OS_TRANSPORT}/ble                   # ble_gossip.h (used by transport.c)
-    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h (used by actuation_cutebot.c)
+    ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h (used by substrate_cutebot.c)
     src
 )
 
