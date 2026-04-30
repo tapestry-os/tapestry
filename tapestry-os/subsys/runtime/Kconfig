@@ -1,0 +1,22 @@
+# Kconfig — Tapestry L2 Element Runtime
+#
+# Source this from your application Kconfig with:
+#   rsource "../tapestry-os/subsys/runtime/Kconfig"
+
+config TAPESTRY_POWER_AUTO_POLICY
+	bool "Automatic power stepping on quorum loss"
+	default n
+	help
+	  When enabled, L2 automatically steps the element from ACTIVE to IDLE
+	  after CONFIG_TAPESTRY_POWER_SLEEP_GRACE_CYCLES consecutive ticks with
+	  SCR_QUORUM_LOST.  The element steps back to ACTIVE immediately when
+	  quorum recovers to DEGRADED or HEALTHY.
+
+config TAPESTRY_POWER_SLEEP_GRACE_CYCLES
+	int "Cycles before auto-idle on quorum loss"
+	depends on TAPESTRY_POWER_AUTO_POLICY
+	default 50
+	help
+	  Number of consecutive SCR_QUORUM_LOST ticks before L2 steps the
+	  element to IDLE power.  At WM_CYCLE_MS = 100 ms, the default of 50
+	  equals 5 seconds of isolation before power is reduced.

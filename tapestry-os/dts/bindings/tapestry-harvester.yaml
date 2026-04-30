@@ -1,0 +1,83 @@
+# tapestry,harvester — Tapestry energy-harvester hardware descriptor
+#
+# To use this binding, expose its directory to the DTC by adding the
+# following to the consuming application's CMakeLists.txt:
+#
+#   list(APPEND DTS_EXTRA_BINDINGS ${TAPESTRY_OS_ROOT}/dts/bindings)
+#
+# Board overlay example for a photovoltaic harvester:
+#
+#   / {
+#       harvester0: harvester {
+#           compatible = "tapestry,harvester";
+#           harvest-source = "pv";
+#           min-voltage-mv = <1800>;
+#           threshold-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+#       };
+#   };
+#
+#   /* The threshold pin must be a Zephyr wakeup source so the system
+#    * can exit PM_STATE_SOFT_OFF when the harvester is charged. */
+#   / {
+#       aliases { wakeup0 = &harvest_wake; };
+#       harvest_wake: harvest-wake {
+#           compatible = "gpio-keys";
+#           harvest-key { gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+#                         zephyr,wakeup-source; };
+#       };
+#   };
+#
+# L1 substrate_set_power(SUBSTRATE_POWER_HARVEST) implementation sketch:
+#
+#   const struct gpio_dt_spec thr =
+#       GPIO_DT_SPEC_GET(DT_NODELABEL(harvester0), threshold_gpios);
+#   gpio_pin_configure_dt(&thr, GPIO_INPUT);
+#   gpio_pin_interrupt_configure_dt(&thr, GPIO_INT_EDGE_RISING);
+#   pm_state_force(0, &(struct pm_state_info){
+#       .state = PM_STATE_SOFT_OFF });
+#   /* Execution resumes here after reset on nRF52833 SOFT_OFF wake. */
+
+description: |
+  Tapestry energy-harvester hardware descriptor.
+
+  Describes a passive energy source (photovoltaic, RF, or thermoelectric).
+  The harvester is a power source, not a Zephyr PM device; it is NOT managed
+  via pm_device_runtime_get/put (those are for power consumers, not sources).
+
+  The threshold-gpios property references a GPIO driven by the charge
+  controller's PGOOD or voltage-comparator output.  That GPIO must be
+  configured as a Zephyr wakeup source in the board overlay so that the
+  system can exit PM_STATE_SOFT_OFF when the harvested voltage crosses
+  min-voltage-mv.
+
+  The L1 substrate implementation (substrate_set_power) reads these
+  properties to arm the wake source before entering PM_STATE_SOFT_OFF when
+  SUBSTRATE_POWER_HARVEST is requested by L2.
+
+compatible: "tapestry,harvester"
+
+properties:
+  harvest-source:
+    type: string
+    required: true
+    enum:
+      - "rf"
+      - "pv"
+      - "thermal"
+    description: Energy source type (RF, photovoltaic, or thermoelectric).
+
+  min-voltage-mv:
+    type: int
+    required: true
+    description: |
+      Minimum harvested voltage (mV) at which the element may resume
+      operation.  The threshold-gpios output should assert at this level.
+
+  threshold-gpios:
+    type: phandle-array
+    required: false
+    description: |
+      GPIO driven by the charge controller threshold or PGOOD output.
+      Asserts when the harvested voltage has reached min-voltage-mv.
+      This pin must also carry zephyr,wakeup-source in the board overlay
+      so the system can exit PM_STATE_SOFT_OFF when harvest is ready.

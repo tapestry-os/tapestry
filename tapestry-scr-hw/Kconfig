@@ -7,6 +7,7 @@
 # Pull in all Zephyr Kconfig symbols (NETWORKING, WIFI, LOG, …).
 # Without this every standard symbol appears "undefined".
 source "Kconfig.zephyr"
+rsource "../tapestry-os/subsys/runtime/Kconfig"
 
 config TAPESTRY_ELEMENT_ID
 	int "Element ID [0..4]"

@@ -57,8 +57,30 @@ void substrate_set_signal(substrate_signal_t signal)
 
 void substrate_set_power(substrate_power_state_t state)
 {
-    /* Zephyr PM integration is a future L2 task; stub for now. */
-    (void)state;
+    switch (state) {
+
+    case SUBSTRATE_POWER_ACTIVE:
+        /* Returning to full operation — nothing to do at L1; L2 resumes
+         * normal gossip cadence. */
+        break;
+
+    case SUBSTRATE_POWER_IDLE:
+        /* Communication only; actuation paused by L2.  Zephyr's idle
+         * thread enters PM_STATE_RUNTIME_IDLE automatically when no
+         * runnable work is pending — no explicit call required here. */
+        break;
+
+    case SUBSTRATE_POWER_SLEEP:
+        /* Stop actuators; L2 (power.c) issues PM_STATE_SUSPEND_TO_IDLE. */
+        cutebot_drive(0, 0);
+        break;
+
+    case SUBSTRATE_POWER_HARVEST:
+        /* Stop actuators; L2 (power.c) arms threshold-gpios and issues
+         * PM_STATE_SOFT_OFF (or falls back to SUSPEND_TO_IDLE if no DT node). */
+        cutebot_drive(0, 0);
+        break;
+    }
 }
 
 int substrate_sense(substrate_sensor_t type, float *out)
