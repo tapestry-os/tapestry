@@ -32,7 +32,7 @@ void comms_send_scr_metric(const comms_t *c,
     p->leader_id      = scr->leader_valid ? scr->leader_id : ELEMENT_ID_INVALID;
     p->quorum_state   = (uint8_t)scr->quorum_state;
     p->fresh_count    = scr->fresh_count;
-    p->_reserved      = 0;
+    p->task_slot      = scr->task_slot;
     p->election_count = election_count;
 
     /* ── Send ────────────────────────────────────────────────────────────── */

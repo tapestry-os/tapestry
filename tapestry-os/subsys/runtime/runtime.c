@@ -52,7 +52,8 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
     };
 
     wm_init(&s_wm, cfg->self_id, &s_own, cfg->consistency_bias);
-    scr_init(&s_scr, cfg->self_id, cfg->quorum_min, cfg->quorum_target);
+    scr_init(&s_scr, cfg->self_id, cfg->quorum_min, cfg->quorum_target,
+             cfg->capabilities);
     tapestry_init(cfg->self_id);
     tapestry_power_init();
 

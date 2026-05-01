@@ -86,7 +86,8 @@ int main(void)
     scr_state_t scr;
     scr_init(&scr, own_state.id,
              (uint8_t)quorum_min,
-             (uint8_t)quorum_target);
+             (uint8_t)quorum_target,
+             SCR_CAP_NONE);
 
     /* ── Initialise L6/L7 SDK ───────────────────────────────────────────── */
     tapestry_init(own_state.id);

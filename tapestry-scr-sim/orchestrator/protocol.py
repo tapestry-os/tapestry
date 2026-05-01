@@ -132,16 +132,17 @@ def decode(data: bytes) -> dict | None:
         }
 
     if msg_type == MSG_SCR_METRIC and len(payload) >= SCR_METRIC_FMT.size:
-        eid, role, leader, qstate, fresh, _reserved, elec = \
+        eid, role, leader, qstate, fresh, task_slot, elec = \
             SCR_METRIC_FMT.unpack_from(payload)
         return {
             'type':            'scr_metric',
             'src_id':          src_id,
             'element_id':      eid,
-            'role':            role,          # 0=NONE, 1=FOLLOWER, 2=LEADER
-            'leader_id':       leader,        # ELEMENT_ID_INVALID (0xFF) = no leader
-            'quorum_state':    qstate,        # 0=LOST, 1=DEGRADED, 2=HEALTHY
+            'role':            role,       # 0=NONE,1=FOLLOWER,2=LEADER,3=RELAY,4=SENSOR,5=ACTUATOR
+            'leader_id':       leader,     # ELEMENT_ID_INVALID (0xFF) = no leader
+            'quorum_state':    qstate,     # 0=LOST, 1=DEGRADED, 2=HEALTHY
             'fresh_count':     fresh,
+            'task_slot':       task_slot,  # ordinal in sorted peer list (0 = leader)
             'election_count':  elec,
         }
 

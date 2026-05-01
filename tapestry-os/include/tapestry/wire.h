@@ -113,15 +113,15 @@ typedef struct {
  * Python format: struct.Struct('<BBBBBBI')
  * Size: 10 bytes
  * Fields: element_id, role, leader_id, quorum_state, fresh_count,
- *         _reserved, election_count
+ *         task_slot, election_count
  */
 typedef struct {
     uint8_t  element_id;
     uint8_t  role;           /* scr_role_t cast to uint8_t                    */
     uint8_t  leader_id;      /* elected leader ID; ELEMENT_ID_INVALID if LOST */
     uint8_t  quorum_state;   /* scr_quorum_state_t cast to uint8_t            */
-    uint8_t  fresh_count;    /* non-self fresh peers this tick                */
-    uint8_t  _reserved;      /* pad to even boundary; must be zero            */
+    uint8_t  fresh_count;    /* non-self trusted fresh peers this tick        */
+    uint8_t  task_slot;      /* ordinal in sorted peer list (0 = leader)      */
     uint32_t election_count; /* cumulative leader changes since element start  */
 } __attribute__((packed)) tapestry_scr_metric_frame_t;
 

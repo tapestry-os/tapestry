@@ -36,12 +36,13 @@ extern "C" {
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
 typedef struct {
-    element_id_t self_id;           /* Unique element ID for this node          */
-    float        pos_x;             /* Initial logical X position [0, 100]      */
-    float        pos_y;             /* Initial logical Y position [0, 100]      */
-    float        consistency_bias;  /* L4 AP/CP dial: 0.0 = pure AP, 1.0 = CP  */
-    uint8_t      quorum_min;        /* SCR: minimum fresh peers for DEGRADED    */
-    uint8_t      quorum_target;     /* SCR: minimum fresh peers for HEALTHY     */
+    element_id_t     self_id;           /* Unique element ID for this node          */
+    float            pos_x;             /* Initial logical X position [0, 100]      */
+    float            pos_y;             /* Initial logical Y position [0, 100]      */
+    float            consistency_bias;  /* L4 AP/CP dial: 0.0 = pure AP, 1.0 = CP  */
+    uint8_t          quorum_min;        /* SCR: minimum fresh peers for DEGRADED    */
+    uint8_t          quorum_target;     /* SCR: minimum fresh peers for HEALTHY     */
+    scr_capability_t capabilities;      /* SCR: SCR_CAP_* flags for this element    */
 } tapestry_runtime_config_t;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
