@@ -1,12 +1,12 @@
-# Tapestry SDK
+# Tapestry SDK — Choreography Layer (L7)
 
-The application layer (L7) of the Tapestry OS stack.  This is the
+The choreography layer (L7) of the Tapestry OS stack.  This is the
 stable interface that application developers code against.  The stack
 below it is managed by Tapestry; application code calls only into this SDK.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  Your application                               │  ← codes against sdk/
+│  L7  Choreography (your code)                   │  ← codes against sdk/
 │  L6  BSE — Behavior Synthesis Engine (stub)     │  ← tapestry-os/subsys/bse/
 │  L5  SCR — Swarm Coordination Runtime           │
 │  L4  CSM — Coherent Swarm Memory                │
@@ -34,14 +34,14 @@ import sys
 sys.path.insert(0, 'sdk/python')
 sys.path.insert(0, 'tapestry-bse-sim')
 
-from tapestry.app import TapestryApp, Goal, GoalType
+from tapestry.choreo import Choreo, Goal, GoalType
 
-app = TapestryApp(element_id=0)
-app.submit_goal(Goal(type=GoalType.FORM, target=(50.0, 50.0), radius=30.0))
+choreo = Choreo(element_id=0)
+choreo.submit_goal(Goal(type=GoalType.FORM, target=(50.0, 50.0), radius=30.0))
 
 # each simulation cycle:
-app.tick(wm_entries, scr_state)
-directive = app.get_directive()
+choreo.tick(wm_entries, scr_state)
+directive = choreo.get_directive()
 ```
 
 ## Quick start — C (embedded / Zephyr)
@@ -55,7 +55,7 @@ set(TAPESTRY_OS_BSE   ${TAPESTRY_OS_ROOT}/subsys/bse)
 
 target_sources(app PRIVATE
     ${TAPESTRY_OS_BSE}/bse_stub.c
-    ${TAPESTRY_SDK}/src/app_stub.c
+    ${TAPESTRY_SDK}/src/choreo_stub.c
 )
 target_include_directories(app PRIVATE
     ${TAPESTRY_SDK}/include
@@ -65,49 +65,49 @@ target_include_directories(app PRIVATE
 Then in your main loop:
 
 ```c
-#include <tapestry/app.h>
+#include <tapestry/choreo.h>
 
 // startup:
-tapestry_init(element_id);
-tapestry_goal_t goal = {
-    .type   = TAPESTRY_GOAL_FORM,
+choreo_init(element_id);
+choreo_goal_t goal = {
+    .type   = CHOREO_GOAL_FORM,
     .target = { .x = 50.0f, .y = 50.0f },
     .radius = 30.0f,
     .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
 };
-tapestry_submit_goal(&goal);
+choreo_submit_goal(&goal);
 
 // each cycle, after wm_tick() and scr_tick():
-tapestry_tick(&wm, &scr);
-const tapestry_bse_directive_t *d = tapestry_get_directive();
+choreo_tick(&wm, &scr);
+const tapestry_bse_directive_t *d = choreo_get_directive();
 ```
 
 ## Goal types
 
 | Goal | Directive produced by stub |
 |---|---|
-| `FORM` | `MOVE_TO_POINT` — regular N-gon vertex, slot by element_id rank |
-| `MOVE` | `MOVE_TO_POINT` — all elements to target (no formation offset) |
-| `CONVERGE` | `MOVE_TO_POINT` — all elements to target |
-| `DISPERSE` | `MAINTAIN_SPRING` — spring-field with `radius` spacing |
+| `CHOREO_GOAL_FORM` | `MOVE_TO_POINT` — regular N-gon vertex, slot by element_id rank |
+| `CHOREO_GOAL_MOVE` | `MOVE_TO_POINT` — all elements to target (no formation offset) |
+| `CHOREO_GOAL_CONVERGE` | `MOVE_TO_POINT` — all elements to target |
+| `CHOREO_GOAL_DISPERSE` | `MAINTAIN_SPRING` — spring-field with `radius` spacing |
 
 ## Goal status
 
 | Status | Meaning |
 |---|---|
-| `IDLE` | No goal submitted |
-| `ACTIVE` | Goal in progress |
-| `ACHIEVED` | Not set by stub — requires BSE feedback controller |
-| `FAILED` | Quorum lost while goal was active |
+| `CHOREO_STATUS_IDLE` | No goal submitted |
+| `CHOREO_STATUS_ACTIVE` | Goal in progress |
+| `CHOREO_STATUS_ACHIEVED` | Not set by stub — requires BSE feedback controller |
+| `CHOREO_STATUS_FAILED` | Quorum lost while goal was active |
 
 ## Directory layout
 
 ```
 sdk/
-  include/tapestry/app.h   L7 API header (stable interface)
-  src/app_stub.c           L7 C stub — delegates to bse_stub.c
-  python/tapestry/         Python package (app.py, __init__.py)
-  examples/hello_swarm.py  Minimal worked example (no sim required)
+  include/tapestry/choreo.h   L7 API header (stable interface)
+  src/choreo_stub.c           L7 C stub — delegates to bse_stub.c
+  python/tapestry/            Python package (choreo.py, __init__.py)
+  examples/hello_swarm.py     Minimal worked example (no sim required)
 ```
 
 L6 files live in `tapestry-os/` (they are OS layer, not SDK):

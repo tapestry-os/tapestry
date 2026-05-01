@@ -22,7 +22,6 @@ static element_state_t make_state(element_id_t id, float x, float y,
     s.position.x         = x;
     s.position.y         = y;
     s.logical_clock      = clock;
-    s.power_state        = POWER_ACTIVE;
     s.partition_island   = 0;
     return s;
 }

@@ -1,23 +1,14 @@
 """
-app.py — Tapestry Application SDK, L7 (Python)
+choreo.py — Tapestry Choreography SDK, L7 (Python)
 
-Python mirror of sdk/include/tapestry/app.h + sdk/src/app_stub.c.
-Backed by the BSE stub from tapestry-bse-sim/bse_stub.py.
+Python mirror of sdk/include/tapestry/choreo.h + sdk/src/choreo_stub.c.
+Backed by the BSE stub from sdk/python/tapestry/bse_stub.py.
 
 NOT FOR PRODUCTION USE.
 """
 
-import os
-import sys
-
-# Resolve tapestry-bse-sim relative to this file:
-#   sdk/python/tapestry/app.py → up 3 → repo root → tapestry-bse-sim/
-_REPO_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..'))
-sys.path.insert(0, os.path.join(_REPO_ROOT, 'tapestry-bse-sim'))
-
-from bse_stub import (BSEStub, BSEIntent, BSEIntentType,
-                      BSEShape, BSEDirective, BSEDirectiveType)
+from .bse_stub import (BSEStub, BSEIntent, BSEIntentType,
+                       BSEShape, BSEDirective, BSEDirectiveType)
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional, List
@@ -57,21 +48,21 @@ class Goal:
     shape:  GoalShape = GoalShape.CIRCLE
 
 
-# ── TapestryApp ───────────────────────────────────────────────────────────────
+# ── Choreo ────────────────────────────────────────────────────────────────────
 
-class TapestryApp:
+class Choreo:
     """
-    Tapestry application SDK entry point (Python).
+    Tapestry Choreography SDK entry point (Python).
 
     One instance per simulated element.
 
     Usage:
-        app = TapestryApp(element_id=0)
-        app.submit_goal(Goal(type=GoalType.FORM, radius=30.0))
+        choreo = Choreo(element_id=0)
+        choreo.submit_goal(Goal(type=GoalType.FORM, radius=30.0))
 
         # each simulation cycle:
-        app.tick(wm_entries, scr_state)
-        d = app.get_directive()   # BSEDirective
+        choreo.tick(wm_entries, scr_state)
+        d = choreo.get_directive()   # BSEDirective
 
     wm_entries format — list of dicts:
         {'id': int, 'is_active': bool, 'is_stale': bool, 'is_self': bool}

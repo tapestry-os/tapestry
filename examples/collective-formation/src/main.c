@@ -177,7 +177,6 @@ int main(void)
 
     element_state_t own_state = {0};
     own_state.id          = element_id;
-    own_state.power_state = POWER_ACTIVE;
     own_state.position.x  = sx;
     own_state.position.y  = sy;
 

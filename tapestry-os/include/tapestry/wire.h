@@ -62,21 +62,20 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BffIBBI')
- * Size: 19 bytes
- * Fields: id, x, y, logical_clock, power_state, partition_island, update_seq
+ * Python format: struct.Struct('<BffIBI')
+ * Size: 18 bytes
+ * Fields: id, x, y, logical_clock, partition_island, update_seq
  */
 typedef struct {
     uint8_t  id;
     float    x;
     float    y;
     uint32_t logical_clock;
-    uint8_t  power_state;          /* power_state_t cast to uint8  */
     uint8_t  partition_island;     /* 0 on hardware; set by sim broker */
     uint32_t update_seq;
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 19 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 18 */
 
 /* ── L4 metric frame ─────────────────────────────────────────────────────── */
 /*

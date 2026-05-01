@@ -25,7 +25,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <tapestry/scr.h>
-#include <tapestry/app.h>
+#include <tapestry/choreo.h>
 #include "movement.h"
 #include "comms.h"
 #include "comms_scr.h"
@@ -64,7 +64,6 @@ int main(void)
     /* ── Initialise own state ──────────────────────────────────────────── */
     element_state_t own_state = {0};
     own_state.id               = (element_id_t)element_id;
-    own_state.power_state      = POWER_ACTIVE;
     own_state.partition_island = 0;
     own_state.logical_clock    = 0;
     own_state.update_seq       = 0;
@@ -89,16 +88,16 @@ int main(void)
              (uint8_t)quorum_target,
              SCR_CAP_NONE);
 
-    /* ── Initialise L6/L7 SDK ───────────────────────────────────────────── */
-    tapestry_init(own_state.id);
+    /* ── Initialise L7 choreo ───────────────────────────────────────────── */
+    choreo_init(own_state.id);
     {
-        tapestry_goal_t goal = {
-            .type   = TAPESTRY_GOAL_FORM,
+        choreo_goal_t goal = {
+            .type   = CHOREO_GOAL_FORM,
             .target = { .x = 50.0f, .y = 50.0f },
             .radius = 30.0f,
             .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
         };
-        tapestry_submit_goal(&goal);
+        choreo_submit_goal(&goal);
     }
 
     /* ── Initialise comms ───────────────────────────────────────────────── */
@@ -113,7 +112,7 @@ int main(void)
     uint32_t     election_count  = 0;
     element_id_t last_leader     = ELEMENT_ID_INVALID;
 
-    while (own_state.power_state != POWER_SLEEP) {
+    while (!comms.shutdown) {
 
         /* 1. Process inbound messages */
         comms_drain_inbox(&comms, &wm, &own_state);
@@ -133,14 +132,14 @@ int main(void)
             last_leader = scr.leader_id;
         }
 
-        /* 4. BSE tick — synthesise per-element behavioral directive */
-        tapestry_tick(&wm, &scr);
+        /* 4. Choreo tick — synthesise per-element behavioral directive */
+        choreo_tick(&wm, &scr);
 
         /* 5. Update position — only when active and L4 not frozen.
-         * movement_tick() drives the sim random-walk; tapestry_get_directive()
+         * movement_tick() drives the sim random-walk; choreo_get_directive()
          * provides the BSE directive for future physics-aware integration. */
         const wm_consistency_metric_t *metric = wm_get_metric(&wm);
-        if (own_state.power_state == POWER_ACTIVE && !metric->degraded) {
+        if (!metric->degraded) {
             movement_tick(&own_state, &wm);
             wm_update_self(&wm, &own_state);
         }

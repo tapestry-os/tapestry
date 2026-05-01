@@ -19,7 +19,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'sdk', 'python'))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'tapestry-bse-sim'))
 
-from tapestry.app import TapestryApp, Goal, GoalType, GoalShape
+from tapestry.choreo import Choreo, Goal, GoalType, GoalShape
 from bse_stub import BSEDirectiveType
 
 # ── Simulated world snapshot ──────────────────────────────────────────────────
@@ -50,7 +50,7 @@ GOAL = Goal(
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 print("Tapestry SDK — hello_swarm")
-print(f"Goal : {GOAL.type.name}  centre=(50, 50)  radius={GOAL.radius}")
+print(f"Goal : {GOAL.type.name}  centre=(50, 50)  radius={GOAL.radius} logical units")
 print(f"Arena: 100×100 logical units   Elements: {len(ELEMENTS)}")
 print()
 print(f"{'Element':>8}  {'Directive':>18}  {'Target':>20}")
@@ -60,11 +60,11 @@ for elem in ELEMENTS:
     self_id = elem['id']
     peers   = [e for e in ELEMENTS if e['id'] != self_id]
 
-    app = TapestryApp(element_id=self_id)
-    app.submit_goal(GOAL)
-    app.tick(peers, SCR_STATE)
+    choreo = Choreo(element_id=self_id)
+    choreo.submit_goal(GOAL)
+    choreo.tick(peers, SCR_STATE)
 
-    d = app.get_directive()
+    d = choreo.get_directive()
     if d.type == BSEDirectiveType.MOVE_TO_POINT:
         target_str = f"({d.target[0]:5.1f}, {d.target[1]:5.1f})"
     else:
@@ -73,4 +73,4 @@ for elem in ELEMENTS:
     print(f"{self_id:>8}  {d.type.name:>18}  {target_str:>20}")
 
 print()
-print("Note: target positions are geometry-only (stub); no path planning.")
+print("Note: currently, target positions are geometry-only (stub); no path planning.")

@@ -12,8 +12,7 @@
  * Main loop (WM_CYCLE_MS per iteration):
  *   1. Drain inbox   — gossip + control messages from orchestrator
  *   2. wm_tick       — age entries, recompute consistency metric
- *   3. Movement      — random walk + repulsion (skipped if degraded
- *                      or power state is not POWER_ACTIVE)
+ *   3. Movement      — random walk + repulsion (skipped if degraded)
  *   4. wm_update_self
  *   5. Send gossip   — every GOSSIP_INTERVAL_MS
  *   6. Send metric   — every cycle
@@ -59,7 +58,6 @@ int main(void)
     /* ---- Initialise own state ------------------------------------------ */
     element_state_t own_state = {0};
     own_state.id               = (element_id_t)element_id;
-    own_state.power_state      = POWER_ACTIVE;
     own_state.partition_island = 0;
     own_state.logical_clock    = 0;
     own_state.update_seq       = 0;
@@ -89,7 +87,7 @@ int main(void)
     /* ---- Main loop ---------------------------------------------------- */
     uint32_t gossip_accum_ms = 0;
 
-    while (own_state.power_state != POWER_SLEEP) {
+    while (!comms.shutdown) {
 
         /* 1. Process any messages that arrived since the last cycle */
         comms_drain_inbox(&comms, &wm, &own_state);
@@ -100,7 +98,7 @@ int main(void)
         /* 3. Update position (only when active and not CP-frozen) */
         const wm_consistency_metric_t *metric = wm_get_metric(&wm);
 
-        if (own_state.power_state == POWER_ACTIVE && !metric->degraded) {
+        if (!metric->degraded) {
             movement_tick(&own_state, &wm);
             wm_update_self(&wm, &own_state);
         }

@@ -14,6 +14,7 @@
 #ifndef TAPESTRY_COMMS_H
 #define TAPESTRY_COMMS_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <tapestry/csm.h>
 
@@ -21,6 +22,7 @@ typedef struct {
     int      sock;        /* UDP socket fd                          */
     uint16_t own_port;    /* SIM_ELEMENT_BASE_PORT + element_id     */
     uint16_t orch_port;   /* orchestrator receive port              */
+    bool     shutdown;    /* set by comms_drain_inbox on SIM_CTRL_SHUTDOWN */
 } comms_t;
 
 /*
@@ -45,10 +47,10 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
  * comms_drain_inbox — Non-blocking receive loop.
  * Processes all pending inbound datagrams:
  *   SIM_MSG_GOSSIP  → wm_receive_gossip(wm, …)
- *   SIM_MSG_CONTROL → update own_state (partition island / power state)
+ *   SIM_MSG_CONTROL → update own_state (partition island) or set c->shutdown
  * Returns the number of messages processed.
  */
-int comms_drain_inbox(const comms_t *c, world_model_t *wm,
+int comms_drain_inbox(comms_t *c, world_model_t *wm,
                       element_state_t *own_state);
 
 #endif /* TAPESTRY_COMMS_H */

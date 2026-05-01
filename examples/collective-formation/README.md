@@ -18,8 +18,7 @@ No L5 SCR — formation is a pure L4 emergent behaviour.
 6. Cutebot LEDs reflect how many fresh peers are currently visible:
    - Red — isolated (0 peers)
    - Yellow — 1 peer
-   - Green — 2 peers
-   - White — 3 or more peers
+   - Green — 2 or more peers
 
 ## Hardware
 

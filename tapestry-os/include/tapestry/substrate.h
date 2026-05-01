@@ -1,7 +1,7 @@
 /*
  * tapestry/substrate.h — Tapestry L1 Physical Substrate Interface (PSI)
  *
- * Hardware Abstraction Layer over the physical substrate an agent inhabits.
+ * Hardware Abstraction Layer over the physical substrate an element inhabits.
  * Application code and upper layers include only this header; the concrete
  * implementation is selected by the build system.
  *
@@ -39,7 +39,7 @@ typedef struct { float w, x, y, z;    } substrate_quat_t;  /* unit quaternion */
  * All components are normalized to [-1.0, 1.0]:
  *   linear.x   forward (+) / backward (-)
  *   linear.y   left    (+) / right    (-)   (holonomic platforms only)
- *   linear.z   up      (+) / down     (-)   (flying / swimming agents)
+ *   linear.z   up      (+) / down     (-)   (flying / swimming elements)
  *   angular.x  roll  rate (positive = right-side-down by right-hand rule)
  *   angular.y  pitch rate (positive = nose-up)
  *   angular.z  yaw   rate (positive = counterclockwise / turn left)
@@ -67,13 +67,13 @@ typedef enum {
 /* ── Signal output ───────────────────────────────────────────────────────── */
 
 /*
- * Semantic signal states for agent status output.
+ * Semantic signal states for element status output.
  * The physical form (LED color, acoustic tone, chemical marker) is
  * implementation-defined; the meaning is substrate-neutral.
  */
 typedef enum {
-    SUBSTRATE_SIGNAL_NONE     = 0,   /* no output (off / silent)          */
-    SUBSTRATE_SIGNAL_IDLE     = 1,   /* agent present, no active goal      */
+    SUBSTRATE_SIGNAL_NONE     = 0,   /* no output (off / silent)           */
+    SUBSTRATE_SIGNAL_IDLE     = 1,   /* element present, no active goal    */
     SUBSTRATE_SIGNAL_ACTIVE   = 2,   /* goal in progress, quorum healthy   */
     SUBSTRATE_SIGNAL_DEGRADED = 3,   /* goal in progress, quorum reduced   */
     SUBSTRATE_SIGNAL_FAILED   = 4,   /* quorum lost or goal unachievable   */
@@ -105,7 +105,7 @@ int substrate_init(void);
 void substrate_move(const substrate_twist_t *twist);
 
 /*
- * substrate_set_signal — Set the agent's status output.
+ * substrate_set_signal — Set the element's status output.
  * The physical representation (LED, tone, chemical) is implementation-defined.
  */
 void substrate_set_signal(substrate_signal_t signal);
@@ -128,7 +128,7 @@ int substrate_sense(substrate_sensor_t type, float *out);
  * substrate_release — Release a previously formed bond.
  * substrate_emit    — Emit energy or matter (photons, molecules, acoustic pulse).
  *
- * No-op stubs on all current substrates; defined for future nanoscale agents.
+ * No-op stubs on all current substrates; defined for future nanoscale elements.
  */
 void substrate_bond(void);
 void substrate_release(void);

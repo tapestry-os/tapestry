@@ -244,7 +244,7 @@ void udp_transceiver_send_scr_metric(const scr_state_t *scr,
                                           : ELEMENT_ID_INVALID;
     p->quorum_state   = (uint8_t)scr->quorum_state;
     p->fresh_count    = scr->fresh_count;
-    p->_reserved      = 0;
+    p->task_slot      = scr->task_slot;
     p->election_count = election_count;
 
     struct sockaddr_in dst;

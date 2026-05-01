@@ -1,2 +1,0 @@
-/* Hardware pin configuration lives with the L1 board support package. */
-#include "../../tapestry-os/boards/bbc_microbit_v2/bbc_microbit_v2.overlay"

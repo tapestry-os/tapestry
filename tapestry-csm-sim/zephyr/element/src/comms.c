@@ -68,7 +68,6 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->x                = own_state->position.x;
     p->y                = own_state->position.y;
     p->logical_clock    = own_state->logical_clock;
-    p->power_state      = (uint8_t)own_state->power_state;
     p->partition_island = own_state->partition_island;
     p->update_seq       = own_state->update_seq;
 
@@ -150,7 +149,7 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
                  (struct sockaddr *)&orch_addr, sizeof(orch_addr));
 }
 
-int comms_drain_inbox(const comms_t *c, world_model_t *wm,
+int comms_drain_inbox(comms_t *c, world_model_t *wm,
                       element_state_t *own_state)
 {
     int processed = 0;
@@ -187,7 +186,6 @@ int comms_drain_inbox(const comms_t *c, world_model_t *wm,
             received.position.x       = g->x;
             received.position.y       = g->y;
             received.logical_clock    = g->logical_clock;
-            received.power_state      = (power_state_t)g->power_state;
             received.partition_island = g->partition_island;
             received.update_seq       = g->update_seq;
 
@@ -208,14 +206,11 @@ int comms_drain_inbox(const comms_t *c, world_model_t *wm,
                 LOG_INF("partition island → %u", ctrl->value);
                 break;
             case SIM_CTRL_SET_POWER:
-                own_state->power_state = (power_state_t)ctrl->value;
-                LOG_INF("power state → %u", ctrl->value);
+                LOG_INF("SIM_CTRL_SET_POWER ignored — power is now L2's concern");
                 break;
             case SIM_CTRL_SHUTDOWN:
                 LOG_INF("shutdown requested by orchestrator");
-                /* main loop checks own_state->power_state == POWER_SLEEP
-                 * as the exit signal; set it here as a proxy */
-                own_state->power_state = POWER_SLEEP;
+                c->shutdown = true;
                 break;
             }
             break;

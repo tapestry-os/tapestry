@@ -1,9 +1,7 @@
 cmake_minimum_required(VERSION 3.20.0)
 
-# Board overlays from tapestry-os pair hardware drivers with their devicetree
-# requirements.  Must be set before find_package(Zephyr).
 if("${BOARD}" STREQUAL "bbc_microbit_v2")
-    list(APPEND EXTRA_DT_OVERLAY_FILE
+    list(APPEND EXTRA_DTC_OVERLAY_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os/boards/bbc_microbit_v2/bbc_microbit_v2.overlay)
 endif()
 

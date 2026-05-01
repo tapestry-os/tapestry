@@ -4,8 +4,8 @@
  * Owns the per-element main-loop cadence and power state machine for the
  * full L4+L5+L6 stack.  Consuming applications:
  *
- *   1. tapestry_runtime_init(&cfg)   — init transport, substrate, WM, SCR, SDK
- *   2. tapestry_submit_goal(&goal)   — optional: set L6 goal (from <tapestry/app.h>)
+ *   1. tapestry_runtime_init(&cfg)   — init transport, substrate, WM, SCR, choreo
+ *   2. choreo_submit_goal(&goal)     — optional: set L7 goal (from <tapestry/choreo.h>)
  *   3. while (true) {
  *          tapestry_runtime_tick();  — drain, age, elect, BSE, gossip, telemetry
  *          // read state, drive substrate, sleep
@@ -51,7 +51,7 @@ typedef struct {
  * tapestry_runtime_init — Initialise all runtime subsystems.
  *
  * Calls substrate_init(), transport_init(), wm_init(), scr_init(), and
- * tapestry_init() (L7 SDK) in order.  substrate_init() failure is non-fatal
+ * choreo_init() (L7) in order.  substrate_init() failure is non-fatal
  * (logged as warning).  transport_init() failure returns -1 immediately.
  *
  * Returns 0 on success, -1 if a fatal subsystem fails to start.
@@ -66,7 +66,7 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg);
  *   2. wm_tick()               — age L4 entries, recompute consistency
  *   3. scr_tick()              — recompute role and quorum
  *   4. wm_update_self()        — refresh own entry in world model
- *   5. tapestry_tick()         — L6 BSE: synthesise per-element directive
+ *   5. choreo_tick()           — L7: synthesise per-element directive
  *   6. transport_send()        — broadcast gossip (throttled to GOSSIP_INTERVAL_MS)
  *   7. transport_send_telemetry() — emit metric frames
  *   8. tapestry_power_tick()   — run auto power-stepping policy (if enabled)

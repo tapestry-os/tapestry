@@ -32,7 +32,7 @@ separation of concerns in traditional OS design while incorporating the unique
 requirements of physical element systems.
 
 ```
-  L7  Matter Application Layer     High-level intent programming; developer-facing API
+  L7  Choreographer                 High-level intent programming; developer-facing API
   L6  Behavior Synthesis Engine    Translates intent into collective behavioral plans
   L5  Swarm Coordination Runtime   Distributed consensus, role assignment, fault tolerance
   L4  Collective State Manager     Distributed world model; aggregated shared state

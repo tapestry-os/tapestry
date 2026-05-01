@@ -3,13 +3,22 @@ bse_stub.py — Tapestry L6 Behavior Synthesis Engine stub (Python)
 
 NOT FOR PRODUCTION USE.
 
-Python mirror of bse_stub.c for simulation and research.  Implements the
-intent-parser tier of the BSE interface only.  The physics-aware planner,
-ML inference runtime, simulation bridge, and feedback controller are absent.
+Python mirror of tapestry-os/subsys/bse/bse_stub.c for simulation and
+research.  Implements the intent-parser tier of the BSE interface only.
+The physics-aware planner, ML inference runtime, simulation bridge, and
+feedback controller are absent (commercial BSE).
+
+Intent → directive mapping
+--------------------------
+  IDLE      → IDLE
+  FORM      → MOVE_TO_POINT  — vertex of regular N-gon, slot by element_id rank
+  MOVE      → MOVE_TO_POINT  — all elements to same target (stub limitation)
+  CONVERGE  → MOVE_TO_POINT  — all elements to target
+  DISPERSE  → MAINTAIN_SPRING — spring-field with intent.radius spacing
 
 Usage (one instance per simulated element):
 
-    from bse_stub import BSEStub, BSEIntent, BSEIntentType, BSEShape
+    from tapestry.bse_stub import BSEStub, BSEIntent, BSEIntentType, BSEShape
 
     bse = BSEStub(element_id=0)
     bse.submit_intent(BSEIntent(
@@ -22,6 +31,8 @@ Usage (one instance per simulated element):
     # each simulation tick:
     bse.tick(wm_entries, scr_state)
     directive = bse.get_directive()   # BSEDirective instance
+
+See sdk/examples/hello_swarm.py for a complete worked example.
 """
 
 import math

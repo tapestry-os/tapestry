@@ -31,7 +31,6 @@ void gossip_send(const element_state_t *own_state)
         .x                = own_state->position.x,
         .y                = own_state->position.y,
         .logical_clock    = own_state->logical_clock,
-        .power_state      = (uint8_t)own_state->power_state,
         .partition_island = 0,
         .update_seq       = own_state->update_seq,
     };
@@ -64,7 +63,6 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
             received.position.x    = g->x;
             received.position.y    = g->y;
             received.logical_clock = g->logical_clock;
-            received.power_state   = (power_state_t)g->power_state;
             received.update_seq    = g->update_seq;
 
             wm_receive_gossip(wm, &received);

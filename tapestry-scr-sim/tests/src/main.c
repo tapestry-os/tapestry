@@ -34,7 +34,6 @@ static void make_wm(world_model_t *wm, element_id_t owner_id)
 {
     element_state_t s = {0};
     s.id          = owner_id;
-    s.power_state = POWER_ACTIVE;
     s.position.x  = 10.0f + (float)((owner_id * 17) % 80);
     s.position.y  = 10.0f + (float)((owner_id * 23) % 80);
     wm_init(wm, owner_id, &s, 0.0f); /* AP bias: never L4-freezes */
@@ -52,7 +51,6 @@ static void inject_peer(world_model_t *wm, element_id_t id, uint32_t clock)
 {
     element_state_t s = {0};
     s.id            = id;
-    s.power_state   = POWER_ACTIVE;
     s.logical_clock = clock;
     s.position.x    = 10.0f + (float)((id * 17) % 80);
     s.position.y    = 10.0f + (float)((id * 23) % 80);

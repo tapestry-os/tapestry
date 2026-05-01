@@ -10,9 +10,6 @@
  *   - Logical clock is a Lamport clock: incremented on every local
  *     state change, and set to max(local, received)+1 on gossip receive.
  *     This gives us a partial causal ordering without wall-clock sync.
- *   - power_state is included to simulate L2 interaction: an element
- *     in POWER_SLEEP does not gossip but its last state remains in
- *     neighbors' world models until it expires.
  *   - partition_island is set by the orchestrator via control socket
  *     to simulate physical separation. Elements in different islands
  *     cannot exchange gossip messages.
@@ -39,14 +36,6 @@
 
 typedef uint8_t element_id_t;
 
-/* ── Power state (mirrors L2 Agent Runtime power model) ──────────────────── */
-
-typedef enum {
-    POWER_ACTIVE  = 0,   /* Sensing, gossiping, updating position            */
-    POWER_IDLE    = 1,   /* Gossiping but not updating position               */
-    POWER_SLEEP   = 2,   /* Not gossiping; last state persists in world model */
-} power_state_t;
-
 /* ── Position ─────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -65,7 +54,6 @@ typedef struct {
     element_id_t  id;              /* Unique identifier [0, MAX_ELEMENTS)    */
     position_t    position;        /* Current 2D position in world space      */
     uint32_t      logical_clock;   /* Lamport clock — incremented each update */
-    power_state_t power_state;     /* Current power mode                      */
     uint8_t       partition_island;/* Orchestrator-assigned partition group   */
                                    /* Elements in different islands cannot    */
                                    /* exchange gossip. 0 = no partition.      */

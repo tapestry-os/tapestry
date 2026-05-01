@@ -10,7 +10,7 @@
  *
  * Startup sequence:
  *   tapestry_runtime_init() — substrate, transport, L4/L5/L6/L7 init
- *   tapestry_submit_goal()  — set swarm goal
+ *   choreo_submit_goal()    — set swarm goal
  *   main loop               — tick runtime, drive substrate from SCR state
  */
 
@@ -18,7 +18,7 @@
 #include <zephyr/logging/log.h>
 #include <tapestry/runtime.h>
 #include <tapestry/substrate.h>
-#include <tapestry/app.h>
+#include <tapestry/choreo.h>
 
 LOG_MODULE_REGISTER(element, LOG_LEVEL_INF);
 
@@ -50,13 +50,13 @@ int main(void)
         return -1;
     }
 
-    tapestry_goal_t goal = {
-        .type   = TAPESTRY_GOAL_FORM,
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
         .target = { .x = 50.0f, .y = 50.0f },
         .radius = 30.0f,
         .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
     };
-    tapestry_submit_goal(&goal);
+    choreo_submit_goal(&goal);
     LOG_INF("element %u ready — default goal: FORM circle r=30 @ (50,50)",
             (unsigned)element_id);
 

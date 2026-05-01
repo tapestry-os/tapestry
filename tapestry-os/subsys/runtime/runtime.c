@@ -3,7 +3,7 @@
  *
  * Owns the per-element cycle for the full L4+L5+L6 stack:
  *   transport_drain → wm_tick → scr_tick → wm_update_self →
- *   tapestry_tick → gossip send → telemetry → power policy
+ *   choreo_tick → gossip send → telemetry → power policy
  *
  * Applications call tapestry_runtime_tick() once per WM_CYCLE_MS and then
  * read tapestry_runtime_scr() to drive substrate_move() and
@@ -13,7 +13,7 @@
 #include "power.h"
 #include <tapestry/runtime.h>
 #include <tapestry/transport.h>
-#include <tapestry/app.h>
+#include <tapestry/choreo.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(tapestry_runtime, LOG_LEVEL_INF);
@@ -44,7 +44,6 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
 
     s_own = (element_state_t){
         .id            = cfg->self_id,
-        .power_state   = POWER_ACTIVE,
         .position.x    = cfg->pos_x,
         .position.y    = cfg->pos_y,
         .logical_clock = 0,
@@ -54,7 +53,7 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
     wm_init(&s_wm, cfg->self_id, &s_own, cfg->consistency_bias);
     scr_init(&s_scr, cfg->self_id, cfg->quorum_min, cfg->quorum_target,
              cfg->capabilities);
-    tapestry_init(cfg->self_id);
+    choreo_init(cfg->self_id);
     tapestry_power_init();
 
     s_gossip_accum_ms = 0;
@@ -104,7 +103,7 @@ void tapestry_runtime_tick(void)
     wm_update_self(&s_wm, &s_own);
 
     /* 6. L6 BSE: synthesise per-element directive */
-    tapestry_tick(&s_wm, &s_scr);
+    choreo_tick(&s_wm, &s_scr);
 
     /* 7. Gossip send on interval */
     s_gossip_accum_ms += WM_CYCLE_MS;

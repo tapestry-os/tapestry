@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.20.0)
 
+if("${BOARD}" STREQUAL "bbc_microbit_v2")
+    set(DTC_OVERLAY_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os/boards/bbc_microbit_v2/bbc_microbit_v2.overlay)
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(tapestry_hw_element)
 
@@ -20,7 +25,7 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_CSM}/world_model.c
     ${TAPESTRY_OS_SCR}/scr.c
     ${TAPESTRY_OS_BSE}/bse_stub.c
-    ${TAPESTRY_SDK}/src/app_stub.c
+    ${TAPESTRY_SDK}/src/choreo_stub.c
     ${TAPESTRY_OS_TRANSPORT}/transport.c
     ${TAPESTRY_OS_TRANSPORT}/gossip.c
 )
@@ -62,7 +67,7 @@ endif()
 
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/scr.h>, <tapestry/transport.h>, <tapestry/substrate.h>, <tapestry/bse.h>, <tapestry/runtime.h>
-    ${TAPESTRY_SDK}/include                        # <tapestry/app.h>
+    ${TAPESTRY_SDK}/include                        # <tapestry/choreo.h>
     ${TAPESTRY_OS_CSM}                             # world_model.h, state.h
     ${TAPESTRY_OS_SCR}                             # scr.h internals
     ${TAPESTRY_OS_RUNTIME}                         # power.h (internal)
