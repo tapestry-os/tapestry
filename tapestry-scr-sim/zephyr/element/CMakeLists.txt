@@ -30,4 +30,8 @@ target_include_directories(app PRIVATE
     src/                           # comms_scr.h
 )
 
-target_link_libraries(app PRIVATE m)
+# Do not link -lm here: zephyr.elf is built as a relocatable (-r), which
+# forces static libm and pulls in glibc ifunc resolvers that reference
+# _dl_x86_cpu_features from ld.so — unavailable in native_sim's final link.
+# The native_sim Makefile's FINALLINK_FLAGS already supplies -lm as shared
+# libm, where sinf/cosf resolve cleanly at runtime.

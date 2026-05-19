@@ -18,7 +18,7 @@
  * Architecture note — L5 calls into L6, not the other way around.
  *
  *   L7 Application  ──submit_intent──►  bse_submit_intent()
- *   Main loop       ──tick──────────►  bse_tick()      (after scr_tick)
+ *   Main loop       ──tick───────────►  bse_tick()      (after scr_tick)
  *   Main loop       ──query──────────►  bse_get_directive()
  *
  * The BSE does not mutate SCR state.  L5 remains the authoritative safety

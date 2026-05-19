@@ -15,11 +15,12 @@
  *   2. wm_tick            — age L4 entries, recompute consistency
  *   3. scr_tick           — recompute role and quorum from wm snapshot
  *   4. Movement           — random walk + repulsion (if active and not degraded)
- *   5. wm_update_self
- *   6. Send L4 gossip     — every GOSSIP_INTERVAL_MS
- *   7. Send L4 metric     — every cycle
- *   8. Send L5 SCR metric — every cycle
- *   9. k_msleep           — rest of cycle
+ *   5. wm_update_self     — always; keeps logical clock advancing
+ *   6. choreo_tick        — synthesise per-element directive against fresh own state
+ *   7. Send L4 gossip     — every GOSSIP_INTERVAL_MS
+ *   8. Send L4 metric     — every cycle
+ *   9. Send L5 SCR metric — every cycle
+ *  10. k_msleep           — rest of cycle
  */
 
 #include <zephyr/kernel.h>
@@ -132,32 +133,30 @@ int main(void)
             last_leader = scr.leader_id;
         }
 
-        /* 4. Choreo tick — synthesise per-element behavioral directive */
-        choreo_tick(&wm, &scr);
-
-        /* 5. Update position — only when active and L4 not frozen.
-         * movement_tick() drives the sim random-walk; choreo_get_directive()
-         * provides the BSE directive for future physics-aware integration. */
+        /* 4. Update position — only when active and L4 not frozen. */
         const wm_consistency_metric_t *metric = wm_get_metric(&wm);
         if (!metric->degraded) {
             movement_tick(&own_state, &wm);
-            wm_update_self(&wm, &own_state);
         }
+        wm_update_self(&wm, &own_state);
 
-        /* 5. Send gossip on interval */
+        /* 5. Choreo tick — synthesise per-element directive against fresh own state */
+        choreo_tick(&wm, &scr);
+
+        /* 6. Send gossip on interval */
         gossip_accum_ms += WM_CYCLE_MS;
         if (gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
             comms_send_gossip(&comms, &own_state);
             gossip_accum_ms = 0;
         }
 
-        /* 6. Send L4 consistency metric every cycle */
+        /* 7. Send L4 consistency metric every cycle */
         comms_send_metric(&comms, &wm, own_state.id);
 
-        /* 7. Send L5 SCR metric every cycle */
+        /* 8. Send L5 SCR metric every cycle */
         comms_send_scr_metric(&comms, &scr, election_count);
 
-        /* 8. Sleep for the rest of the cycle */
+        /* 9. Sleep for the rest of the cycle */
         k_msleep(WM_CYCLE_MS);
     }
 

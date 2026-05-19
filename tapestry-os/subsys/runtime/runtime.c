@@ -124,3 +124,12 @@ void tapestry_runtime_tick(void)
 
 const world_model_t *tapestry_runtime_wm(void)  { return &s_wm; }
 const scr_state_t   *tapestry_runtime_scr(void) { return &s_scr; }
+
+void tapestry_runtime_update_pos(float x, float y)
+{
+    if (!s_ready) {
+        return;
+    }
+    s_own.position.x = x;
+    s_own.position.y = y;
+}

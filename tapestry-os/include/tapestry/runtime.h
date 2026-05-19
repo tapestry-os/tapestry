@@ -7,7 +7,8 @@
  *   1. tapestry_runtime_init(&cfg)   — init transport, substrate, WM, SCR, choreo
  *   2. choreo_submit_goal(&goal)     — optional: set L7 goal (from <tapestry/choreo.h>)
  *   3. while (true) {
- *          tapestry_runtime_tick();  — drain, age, elect, BSE, gossip, telemetry
+ *          tapestry_runtime_update_pos(x, y);  — optional: feed odometry back in
+ *          tapestry_runtime_tick();             — drain, age, elect, BSE, gossip, telemetry
  *          // read state, drive substrate, sleep
  *      }
  *
@@ -90,6 +91,18 @@ void tapestry_runtime_tick(void);
  */
 const world_model_t *tapestry_runtime_wm(void);
 const scr_state_t   *tapestry_runtime_scr(void);
+
+/*
+ * tapestry_runtime_update_pos — Feed the element's current position back in.
+ *
+ * Call before tapestry_runtime_tick() each cycle with dead-reckoning or
+ * sensor-fusion output.  The value is written into s_own and picked up by
+ * wm_update_self() inside the tick, so choreo_tick() sees a fresh position.
+ *
+ * x and y must be in the logical world coordinate space [0, 100].
+ * No-op until tapestry_runtime_init() has been called.
+ */
+void tapestry_runtime_update_pos(float x, float y);
 
 /* ── Power management ────────────────────────────────────────────────────── */
 

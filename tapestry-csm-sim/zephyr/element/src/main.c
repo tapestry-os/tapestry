@@ -100,8 +100,8 @@ int main(void)
 
         if (!metric->degraded) {
             movement_tick(&own_state, &wm);
-            wm_update_self(&wm, &own_state);
         }
+        wm_update_self(&wm, &own_state);
 
         /* 4. Send gossip on interval */
         gossip_accum_ms += WM_CYCLE_MS;
