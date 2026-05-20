@@ -160,6 +160,9 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
         scr->role         = SCR_ROLE_NONE;
         scr->task_slot    = 0;
         scr->swarm_size   = 0;
+        if (scr->on_tick) {
+            scr->on_tick(wm, scr);
+        }
         return;
     }
 
@@ -216,6 +219,10 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
         scr->role = SCR_ROLE_ACTUATOR;
     } else {
         scr->role = SCR_ROLE_FOLLOWER;
+    }
+
+    if (scr->on_tick) {
+        scr->on_tick(wm, scr);
     }
 }
 

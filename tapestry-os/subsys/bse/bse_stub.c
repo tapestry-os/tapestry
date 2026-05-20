@@ -5,19 +5,19 @@
  * a description of which BSE tiers are absent from this implementation.
  *
  * What this stub does:
- *   - Parses the active intent type.
- *   - For FORM: assigns each element a vertex of a regular N-gon centred
- *     on intent.target, where N = number of currently active+fresh elements.
- *     Element rank in the polygon is determined by element_id sort order.
+ *   - Intent parsing: reads the active intent type.
+ *   - Task decomposition (FORM): maps the FORM goal to per-element vertex
+ *     assignments — a regular N-gon centred on intent.target, N = active
+ *     fresh element count.  Each element independently derives its own
+ *     vertex from its peer-rank ordinal; no coordination messages needed.
  *   - For MOVE / CONVERGE: emits MOVE_TO_POINT to intent.target for all
  *     elements (no formation-relative offset; stub limitation).
  *   - For DISPERSE: emits MAINTAIN_SPRING with intent.radius as spacing.
  *   - For IDLE / unknown: emits IDLE.
  *
  * What this stub does NOT do:
+ *   - Optimization across swarm (physics-aware planning, ML inference).
  *   - Path planning or obstacle avoidance.
- *   - Physics-constrained trajectory generation.
- *   - ML inference.
  *   - Closed-loop feedback between intended and actual position.
  *   - Achievement detection (that belongs to the feedback controller).
  */
@@ -64,9 +64,13 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 
     case TAPESTRY_BSE_INTENT_FORM: {
         /*
-         * Collect IDs of all active, fresh elements (including self).
-         * Sort ascending by element_id so every element independently
-         * computes the same consistent slot assignment.
+         * Task decomposition (L6): map FORM intent onto a per-element vertex.
+         * Each element independently sorts the active participant set and
+         * claims the vertex at its own rank, producing a collision-free
+         * geometry assignment without coordination messages.
+         * L5 provides task_slot (an ordinal in the sorted peer list) but
+         * does not perform this decomposition; the geometry mapping is L6's
+         * sole responsibility.
          */
         element_id_t ids[MAX_ELEMENTS + 1];
         uint8_t      count = 0;

@@ -65,12 +65,13 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg);
  * Executes in order:
  *   1. transport_drain()       — receive gossip from all transports
  *   2. wm_tick()               — age L4 entries, recompute consistency
- *   3. scr_tick()              — recompute role and quorum
- *   4. wm_update_self()        — refresh own entry in world model
- *   5. choreo_tick()           — L7: synthesise per-element directive
- *   6. transport_send()        — broadcast gossip (throttled to GOSSIP_INTERVAL_MS)
- *   7. transport_send_telemetry() — emit metric frames
- *   8. tapestry_power_tick()   — run auto power-stepping policy (if enabled)
+ *   3. wm_update_self()        — refresh own entry so L6 sees current position
+ *   4. scr_tick()              — recompute role and quorum; on completion,
+ *                                invokes choreo_tick() via scr_state_t::on_tick
+ *                                (L5 post-tick hook → L6 directive synthesis)
+ *   5. transport_send()        — broadcast gossip (throttled to GOSSIP_INTERVAL_MS)
+ *   6. transport_send_telemetry() — emit metric frames
+ *   7. tapestry_power_tick()   — run auto power-stepping policy (if enabled)
  *
  * Does not call substrate_move() or substrate_set_signal(); those are the
  * application's responsibility based on tapestry_runtime_scr().

@@ -5,25 +5,25 @@
  * ║  STUB IMPLEMENTATION — NOT FOR PRODUCTION USE                            ║
  * ║                                                                          ║
  * ║  This header defines the full L6 interface contract.  The open-source    ║
- * ║  stub (bse_stub.c) implements the intent-parser tier only:               ║
- * ║    ✓  Intent parsing — declarative goal → formal behavioral spec         ║
- * ║    ✗  Physics-aware planner (constraint satisfaction, geometry solver)   ║
- * ║    ✗  ML inference runtime (TFLite / ONNX / custom quantized models)     ║
+ * ║  stub (bse_stub.c) implements intent parsing and task decomposition:     ║
+ * ║    ✓  Intent parsing — declarative goal → per-element behavioral spec    ║
+ * ║    ✓  Task decomposition — FORM intent → per-element vertex assignment   ║
+ * ║    ✗  Optimization across swarm (physics-aware planning, ML inference)   ║
  * ║    ✗  Simulation bridge (offline training / hardware-in-the-loop)        ║
  * ║    ✗  Feedback controller (closed-loop intended ↔ actual physical state) ║
  * ║                                                                          ║
- * ║  The commercial BSE implements all five tiers and plugs in here.         ║
+ * ║  The commercial BSE implements all tiers and plugs in here.              ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *
- * Architecture note — L5 calls into L6, not the other way around.
+ * Architecture note — L2 drives the call chain; L6 does not call back into L5.
  *
  *   L7 Application  ──submit_intent──►  bse_submit_intent()
- *   Main loop       ──tick───────────►  bse_tick()      (after scr_tick)
- *   Main loop       ──query──────────►  bse_get_directive()
+ *   L2 Main loop    ──tick───────────►  bse_tick()      (after scr_tick)
+ *   L2 Main loop    ──query──────────►  bse_get_directive()
  *
- * The BSE does not mutate SCR state.  L5 remains the authoritative safety
- * and coordination layer; L6 provides the behavioral program that L5
- * executes within its quorum/role envelope.
+ * The BSE does not mutate SCR state.  L5 (SCR) is the authoritative safety
+ * and coordination layer; L6 consumes L5 outputs (role, quorum, task_slot)
+ * as inputs each tick.  Both L5 and L6 are sequenced by the L2 main loop.
  */
 
 #ifndef TAPESTRY_BSE_H
@@ -109,6 +109,12 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent);
  * bse_tick — Recompute per-element directive from current world state.
  *
  * Call once per main-loop cycle, after wm_tick() and scr_tick() have run.
+ *
+ * This is the L6 task-decomposition step: it maps a declarative intent
+ * (submitted via bse_submit_intent) onto a concrete per-element directive,
+ * using the world model and L5 outputs (task_slot, quorum, role) as input.
+ * L5 provides an ordinal index (task_slot) but performs no decomposition
+ * itself; all goal-to-directive mapping happens here in L6.
  *
  * Stub: performs geometry-only vertex assignment (O(N log N) sort over
  * MAX_ELEMENTS).  Commercial BSE runs the physics planner and ML inference

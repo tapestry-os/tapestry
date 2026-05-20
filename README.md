@@ -34,7 +34,7 @@ requirements of physical element systems.
 ```
   L7  Choreographer                 High-level intent programming; developer-facing API
   L6  Behavior Synthesis Engine    Translates intent into collective behavioral plans
-  L5  Swarm Coordination Runtime   Distributed consensus, role assignment, fault tolerance
+  L5  Swarm Coordination Runtime   Quorum-based coordination, role assignment, lightweight peer-filtering BFT mitigation (whitelist + anomaly exclusion)
   L4  Collective State Manager     Distributed world model; aggregated shared state
   L3  Inter-Element Communication  Mesh networking, routing, encryption; substrate-agnostic
   L2  Element Runtime              Per-element OS: scheduling, power, actuation, local sensing
@@ -154,7 +154,7 @@ snapshot:
 
 | State | Condition | Meaning |
 |---|---|---|
-| `HEALTHY` | fresh peers ≥ `quorum_target` | Full consensus available |
+| `HEALTHY` | fresh peers ≥ `quorum_target` | Full quorum consensus available (quorum-based coordination; not formal BFT) |
 | `DEGRADED` | fresh peers ≥ `quorum_min` | Proceed with reduced confidence |
 | `LOST` | fresh peers < `quorum_min` | Cannot form reliable consensus |
 

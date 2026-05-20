@@ -2,8 +2,8 @@
  * runtime.c — Tapestry L2 Element Runtime
  *
  * Owns the per-element cycle for the full L4+L5+L6 stack:
- *   transport_drain → wm_tick → scr_tick → wm_update_self →
- *   choreo_tick → gossip send → telemetry → power policy
+ *   transport_drain → wm_tick → wm_update_self → scr_tick
+ *   (→ choreo_tick via L5 on_tick hook) → gossip send → telemetry → power policy
  *
  * Applications call tapestry_runtime_tick() once per WM_CYCLE_MS and then
  * read tapestry_runtime_scr() to drive substrate_move() and
@@ -54,6 +54,7 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
     wm_init(&s_wm, cfg->self_id, &s_own, cfg->consistency_bias);
     scr_init(&s_scr, cfg->self_id, cfg->quorum_min, cfg->quorum_target,
              cfg->capabilities);
+    s_scr.on_tick = choreo_tick;
     choreo_init(cfg->self_id);
     tapestry_power_init();
 
@@ -83,10 +84,13 @@ void tapestry_runtime_tick(void)
     /* 2. Age L4 entries */
     wm_tick(&s_wm, WM_CYCLE_MS);
 
-    /* 3. Recompute L5 role and quorum */
+    /* 3. Refresh own entry before L5/L6 so BSE sees current self-position */
+    wm_update_self(&s_wm, &s_own);
+
+    /* 4. Recompute L5 role and quorum; on_tick hook fires choreo_tick (L6) */
     scr_tick(&s_scr, &s_wm);
 
-    /* 4. Track leader changes for telemetry election counter */
+    /* 5. Track leader changes for telemetry election counter */
     if (s_scr.leader_id != s_last_leader) {
         if (s_last_leader   != ELEMENT_ID_INVALID ||
             s_scr.leader_id != ELEMENT_ID_INVALID) {
@@ -100,13 +104,7 @@ void tapestry_runtime_tick(void)
                 (unsigned)s_scr.quorum_state);
     }
 
-    /* 5. Refresh own entry */
-    wm_update_self(&s_wm, &s_own);
-
-    /* 6. L6 BSE: synthesise per-element directive */
-    choreo_tick(&s_wm, &s_scr);
-
-    /* 7. Gossip send on interval — coordination traffic at soft real-time */
+    /* 6. Gossip send on interval — coordination traffic at soft real-time */
     s_gossip_accum_ms += WM_CYCLE_MS;
     if (s_gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
         s_own.update_seq++;
@@ -114,10 +112,10 @@ void tapestry_runtime_tick(void)
         s_gossip_accum_ms = 0;
     }
 
-    /* 8. Telemetry */
+    /* 7. Telemetry */
     transport_send_telemetry(&s_wm, s_own.id, &s_scr, s_election_count);
 
-    /* 9. Power auto-stepping policy */
+    /* 8. Power auto-stepping policy */
     tapestry_power_tick(s_scr.quorum_state);
 }
 

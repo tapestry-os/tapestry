@@ -55,7 +55,8 @@
 /* ── Quorum health ────────────────────────────────────────────────────────── */
 /*
  * SCR_QUORUM_HEALTHY   >= quorum_target fresh non-self peers visible.
- *                       Normal operation: full consensus available.
+ *                       Normal operation: full quorum consensus available
+ *                       (quorum-based coordination; not formal BFT).
  *
  * SCR_QUORUM_DEGRADED  >= quorum_min but < quorum_target fresh peers.
  *                       Reduced confidence: proceed with caution.
@@ -144,14 +145,31 @@ typedef enum {
     SCR_ABORT_CLEARED   = 2,
 } scr_abort_state_t;
 
+/* ── Post-tick hook ───────────────────────────────────────────────────────── */
+/*
+ * scr_post_tick_fn — callback invoked by scr_tick() after all L5 outputs
+ * (role, quorum, task_slot, abort_state) are stable.
+ *
+ * Set scr_state_t::on_tick once at L2 init time to wire L6 into the L5
+ * tick.  NULL disables.  Signature matches choreo_tick() so that function
+ * can be assigned directly without a wrapper.
+ *
+ * The callback runs with the world model in read-only mode (same constraint
+ * as scr_tick itself).  It must not call scr_tick() re-entrantly.
+ */
+struct scr_state;
+typedef void (*scr_post_tick_fn)(const world_model_t *wm,
+                                 const struct scr_state *scr);
+
 /* ── Runtime state ────────────────────────────────────────────────────────── */
 
-typedef struct {
+typedef struct scr_state {
     /* Configuration — set at scr_init(), immutable thereafter */
     element_id_t       own_id;
     uint8_t            quorum_min;
     uint8_t            quorum_target;
     scr_capability_t   capabilities;
+    scr_post_tick_fn   on_tick;       /* L6 entry point; NULL = disabled         */
 
     /* Computed fields — updated by scr_tick() */
     scr_role_t         role;          /* Own role this tick                      */
