@@ -125,7 +125,9 @@ void transport_send(const element_state_t *own_state, uint8_t qos_tier)
 
 int transport_drain(world_model_t *wm, element_id_t own_id)
 {
-    return gossip_drain(wm, own_id);
+    int n = gossip_drain(wm, own_id);
+    gossip_relay_flush();
+    return n;
 }
 
 /* ── Auto-ID (BLE discovery window) ─────────────────────────────────────── */

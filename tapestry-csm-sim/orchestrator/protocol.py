@@ -28,15 +28,15 @@ CTRL_SHUTDOWN      = 3
 
 # ── Struct formats ────────────────────────────────────────────────────────────
 #
-# HEADER_FMT   '<BBH'              type, src_id, payload_len            — 4 bytes
-# GOSSIP_FMT   '<BffIBIBBB'        id, x, y, clock, island, seq,       — 21 bytes
-#                                  energy_level, health_flags, qos_tier
+# HEADER_FMT   '<BBH'             type, src_id, payload_len             — 4 bytes
+# GOSSIP_FMT   '<BffIIBBB'        id, x, y, clock, seq,                — 20 bytes
+#                                  energy_level, health_flags, hop_count
 # METRIC_FMT   '<BBBBBBfBBfIffH'  eid,at,af,as_,it,cc,ratio,qh,deg,   — 30 bytes
 #                                  conf,cycle,mean_age,mean_pos_err,min_sep
 # CTRL_FMT     '<BB'              ctrl_type, value                      — 2 bytes
 
 HEADER_FMT = struct.Struct('<BBH')
-GOSSIP_FMT = struct.Struct('<BffIBIBBB')
+GOSSIP_FMT = struct.Struct('<BffIIBBB')
 METRIC_FMT = struct.Struct('<BBBBBBfBBfIffH')
 CTRL_FMT   = struct.Struct('<BB')
 
@@ -50,11 +50,10 @@ def encode_gossip(state: dict) -> bytes:
         state['x'],
         state['y'],
         state['logical_clock'],
-        state['partition_island'],
         state['update_seq'],
         state.get('energy_level', 100),
         state.get('health_flags', 0),
-        state.get('qos_tier', 1),   # 1 = TAPESTRY_QOS_SOFT_RT
+        state.get('hop_count', 0),
     )
     return header + payload
 
@@ -74,7 +73,7 @@ def decode(data: bytes) -> dict | None:
 
     Gossip result keys:
         type, src_id, id, x, y, logical_clock,
-        partition_island, update_seq, energy_level, health_flags, qos_tier
+        update_seq, energy_level, health_flags, hop_count
 
     Metric result keys:
         type, src_id, element_id, active_total, active_fresh, active_stale,
@@ -91,20 +90,19 @@ def decode(data: bytes) -> dict | None:
         return None
 
     if msg_type == MSG_GOSSIP and len(payload) >= GOSSIP_FMT.size:
-        id_, x, y, clock, island, seq, energy, health, qos = \
+        id_, x, y, clock, seq, energy, health, hop = \
             GOSSIP_FMT.unpack_from(payload)
         return {
-            'type':              'gossip',
-            'src_id':            src_id,
-            'id':                id_,
-            'x':                 x,
-            'y':                 y,
-            'logical_clock':     clock,
-            'partition_island':  island,
-            'update_seq':        seq,
-            'energy_level':      energy,
-            'health_flags':      health,
-            'qos_tier':          qos,
+            'type':          'gossip',
+            'src_id':        src_id,
+            'id':            id_,
+            'x':             x,
+            'y':             y,
+            'logical_clock': clock,
+            'update_seq':    seq,
+            'energy_level':  energy,
+            'health_flags':  health,
+            'hop_count':     hop,
         }
 
     if msg_type == MSG_METRIC and len(payload) >= METRIC_FMT.size:

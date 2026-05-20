@@ -64,15 +64,14 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
 
     tapestry_gossip_frame_t *p =
         (tapestry_gossip_frame_t *)(tx_buf + TAPESTRY_MSG_HEADER_SIZE);
-    p->id               = own_state->id;
-    p->x                = own_state->position.x;
-    p->y                = own_state->position.y;
-    p->logical_clock    = own_state->logical_clock;
-    p->partition_island = own_state->partition_island;
-    p->update_seq       = own_state->update_seq;
-    p->energy_level     = own_state->energy_level;
-    p->health_flags     = own_state->health_flags;
-    p->qos_tier         = TAPESTRY_QOS_SOFT_RT;
+    p->id            = own_state->id;
+    p->x             = own_state->position.x;
+    p->y             = own_state->position.y;
+    p->logical_clock = own_state->logical_clock;
+    p->update_seq    = own_state->update_seq;
+    p->energy_level  = own_state->energy_level;
+    p->health_flags  = own_state->health_flags;
+    p->hop_count     = 0;   /* relay not used in sim */
 
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);
@@ -185,14 +184,13 @@ int comms_drain_inbox(comms_t *c, world_model_t *wm,
                 (const tapestry_gossip_frame_t *)payload;
 
             element_state_t received = {0};
-            received.id               = g->id;
-            received.position.x       = g->x;
-            received.position.y       = g->y;
-            received.logical_clock    = g->logical_clock;
-            received.partition_island = g->partition_island;
-            received.update_seq       = g->update_seq;
-            received.energy_level     = g->energy_level;
-            received.health_flags     = g->health_flags;
+            received.id            = g->id;
+            received.position.x    = g->x;
+            received.position.y    = g->y;
+            received.logical_clock = g->logical_clock;
+            received.update_seq    = g->update_seq;
+            received.energy_level  = g->energy_level;
+            received.health_flags  = g->health_flags;
 
             wm_receive_gossip(wm, &received);
             break;

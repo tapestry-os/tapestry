@@ -37,8 +37,11 @@
 
 /* ── QoS delivery tiers ──────────────────────────────────────────────────── */
 /*
- * Carried in tapestry_gossip_frame_t::qos_tier.  Transport backends may use
- * this to prioritise frames; at minimum the value is logged and forwarded.
+ * Placeholder constants — not yet implemented.
+ * Passed to gossip_send / transport_send as qos_tier but not carried in the
+ * gossip wire frame and not acted on by any receiver.  Reserved for future
+ * transport-layer prioritisation (relay queue ordering, drop policy, etc.).
+ * All call sites currently hardcode TAPESTRY_QOS_SOFT_RT.
  */
 
 #define TAPESTRY_QOS_BEST_EFFORT  0u   /* Background telemetry                */
@@ -90,10 +93,15 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BffIBIBBB')
- * Size: 21 bytes
- * Fields: id, x, y, logical_clock, partition_island, update_seq,
- *         energy_level, health_flags, qos_tier
+ * Python format: struct.Struct('<BffIIBBB')
+ * Size: 20 bytes
+ * Fields: id, x, y, logical_clock, update_seq,
+ *         energy_level, health_flags, hop_count
+ *
+ * hop_count: relay TTL.  First-party frames start at 2 when
+ *   CONFIG_TAPESTRY_MESH_RELAY is enabled (0 otherwise).  Each relay node
+ *   decrements by 1 before re-advertising; frames with hop_count == 0 are
+ *   never re-advertised, capping relay depth at two hops.
  *
  * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, TAPESTRY_WIRE_AUTH_TAG_SIZE
  * additional bytes follow the frame on the wire (not counted here).
@@ -103,14 +111,13 @@ typedef struct {
     float    x;
     float    y;
     uint32_t logical_clock;
-    uint8_t  partition_island;     /* 0 on hardware; set by sim broker        */
     uint32_t update_seq;
     uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
     uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see state.h)  */
-    uint8_t  qos_tier;             /* TAPESTRY_QOS_* delivery priority        */
+    uint8_t  hop_count;            /* Relay TTL: 2 first-party, 0 = no relay  */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 21 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 20 */
 
 /* Full on-wire size: frame + optional HMAC auth tag */
 #define TAPESTRY_GOSSIP_WIRE_SIZE    \
@@ -166,7 +173,7 @@ typedef struct {
 #define TAPESTRY_SCR_METRIC_FRAME_SIZE   10   /* sizeof(tapestry_scr_metric_frame_t) */
 
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
-/* Metric frame (30 B) > gossip wire frame (21+4 = 25 B), so metric wins.   */
+/* Metric frame (30 B) > gossip wire frame (20+4 = 24 B), so metric wins.   */
 
 #define TAPESTRY_MAX_MSG_SIZE   (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE)   /* 34 */
 

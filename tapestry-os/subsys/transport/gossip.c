@@ -10,6 +10,14 @@
  * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, each transmitted frame is
  * followed by a TAPESTRY_WIRE_AUTH_TAG_SIZE-byte truncated HMAC-SHA256 tag.
  * Received frames whose tag does not verify are dropped and logged.
+ *
+ * Layer B — opportunistic relay (CONFIG_TAPESTRY_MESH_RELAY):
+ *   gossip_drain queues frames that have hop_count > 0 and carry a newer
+ *   logical_clock than we last relayed for that id.  gossip_relay_flush
+ *   re-transmits the queued frames (hop_count decremented) after a random
+ *   0-50 ms jitter window to reduce collision probability on dense networks.
+ *   The relay ring buffer holds at most RELAY_QUEUE_DEPTH frames; excess frames
+ *   are dropped silently to bound static RAM usage.
  */
 
 #include "gossip.h"
@@ -18,8 +26,13 @@
 #include <tapestry/wire.h>
 #include "world_model.h"
 
+#include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(gossip, LOG_LEVEL_WRN);
+
+#ifdef CONFIG_TAPESTRY_MESH_RELAY
+#include <zephyr/random/random.h>
+#endif
 
 /* ── Optional HMAC-SHA256 authentication ─────────────────────────────────── */
 
@@ -64,35 +77,74 @@ void gossip_register_transceivers(const tapestry_transceiver_t * const *t,
     g_n = n;
 }
 
-/* ── gossip_send ─────────────────────────────────────────────────────────── */
+/* ── Internal: transmit a single gossip frame via all transceivers ────────── */
 
-void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
+static void tx_frame(const tapestry_gossip_frame_t *f)
 {
-    tapestry_gossip_frame_t f = {
-        .id               = own_state->id,
-        .x                = own_state->position.x,
-        .y                = own_state->position.y,
-        .logical_clock    = own_state->logical_clock,
-        .partition_island = 0,
-        .update_seq       = own_state->update_seq,
-        .energy_level     = own_state->energy_level,
-        .health_flags     = own_state->health_flags,
-        .qos_tier         = qos_tier,
-    };
-
 #ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
     uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE];
-    memcpy(wire, &f, sizeof(f));
-    hmac4_sign(wire, sizeof(f), wire + sizeof(f));
+    memcpy(wire, f, sizeof(*f));
+    hmac4_sign(wire, sizeof(*f), wire + sizeof(*f));
 
     for (int i = 0; i < g_n; i++) {
         g_transceivers[i]->tx(wire, (uint16_t)TAPESTRY_GOSSIP_WIRE_SIZE);
     }
 #else
     for (int i = 0; i < g_n; i++) {
-        g_transceivers[i]->tx((const uint8_t *)&f, (uint16_t)sizeof(f));
+        g_transceivers[i]->tx((const uint8_t *)f, (uint16_t)sizeof(*f));
     }
 #endif
+}
+
+/* ── Layer B: relay ring buffer (compiled out when relay disabled) ─────────── */
+
+#ifdef CONFIG_TAPESTRY_MESH_RELAY
+
+#define RELAY_QUEUE_DEPTH 8
+
+/* Per-origin last-relayed logical clock, used to suppress duplicate relays. */
+static uint32_t relay_clock[MAX_ELEMENTS];
+
+/* Ring buffer of frames queued for relay re-transmission. */
+static tapestry_gossip_frame_t relay_q[RELAY_QUEUE_DEPTH];
+static uint8_t relay_q_count;
+
+/* Absolute uptime (ms) after which gossip_relay_flush may transmit. */
+static uint32_t relay_flush_at_ms;
+
+static void relay_enqueue(const tapestry_gossip_frame_t *f)
+{
+    if (relay_q_count >= RELAY_QUEUE_DEPTH) {
+        LOG_DBG("relay queue full — frame for id %u dropped", f->id);
+        return;
+    }
+    if (relay_q_count == 0) {
+        /* Randomise flush time on first enqueue to spread re-advertisements. */
+        relay_flush_at_ms = k_uptime_get_32() + (sys_rand32_get() % 50u);
+    }
+    relay_q[relay_q_count] = *f;
+    relay_q[relay_q_count].hop_count--;
+    relay_q_count++;
+}
+
+#endif /* CONFIG_TAPESTRY_MESH_RELAY */
+
+/* ── gossip_send ─────────────────────────────────────────────────────────── */
+
+void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
+{
+    tapestry_gossip_frame_t f = {
+        .id            = own_state->id,
+        .x             = own_state->position.x,
+        .y             = own_state->position.y,
+        .logical_clock = own_state->logical_clock,
+        .update_seq    = own_state->update_seq,
+        .energy_level  = own_state->energy_level,
+        .health_flags  = own_state->health_flags,
+        .hop_count     = IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u,
+    };
+
+    tx_frame(&f);
 }
 
 /* ── gossip_drain ────────────────────────────────────────────────────────── */
@@ -139,8 +191,44 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
 
             wm_receive_gossip(wm, &received);
             total++;
+
+#ifdef CONFIG_TAPESTRY_MESH_RELAY
+            /* Queue for relay if the frame has hops remaining and carries a
+             * strictly newer clock than we last relayed for this id.
+             * Bounds-check id before indexing relay_clock[]. */
+            if (g->hop_count > 0 &&
+                g->id < MAX_ELEMENTS &&
+                g->logical_clock > relay_clock[g->id]) {
+                relay_clock[g->id] = g->logical_clock;
+                relay_enqueue(g);
+            }
+#endif
         }
     }
 
     return total;
+}
+
+/* ── gossip_relay_flush ──────────────────────────────────────────────────── */
+
+void gossip_relay_flush(void)
+{
+#ifdef CONFIG_TAPESTRY_MESH_RELAY
+    if (relay_q_count == 0) {
+        return;
+    }
+
+    /* Wait until the jitter window set at enqueue time has elapsed. */
+    if (k_uptime_get_32() < relay_flush_at_ms) {
+        return;
+    }
+
+    for (uint8_t i = 0; i < relay_q_count; i++) {
+        tx_frame(&relay_q[i]);
+        LOG_DBG("relayed frame: id=%u hop_count=%u clock=%u",
+                relay_q[i].id, relay_q[i].hop_count,
+                relay_q[i].logical_clock);
+    }
+    relay_q_count = 0;
+#endif
 }

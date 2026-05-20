@@ -42,6 +42,15 @@ LOG_MODULE_REGISTER(transceiver_ble, LOG_LEVEL_INF);
 /* Full manufacturer AD payload: company(2) + type(1) + frame + auth tag    */
 #define MFR_DATA_SIZE    (MFR_OFF_FRAME + TAPESTRY_GOSSIP_WIRE_SIZE)
 
+/*
+ * BLE advertising payload is 31 bytes maximum.  Each AD structure costs
+ * 1 byte (length field) + 1 byte (AD type) + N bytes of data, so the data
+ * for our single manufacturer AD record must be ≤ 29 bytes.
+ *
+ * Budget (no auth): 3 (prefix) + 20 (frame) + 0 (tag) = 23 ≤ 29  ✓
+ * Budget (auth):    3 (prefix) + 20 (frame) + 4 (tag) = 27 ≤ 29  ✓
+ */
+
 #define RX_QUEUE_DEPTH  8
 
 /* Queue stores raw wire bytes (frame + optional auth tag) so gossip.c can

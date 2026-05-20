@@ -27,3 +27,23 @@ config TAPESTRY_WIRE_AUTH_KEY
 	  ASCII string used as the HMAC-SHA256 key.  Change this from the
 	  default before deploying hardware; all elements in a deployment must
 	  share the same key string.
+
+config TAPESTRY_MESH_RELAY
+	bool "Two-hop opportunistic relay forwarding (BATMAN-inspired mesh)"
+	default n
+	help
+	  When enabled, elements that receive a gossip frame for peer X
+	  re-advertise it (with hop_count decremented) if X's logical_clock is
+	  newer than the last-relayed clock tracked for X.  This allows elements
+	  out of direct radio range to receive peer updates via an intermediate
+	  relay node.
+
+	  hop_count starts at 2 for first-party frames and is decremented by
+	  each relay; frames with hop_count == 0 are not re-advertised, capping
+	  relay depth at two hops to prevent broadcast storms.  A per-relay
+	  jitter of 0-50 ms is introduced before re-advertising to reduce
+	  collision probability on dense networks.
+
+	  Relay logic (ring buffer, last-relayed clock table, flush timer) is
+	  compiled out when this option is disabled, preserving identical
+	  single-hop broadcast behaviour on memory-constrained targets.

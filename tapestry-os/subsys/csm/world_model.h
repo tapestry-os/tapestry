@@ -143,6 +143,12 @@ void wm_update_self(world_model_t *wm, element_state_t *own_state);
  * Returns true if this gossip updated our knowledge (clock was newer).
  * For inactive (expired) entries the clock guard is skipped so a rebooted
  * peer can rejoin even if its clock reset below the last known value.
+ *
+ * Relay-received frames (hop_count > 0 in the wire frame) are treated
+ * identically to direct frames by this function — the caller (gossip_drain)
+ * strips the hop_count routing field before constructing the element_state_t
+ * passed here.  The world model has no visibility into whether an entry
+ * arrived directly or via a relay node.
  */
 bool wm_receive_gossip(world_model_t *wm, const element_state_t *received);
 
