@@ -1,5 +1,5 @@
 /*
- * bse_stub.c — Tapestry L6 Behavior Synthesis Engine (STUB)
+ * bse.c — Tapestry L6 Behavior Synthesis Engine (STUB)
  *
  * NOT FOR PRODUCTION USE.  See bse.h for the full interface contract and
  * a description of which BSE tiers are absent from this implementation.

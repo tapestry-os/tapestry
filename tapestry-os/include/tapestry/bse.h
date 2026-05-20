@@ -4,15 +4,14 @@
  * ╔══════════════════════════════════════════════════════════════════════════╗
  * ║  STUB IMPLEMENTATION — NOT FOR PRODUCTION USE                            ║
  * ║                                                                          ║
- * ║  This header defines the full L6 interface contract.  The open-source    ║
- * ║  stub (bse_stub.c) implements intent parsing and task decomposition:     ║
+ * ║  This header defines the full L6 interface contract.  bse.c.             ║
+ * ║  currently implements intent parsing and task decomposition:             ║
  * ║    ✓  Intent parsing — declarative goal → per-element behavioral spec    ║
  * ║    ✓  Task decomposition — FORM intent → per-element vertex assignment   ║
  * ║    ✗  Optimization across swarm (physics-aware planning, ML inference)   ║
  * ║    ✗  Simulation bridge (offline training / hardware-in-the-loop)        ║
  * ║    ✗  Feedback controller (closed-loop intended ↔ actual physical state) ║
  * ║                                                                          ║
- * ║  The commercial BSE implements all tiers and plugs in here.              ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *
  * Architecture note — L2 drives the call chain; L6 does not call back into L5.
@@ -67,7 +66,7 @@ typedef struct {
  * A directive is the per-element behavioral output of the BSE.  The main
  * loop (or a hardware abstraction layer above L5) consumes it each cycle.
  *
- * Stub produces:
+ * Produces:
  *   IDLE            — no goal; motors stop
  *   HOLD            — quorum lost; freeze in place
  *   MOVE_TO_POINT   — geometry-only target vertex (no path planning)
@@ -116,9 +115,9 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent);
  * L5 provides an ordinal index (task_slot) but performs no decomposition
  * itself; all goal-to-directive mapping happens here in L6.
  *
- * Stub: performs geometry-only vertex assignment (O(N log N) sort over
- * MAX_ELEMENTS).  Commercial BSE runs the physics planner and ML inference
- * runtime here.
+ * Currently performs geometry-only vertex assignment (O(N log N) sort over
+ * MAX_ELEMENTS).  The physics planner and ML inference runtime will also be 
+ * implemented here.
  */
 void bse_tick(const world_model_t *wm, const scr_state_t *scr);
 

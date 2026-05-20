@@ -1,12 +1,12 @@
-# Tapestry SDK — Choreography Layer (L7)
+# Tapestry SDK — Choreographer (L7)
 
-The choreography layer (L7) of the Tapestry OS stack.  This is the
+The Choreographer (L7) of the Tapestry OS stack.  This is the
 stable interface that application developers code against.  The stack
 below it is managed by Tapestry; application code calls only into this SDK.
 
 ```
 ┌─────────────────────────────────────────────────┐
-│  L7  Choreography (your code)                   │  ← codes against sdk/
+│  L7  Choreographer (your code)                  │  ← codes against sdk/
 │  L6  BSE — Behavior Synthesis Engine (stub)     │  ← tapestry-os/subsys/bse/
 │  L5  SCR — Swarm Coordination Runtime           │
 │  L4  CSM — Coherent Swarm Memory                │
@@ -32,7 +32,6 @@ python sdk/examples/hello_swarm.py
 ```python
 import sys
 sys.path.insert(0, 'sdk/python')
-sys.path.insert(0, 'tapestry-bse-sim')
 
 from tapestry.choreo import Choreo, Goal, GoalType
 
@@ -50,12 +49,12 @@ Include `sdk/include` and `tapestry-os/include` in your build, and add the
 stub sources to your `CMakeLists.txt`:
 
 ```cmake
-set(TAPESTRY_SDK      ${CMAKE_CURRENT_SOURCE_DIR}/../sdk)
-set(TAPESTRY_OS_BSE   ${TAPESTRY_OS_ROOT}/subsys/bse)
+set(TAPESTRY_OS_BSE    ${TAPESTRY_OS_ROOT}/subsys/bse)
+set(TAPESTRY_OS_CHOREO ${TAPESTRY_OS_ROOT}/subsys/choreo)
 
 target_sources(app PRIVATE
-    ${TAPESTRY_OS_BSE}/bse_stub.c
-    ${TAPESTRY_SDK}/src/choreo_stub.c
+    ${TAPESTRY_OS_BSE}/bse.c
+    ${TAPESTRY_OS_CHOREO}/choreo.c
 )
 target_include_directories(app PRIVATE
     ${TAPESTRY_SDK}/include
@@ -91,28 +90,29 @@ const tapestry_bse_directive_t *d = choreo_get_directive();
 | `CHOREO_GOAL_CONVERGE` | `MOVE_TO_POINT` — all elements to target |
 | `CHOREO_GOAL_DISPERSE` | `MAINTAIN_SPRING` — spring-field with `radius` spacing |
 
-## Goal status
+## Lifecycle states
 
-| Status | Meaning |
+| State | Meaning |
 |---|---|
-| `CHOREO_STATUS_IDLE` | No goal submitted |
-| `CHOREO_STATUS_ACTIVE` | Goal in progress |
-| `CHOREO_STATUS_ACHIEVED` | Not set by stub — requires BSE feedback controller |
-| `CHOREO_STATUS_FAILED` | Quorum lost while goal was active |
+| `CHOREO_STATE_IDLE` | No goal loaded |
+| `CHOREO_STATE_CONFIGURED` | Goal validated; BSE not yet ticking |
+| `CHOREO_STATE_RUNNING` | BSE ticking; quorum DEGRADED or HEALTHY |
+| `CHOREO_STATE_SUSPENDED` | Quorum LOST; goal preserved, resumes on recovery |
+| `CHOREO_STATE_TERMINATED` | Transitional; settles immediately to IDLE |
 
 ## Directory layout
 
+The SDK contains only interface artefacts; implementations live in `tapestry-os/`:
+
 ```
 sdk/
-  include/tapestry/choreo.h   L7 API header (stable interface)
-  src/choreo_stub.c           L7 C stub — delegates to bse_stub.c
-  python/tapestry/            Python package (choreo.py, __init__.py)
-  examples/hello_swarm.py     Minimal worked example (no sim required)
-```
+  include/tapestry/choreo.h        L7 API header (stable interface)
+  python/tapestry/choreo.py        L7 Python mirror
+  python/tapestry/bse.py           L6 Python stub
+  examples/hello_swarm.py          Minimal worked example (no sim required)
 
-L6 files live in `tapestry-os/` (they are OS layer, not SDK):
-```
-tapestry-os/include/tapestry/bse.h   L6 interface contract
-tapestry-os/subsys/bse/bse_stub.c    L6 C stub
-tapestry-bse-sim/bse_stub.py         L6 Python stub
+tapestry-os/
+  include/tapestry/bse.h           L6 interface contract
+  subsys/bse/bse.c                 L6 C stub
+  subsys/choreo/choreo.c           L7 C stub
 ```

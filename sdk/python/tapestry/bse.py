@@ -1,9 +1,9 @@
 """
-bse_stub.py — Tapestry L6 Behavior Synthesis Engine stub (Python)
+bse.py — Tapestry L6 Behavior Synthesis Engine stub (Python)
 
 NOT FOR PRODUCTION USE.
 
-Python mirror of tapestry-os/subsys/bse/bse_stub.c for simulation and
+Python mirror of tapestry-os/subsys/bse/bse.c for simulation and
 research.  Implements the intent-parser tier of the BSE interface only.
 The physics-aware planner, ML inference runtime, simulation bridge, and
 feedback controller are absent (commercial BSE).
@@ -18,9 +18,9 @@ Intent → directive mapping
 
 Usage (one instance per simulated element):
 
-    from tapestry.bse_stub import BSEStub, BSEIntent, BSEIntentType, BSEShape
+    from tapestry.bse import BSE, BSEIntent, BSEIntentType, BSEShape
 
-    bse = BSEStub(element_id=0)
+    bse = BSE(element_id=0)
     bse.submit_intent(BSEIntent(
         type   = BSEIntentType.FORM,
         target = (50.0, 50.0),
@@ -82,9 +82,9 @@ class BSEDirective:
     spacing:  float = 30.0
 
 
-# ── BSEStub ───────────────────────────────────────────────────────────────────
+# ── BSE ───────────────────────────────────────────────────────────────────
 
-class BSEStub:
+class BSE:
     """
     Geometry-only intent decomposition stub.
 

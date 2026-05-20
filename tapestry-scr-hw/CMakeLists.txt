@@ -13,6 +13,7 @@ set(TAPESTRY_OS_CSM       ${TAPESTRY_OS_ROOT}/subsys/csm)
 set(TAPESTRY_OS_SCR       ${TAPESTRY_OS_ROOT}/subsys/scr)
 set(TAPESTRY_OS_TRANSPORT ${TAPESTRY_OS_ROOT}/subsys/transport)
 set(TAPESTRY_OS_BSE       ${TAPESTRY_OS_ROOT}/subsys/bse)
+set(TAPESTRY_OS_CHOREO    ${TAPESTRY_OS_ROOT}/subsys/choreo)
 set(TAPESTRY_OS_RUNTIME   ${TAPESTRY_OS_ROOT}/subsys/runtime)
 set(TAPESTRY_OS_BOARDS    ${TAPESTRY_OS_ROOT}/boards)
 set(TAPESTRY_SDK          ${CMAKE_CURRENT_SOURCE_DIR}/../sdk)
@@ -24,8 +25,8 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_RUNTIME}/power.c
     ${TAPESTRY_OS_CSM}/world_model.c
     ${TAPESTRY_OS_SCR}/scr.c
-    ${TAPESTRY_OS_BSE}/bse_stub.c
-    ${TAPESTRY_SDK}/src/choreo_stub.c
+    ${TAPESTRY_OS_BSE}/bse.c
+    ${TAPESTRY_OS_CHOREO}/choreo.c
     ${TAPESTRY_OS_TRANSPORT}/transport.c
     ${TAPESTRY_OS_TRANSPORT}/gossip.c
 )

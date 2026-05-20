@@ -17,10 +17,9 @@ import sys
 _HERE      = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'sdk', 'python'))
-sys.path.insert(0, os.path.join(_REPO_ROOT, 'tapestry-bse-sim'))
 
 from tapestry.choreo import Choreo, Goal, GoalType, GoalShape
-from bse_stub import BSEDirectiveType
+from tapestry.bse import BSEDirectiveType
 
 # ── Simulated world snapshot ──────────────────────────────────────────────────
 # Four elements scattered across the 100×100 logical arena.
