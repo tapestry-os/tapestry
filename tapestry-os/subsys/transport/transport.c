@@ -116,9 +116,9 @@ int transport_init(void)
 
 /* ── transport_send ──────────────────────────────────────────────────────── */
 
-void transport_send(const element_state_t *own_state)
+void transport_send(const element_state_t *own_state, uint8_t qos_tier)
 {
-    gossip_send(own_state);
+    gossip_send(own_state, qos_tier);
 }
 
 /* ── transport_drain ─────────────────────────────────────────────────────── */

@@ -35,6 +35,34 @@
 #define TAPESTRY_BLE_COMPANY_ID_LO   0xD7u
 #define TAPESTRY_BLE_COMPANY_ID_HI   0x08u
 
+/* ── QoS delivery tiers ──────────────────────────────────────────────────── */
+/*
+ * Carried in tapestry_gossip_frame_t::qos_tier.  Transport backends may use
+ * this to prioritise frames; at minimum the value is logged and forwarded.
+ */
+
+#define TAPESTRY_QOS_BEST_EFFORT  0u   /* Background telemetry                */
+#define TAPESTRY_QOS_SOFT_RT      1u   /* Coordination gossip                 */
+#define TAPESTRY_QOS_HARD_RT      2u   /* Emergency / control frames          */
+
+/* ── Optional frame authentication ──────────────────────────────────────── */
+/*
+ * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set each gossip frame is
+ * followed on the wire by a TAPESTRY_WIRE_AUTH_TAG_SIZE-byte truncated
+ * HMAC-SHA256 tag.  When disabled the tag is absent and the wire format
+ * is unchanged from the plain-frame layout documented below.
+ *
+ * The Python format strings in this file describe the frame itself only.
+ * Python consumers that need to handle authenticated frames must read an
+ * additional TAPESTRY_WIRE_AUTH_TAG_SIZE bytes after each gossip payload.
+ */
+
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+#  define TAPESTRY_WIRE_AUTH_TAG_SIZE   4u
+#else
+#  define TAPESTRY_WIRE_AUTH_TAG_SIZE   0u
+#endif
+
 /* ── Message types ───────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -62,20 +90,31 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BffIBI')
- * Size: 18 bytes
- * Fields: id, x, y, logical_clock, partition_island, update_seq
+ * Python format: struct.Struct('<BffIBIBBB')
+ * Size: 21 bytes
+ * Fields: id, x, y, logical_clock, partition_island, update_seq,
+ *         energy_level, health_flags, qos_tier
+ *
+ * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, TAPESTRY_WIRE_AUTH_TAG_SIZE
+ * additional bytes follow the frame on the wire (not counted here).
  */
 typedef struct {
     uint8_t  id;
     float    x;
     float    y;
     uint32_t logical_clock;
-    uint8_t  partition_island;     /* 0 on hardware; set by sim broker */
+    uint8_t  partition_island;     /* 0 on hardware; set by sim broker        */
     uint32_t update_seq;
+    uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
+    uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see state.h)  */
+    uint8_t  qos_tier;             /* TAPESTRY_QOS_* delivery priority        */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 18 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 21 */
+
+/* Full on-wire size: frame + optional HMAC auth tag */
+#define TAPESTRY_GOSSIP_WIRE_SIZE    \
+    ((uint16_t)(TAPESTRY_GOSSIP_FRAME_SIZE + TAPESTRY_WIRE_AUTH_TAG_SIZE))
 
 /* ── L4 metric frame ─────────────────────────────────────────────────────── */
 /*
@@ -127,6 +166,7 @@ typedef struct {
 #define TAPESTRY_SCR_METRIC_FRAME_SIZE   10   /* sizeof(tapestry_scr_metric_frame_t) */
 
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
+/* Metric frame (30 B) > gossip wire frame (21+4 = 25 B), so metric wins.   */
 
 #define TAPESTRY_MAX_MSG_SIZE   (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE)   /* 34 */
 

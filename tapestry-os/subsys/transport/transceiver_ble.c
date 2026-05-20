@@ -13,7 +13,7 @@
  * Manufacturer-specific AD layout:
  *   [0-1]  TAPESTRY_BLE_COMPANY_ID  (0xD7, 0x08)
  *   [2]    TAPESTRY_MSG_GOSSIP (1)
- *   [3-N]  tapestry_gossip_frame_t (TAPESTRY_GOSSIP_FRAME_SIZE bytes, packed)
+ *   [3-N]  gossip frame + optional auth tag (TAPESTRY_GOSSIP_WIRE_SIZE bytes)
  *
  * Use opt=0 (not BT_LE_ADV_OPT_USE_IDENTITY) so each board advertises with a
  * session-unique RPA.  When CONFIG_BT_SETTINGS is absent and FICR is
@@ -39,12 +39,15 @@ LOG_MODULE_REGISTER(transceiver_ble, LOG_LEVEL_INF);
 #define MFR_OFF_COMPANY  0
 #define MFR_OFF_TYPE     2
 #define MFR_OFF_FRAME    3
-#define MFR_DATA_SIZE    (MFR_OFF_FRAME + TAPESTRY_GOSSIP_FRAME_SIZE)
+/* Full manufacturer AD payload: company(2) + type(1) + frame + auth tag    */
+#define MFR_DATA_SIZE    (MFR_OFF_FRAME + TAPESTRY_GOSSIP_WIRE_SIZE)
 
 #define RX_QUEUE_DEPTH  8
 
-K_MSGQ_DEFINE(ble_rx_q,        sizeof(tapestry_gossip_frame_t), RX_QUEUE_DEPTH, 4);
-K_MSGQ_DEFINE(ble_discovery_q, sizeof(uint32_t),                RX_QUEUE_DEPTH, 4);
+/* Queue stores raw wire bytes (frame + optional auth tag) so gossip.c can
+ * verify authentication before interpreting the frame content. */
+K_MSGQ_DEFINE(ble_rx_q,        TAPESTRY_GOSSIP_WIRE_SIZE, RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(ble_discovery_q, sizeof(uint32_t),           RX_QUEUE_DEPTH, 4);
 
 static uint8_t mfr_data[MFR_DATA_SIZE];
 
@@ -55,8 +58,8 @@ static struct bt_data adv_data[] = {
 /* ── Scan callback ───────────────────────────────────────────────────────── */
 
 struct parse_ctx {
-    bool                    found;
-    tapestry_gossip_frame_t frame;
+    bool    found;
+    uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE]; /* raw frame + optional auth tag */
 };
 
 static bool parse_ad_element(struct bt_data *data, void *user_data)
@@ -75,7 +78,7 @@ static bool parse_ad_element(struct bt_data *data, void *user_data)
         return true;
     }
 
-    memcpy(&ctx->frame, d + MFR_OFF_FRAME, sizeof(ctx->frame));
+    memcpy(ctx->wire, d + MFR_OFF_FRAME, TAPESTRY_GOSSIP_WIRE_SIZE);
     ctx->found = true;
     return false;
 }
@@ -93,11 +96,15 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
         return;
     }
 
-    if (ctx.frame.id == ELEMENT_ID_INVALID) {
-        uint32_t nonce = ctx.frame.update_seq;
+    /* Cast to read the id field without interpreting auth tag bytes. */
+    const tapestry_gossip_frame_t *f =
+        (const tapestry_gossip_frame_t *)ctx.wire;
+
+    if (f->id == ELEMENT_ID_INVALID) {
+        uint32_t nonce = f->update_seq;
         k_msgq_put(&ble_discovery_q, &nonce, K_NO_WAIT);
     } else {
-        if (k_msgq_put(&ble_rx_q, &ctx.frame, K_NO_WAIT) != 0) {
+        if (k_msgq_put(&ble_rx_q, ctx.wire, K_NO_WAIT) != 0) {
             LOG_WRN("BLE RX queue full — frame dropped");
         }
     }
@@ -110,7 +117,7 @@ static int ble_init(void)
     mfr_data[MFR_OFF_COMPANY]     = TAPESTRY_BLE_COMPANY_ID_LO;
     mfr_data[MFR_OFF_COMPANY + 1] = TAPESTRY_BLE_COMPANY_ID_HI;
     mfr_data[MFR_OFF_TYPE]        = TAPESTRY_MSG_GOSSIP;
-    memset(mfr_data + MFR_OFF_FRAME, 0, TAPESTRY_GOSSIP_FRAME_SIZE);
+    memset(mfr_data + MFR_OFF_FRAME, 0, TAPESTRY_GOSSIP_WIRE_SIZE);
 
     int ret = bt_enable(NULL);
     if (ret) {
@@ -148,7 +155,7 @@ static int ble_init(void)
 
 static int ble_tx(const uint8_t *data, uint16_t len)
 {
-    if (len > TAPESTRY_GOSSIP_FRAME_SIZE) {
+    if (len > TAPESTRY_GOSSIP_WIRE_SIZE) {
         return -EINVAL;
     }
     memcpy(mfr_data + MFR_OFF_FRAME, data, len);
@@ -161,15 +168,15 @@ static int ble_tx(const uint8_t *data, uint16_t len)
 
 static int ble_rx(uint8_t *buf, uint16_t max_len)
 {
-    tapestry_gossip_frame_t frame;
-    if (max_len < sizeof(frame)) {
+    uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE];
+    if (max_len < TAPESTRY_GOSSIP_WIRE_SIZE) {
         return -EINVAL;
     }
-    if (k_msgq_get(&ble_rx_q, &frame, K_NO_WAIT) != 0) {
+    if (k_msgq_get(&ble_rx_q, wire, K_NO_WAIT) != 0) {
         return 0;
     }
-    memcpy(buf, &frame, sizeof(frame));
-    return (int)sizeof(frame);
+    memcpy(buf, wire, TAPESTRY_GOSSIP_WIRE_SIZE);
+    return (int)TAPESTRY_GOSSIP_WIRE_SIZE;
 }
 
 static void ble_set_power(float level)
@@ -209,11 +216,12 @@ int ble_transceiver_drain_nonces(uint32_t *out, int max)
 
 int ble_transceiver_drain_claimed(bool *claimed_out, int max_id)
 {
-    tapestry_gossip_frame_t frame;
+    uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE];
     int n = 0;
-    while (k_msgq_get(&ble_rx_q, &frame, K_NO_WAIT) == 0) {
-        if (frame.id < (uint8_t)max_id) {
-            claimed_out[frame.id] = true;
+    while (k_msgq_get(&ble_rx_q, wire, K_NO_WAIT) == 0) {
+        const tapestry_gossip_frame_t *f = (const tapestry_gossip_frame_t *)wire;
+        if (f->id < (uint8_t)max_id) {
+            claimed_out[f->id] = true;
         }
         n++;
     }

@@ -12,11 +12,12 @@ Message types
 
 Struct sizes
 ────────────
-  HEADER_FMT       '<BBH'             type, src_id, payload_len      —  4 bytes
-  GOSSIP_FMT       '<BffIBBI'         id,x,y,clock,power,island,seq  — 19 bytes
-  METRIC_FMT       '<BBBBBBfBBfIffH'  L4 CSM metric fields           — 30 bytes
-  SCR_METRIC_FMT   '<BBBBBBI'         L5 SCR metric fields            — 10 bytes
-  CTRL_FMT         '<BB'              ctrl_type, value                —  2 bytes
+  HEADER_FMT       '<BBH'              type, src_id, payload_len      —  4 bytes
+  GOSSIP_FMT       '<BffIBIBBB'        id,x,y,clock,island,seq,       — 21 bytes
+                                       energy_level,health_flags,qos_tier
+  METRIC_FMT       '<BBBBBBfBBfIffH'  L4 CSM metric fields            — 30 bytes
+  SCR_METRIC_FMT   '<BBBBBBI'         L5 SCR metric fields             — 10 bytes
+  CTRL_FMT         '<BB'              ctrl_type, value                 —  2 bytes
 """
 
 import struct
@@ -43,7 +44,7 @@ CTRL_SHUTDOWN      = 3
 # ── Struct formats ────────────────────────────────────────────────────────────
 
 HEADER_FMT     = struct.Struct('<BBH')
-GOSSIP_FMT     = struct.Struct('<BffIBBI')
+GOSSIP_FMT     = struct.Struct('<BffIBIBBB')
 METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')
 SCR_METRIC_FMT = struct.Struct('<BBBBBBI')
 CTRL_FMT       = struct.Struct('<BB')
@@ -59,9 +60,11 @@ def encode_gossip(state: dict) -> bytes:
         state['x'],
         state['y'],
         state['logical_clock'],
-        state['power_state'],
         state['partition_island'],
         state['update_seq'],
+        state.get('energy_level', 100),
+        state.get('health_flags', 0),
+        state.get('qos_tier', 1),   # 1 = TAPESTRY_QOS_SOFT_RT
     )
     return header + payload
 
@@ -94,7 +97,8 @@ def decode(data: bytes) -> dict | None:
         return None
 
     if msg_type == MSG_GOSSIP and len(payload) >= GOSSIP_FMT.size:
-        id_, x, y, clock, power, island, seq = GOSSIP_FMT.unpack_from(payload)
+        id_, x, y, clock, island, seq, energy, health, qos = \
+            GOSSIP_FMT.unpack_from(payload)
         return {
             'type':             'gossip',
             'src_id':           src_id,
@@ -102,9 +106,11 @@ def decode(data: bytes) -> dict | None:
             'x':                x,
             'y':                y,
             'logical_clock':    clock,
-            'power_state':      power,
             'partition_island': island,
             'update_seq':       seq,
+            'energy_level':     energy,
+            'health_flags':     health,
+            'qos_tier':         qos,
         }
 
     if msg_type == MSG_METRIC and len(payload) >= METRIC_FMT.size:

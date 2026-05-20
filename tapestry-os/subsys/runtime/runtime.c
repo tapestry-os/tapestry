@@ -13,6 +13,7 @@
 #include "power.h"
 #include <tapestry/runtime.h>
 #include <tapestry/transport.h>
+#include <tapestry/wire.h>
 #include <tapestry/choreo.h>
 
 #include <zephyr/logging/log.h>
@@ -105,11 +106,11 @@ void tapestry_runtime_tick(void)
     /* 6. L6 BSE: synthesise per-element directive */
     choreo_tick(&s_wm, &s_scr);
 
-    /* 7. Gossip send on interval */
+    /* 7. Gossip send on interval — coordination traffic at soft real-time */
     s_gossip_accum_ms += WM_CYCLE_MS;
     if (s_gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
         s_own.update_seq++;
-        transport_send(&s_own);
+        transport_send(&s_own, TAPESTRY_QOS_SOFT_RT);
         s_gossip_accum_ms = 0;
     }
 

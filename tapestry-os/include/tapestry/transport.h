@@ -43,8 +43,10 @@ extern "C" {
  * Returns 0 on success, negative errno on fatal failure. */
 int transport_init(void);
 
-/* Update the gossip advertisement / send a UDP broadcast with own_state. */
-void transport_send(const element_state_t *own_state);
+/* Update the gossip advertisement / send a UDP broadcast with own_state.
+ * qos_tier is one of TAPESTRY_QOS_BEST_EFFORT / SOFT_RT / HARD_RT (wire.h).
+ * It is embedded in the gossip frame so peers can prioritise accordingly. */
+void transport_send(const element_state_t *own_state, uint8_t qos_tier);
 
 /* Drain all pending received gossip frames into wm.  Skips own_id frames.
  * Returns the total number of frames processed across all transports. */

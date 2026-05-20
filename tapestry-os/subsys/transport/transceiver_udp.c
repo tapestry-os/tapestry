@@ -33,9 +33,10 @@ LOG_MODULE_REGISTER(transceiver_udp, LOG_LEVEL_INF);
 static int gossip_sock = -1;
 static int metric_sock = -1;
 
-/* Reused buffers — single-threaded main loop, no locking needed. */
-static uint8_t tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE];
-static uint8_t rx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE];
+/* Reused buffers — single-threaded main loop, no locking needed.
+ * Gossip buffers are sized for the full wire frame (frame + optional auth). */
+static uint8_t tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_WIRE_SIZE];
+static uint8_t rx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_WIRE_SIZE];
 static uint8_t metric_tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE];
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
@@ -91,29 +92,30 @@ static int udp_init(void)
 
 static int udp_tx(const uint8_t *data, uint16_t len)
 {
-    if (len > TAPESTRY_GOSSIP_FRAME_SIZE || gossip_sock < 0) {
+    if (len > TAPESTRY_GOSSIP_WIRE_SIZE || gossip_sock < 0) {
         return -EINVAL;
     }
 
+    /* src_id is always the first byte of the gossip frame regardless of auth */
     const tapestry_gossip_frame_t *frame = (const tapestry_gossip_frame_t *)data;
 
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
     hdr->type        = TAPESTRY_MSG_GOSSIP;
     hdr->src_id      = frame->id;
-    hdr->payload_len = TAPESTRY_GOSSIP_FRAME_SIZE;
+    hdr->payload_len = len;
     memcpy(tx_buf + TAPESTRY_MSG_HEADER_SIZE, data, len);
 
     struct sockaddr_in dst;
     fill_addr(&dst, CONFIG_TAPESTRY_GOSSIP_BCAST, CONFIG_TAPESTRY_GOSSIP_PORT);
     zsock_sendto(gossip_sock, tx_buf,
-                 TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE, 0,
+                 (size_t)(TAPESTRY_MSG_HEADER_SIZE + len), 0,
                  (struct sockaddr *)&dst, sizeof(dst));
     return 0;
 }
 
 static int udp_rx(uint8_t *buf, uint16_t max_len)
 {
-    if (max_len < TAPESTRY_GOSSIP_FRAME_SIZE || gossip_sock < 0) {
+    if (max_len < TAPESTRY_GOSSIP_WIRE_SIZE || gossip_sock < 0) {
         return -EINVAL;
     }
 
@@ -136,8 +138,11 @@ static int udp_rx(uint8_t *buf, uint16_t max_len)
         return 0;
     }
 
-    memcpy(buf, rx_buf + TAPESTRY_MSG_HEADER_SIZE, TAPESTRY_GOSSIP_FRAME_SIZE);
-    return TAPESTRY_GOSSIP_FRAME_SIZE;
+    /* Return however many payload bytes were actually received so gossip_drain
+     * can distinguish authenticated (GOSSIP_WIRE_SIZE) from plain frames. */
+    ssize_t payload_len = len - (ssize_t)TAPESTRY_MSG_HEADER_SIZE;
+    memcpy(buf, rx_buf + TAPESTRY_MSG_HEADER_SIZE, (size_t)payload_len);
+    return (int)payload_len;
 }
 
 static void udp_set_power(float level)

@@ -50,6 +50,14 @@ typedef struct {
  * copies of this in their world model — never the authoritative version.
  */
 
+/* ── Element health flags (health_flags bitmask) ────────────────────────── */
+
+#define ELEMENT_HEALTH_OK           0x00u  /* All subsystems nominal            */
+#define ELEMENT_HEALTH_LOW_BATTERY  0x01u  /* energy_level below 20%            */
+#define ELEMENT_HEALTH_SENSOR_FAULT 0x02u  /* On-board sensor reporting failure  */
+#define ELEMENT_HEALTH_DEGRADED     0x04u  /* Element self-reports reduced       */
+                                           /* capability (throttled, hot, etc.)  */
+
 typedef struct {
     element_id_t  id;              /* Unique identifier [0, MAX_ELEMENTS)    */
     position_t    position;        /* Current 2D position in world space      */
@@ -58,6 +66,8 @@ typedef struct {
                                    /* Elements in different islands cannot    */
                                    /* exchange gossip. 0 = no partition.      */
     uint32_t      update_seq;      /* Monotonic update counter (debug/log)   */
+    uint8_t       energy_level;    /* Battery/power [0=empty, 100=full]      */
+    uint8_t       health_flags;    /* ELEMENT_HEALTH_* bitmask               */
 } element_state_t;
 
 /* ── Collision event ─────────────────────────────────────────────────────── */

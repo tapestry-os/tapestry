@@ -1,0 +1,29 @@
+# Kconfig — Tapestry L3 Transport / Wire Protocol
+#
+# Source this from your application Kconfig with:
+#   rsource "../tapestry-os/subsys/transport/Kconfig"
+
+config TAPESTRY_WIRE_AUTH_ENABLED
+	bool "Enable HMAC-SHA256 gossip frame authentication"
+	depends on MBEDTLS
+	default n
+	help
+	  When enabled each transmitted gossip frame is signed with a 4-byte
+	  truncated HMAC-SHA256 tag (first 4 bytes of the full digest) appended
+	  after the frame bytes.  Received frames whose tag does not match the
+	  expected value are silently dropped and logged at WRN level.
+
+	  All elements in a deployment must use the same key
+	  (CONFIG_TAPESTRY_WIRE_AUTH_KEY) or gossip will not flow.
+
+	  When disabled the wire format is unchanged: no tag bytes are appended
+	  and no crypto dependency is introduced.
+
+config TAPESTRY_WIRE_AUTH_KEY
+	string "HMAC-SHA256 pre-shared deployment key"
+	depends on TAPESTRY_WIRE_AUTH_ENABLED
+	default "tapestry-insecure-default"
+	help
+	  ASCII string used as the HMAC-SHA256 key.  Change this from the
+	  default before deploying hardware; all elements in a deployment must
+	  share the same key string.

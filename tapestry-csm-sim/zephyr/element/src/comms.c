@@ -70,6 +70,9 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->logical_clock    = own_state->logical_clock;
     p->partition_island = own_state->partition_island;
     p->update_seq       = own_state->update_seq;
+    p->energy_level     = own_state->energy_level;
+    p->health_flags     = own_state->health_flags;
+    p->qos_tier         = TAPESTRY_QOS_SOFT_RT;
 
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);
@@ -188,6 +191,8 @@ int comms_drain_inbox(comms_t *c, world_model_t *wm,
             received.logical_clock    = g->logical_clock;
             received.partition_island = g->partition_island;
             received.update_seq       = g->update_seq;
+            received.energy_level     = g->energy_level;
+            received.health_flags     = g->health_flags;
 
             wm_receive_gossip(wm, &received);
             break;

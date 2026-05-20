@@ -20,8 +20,9 @@ void gossip_register_transceivers(const tapestry_transceiver_t * const *t,
                                   int n);
 
 /* Pack own_state into a gossip frame and transmit via all registered
- * transceivers. */
-void gossip_send(const element_state_t *own_state);
+ * transceivers.  qos_tier is TAPESTRY_QOS_* from wire.h and is embedded in
+ * the frame header so peers can prioritise accordingly. */
+void gossip_send(const element_state_t *own_state, uint8_t qos_tier);
 
 /* Drain all pending received frames from all registered transceivers into wm.
  * Skips frames whose id matches own_id.
