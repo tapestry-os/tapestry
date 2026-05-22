@@ -84,7 +84,7 @@ int main(void)
     own_state.position.x  = sx;
     own_state.position.y  = sy;
 
-    transport_send(&own_state);
+    transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
 
     world_model_t wm;
     wm_init(&wm, element_id, &own_state, 0.0f);   /* pure AP — never freeze */
@@ -119,7 +119,7 @@ int main(void)
         gossip_accum += WM_CYCLE_MS;
         if (gossip_accum >= GOSSIP_INTERVAL_MS) {
             own_state.update_seq++;
-            transport_send(&own_state);
+            transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
             gossip_accum = 0;
         }
 

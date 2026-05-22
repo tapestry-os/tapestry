@@ -51,6 +51,10 @@ static int n_active;
 
 /* ── Private state ───────────────────────────────────────────────────────── */
 
+#ifndef CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS
+#define CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS 4000
+#endif
+
 #ifndef CONFIG_NETWORKING
 static uint32_t serial_metric_accum_ms;
 #endif

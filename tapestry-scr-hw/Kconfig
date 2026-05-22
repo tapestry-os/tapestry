@@ -8,6 +8,7 @@
 # Without this every standard symbol appears "undefined".
 source "Kconfig.zephyr"
 rsource "../tapestry-os/subsys/runtime/Kconfig"
+rsource "../tapestry-os/subsys/transport/Kconfig"
 
 config TAPESTRY_ELEMENT_ID
 	int "Element ID [0..4]"

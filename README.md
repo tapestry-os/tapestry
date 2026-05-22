@@ -1,29 +1,34 @@
 # Tapestry
 
 An open source operating system framework for physically reconfigurable matter.
-For more details, refer to the [project documentation](https://tapestry-os.com/documentation).
+For more details, refer to the [project documentation](https://tapestry-os.com/docs/).
 
 ## Vision
 
-Tapestry is a scale-invariant system software framework that provides
-programmability over physically reconfigurable matter: distributed collections
-of elements that sense, move, and coordinate without central control.
+Tapestry is an open-source operating system for physically reconfigurable matter:
+distributed collections of elements that sense, compute, communicate, and act
+to produce emergent physical behavior without central control.
 
-Its architecture draws from modern operating systems and edge compute platforms to address a spectrum of heterogeneous collective systems from drone swarms and warehouse automation
-in the near term, to microrobotics and precision agriculture in the mid term, to
-smart materials, surgical nanobots, and molecular machines on a 15–20 year
-horizon.
+By applying the separation of concerns principles that have governed OS design
+for half a century, Tapestry's architecture encapsulates heterogeneous hardware,
+communication substrates, and physical actuation mechanisms — from high-performance
+ARM-based silicon in today's autonomous robots to biochemical state machines in
+nanoscale molecular systems. Target domains span industrial inspection, logistics
+automation, and exoskeletons in the near term; precision agriculture and morphing
+aerospace structures in the mid term; and surgical microrobots and molecular
+machines on a ten-to-twenty year horizon.
 
-The landscape of programmable physical systems is fragmented. Every
-research group reinvents the control plane from scratch. There is
-no agreed-upon abstraction boundary between physical elements
-and the software that programs them. That gap is where Tapestry lives.
+The landscape of physically reconfigurable systems is fragmented. Every research
+group and commercial deployment is forced to rebuild fundamental coordination
+infrastructure from scratch. There is no agreed-upon abstraction boundary between
+physical elements and the software that programs them. That gap is where Tapestry
+lives.
 
-Just as Android abstracted over diverse mobile hardware so that developers could
-target a single API regardless of the underlying silicon, Tapestry abstracts over
-diverse element hardware, communication substrates, and physical actuation
-mechanisms: enabling a new class of developer to directly program
-physical reality.
+Just as Android established a stable boundary between device hardware and
+applications so that developers could target a single API regardless of the
+underlying silicon, Tapestry abstracts over diverse element hardware, communication
+substrates, and physical actuation mechanisms — enabling application code written
+for one physical scale to execute on any other without modification.
 
 ## The Tapestry Stack — Seven Layers
 
@@ -34,7 +39,7 @@ requirements of physical element systems.
 ```
   L7  Choreographer                 High-level intent programming; developer-facing API
   L6  Behavior Synthesis Engine    Translates intent into collective behavioral plans
-  L5  Swarm Coordination Runtime   Quorum-based coordination, role assignment, lightweight peer-filtering BFT mitigation (whitelist + anomaly exclusion)
+  L5  Swarm Coordination Runtime   Quorum-based coordination, role assignment, lightweight BFT
   L4  Collective State Manager     Distributed world model; aggregated shared state
   L3  Inter-Element Communication  Mesh networking, routing, encryption; substrate-agnostic
   L2  Element Runtime              Per-element OS: scheduling, power, actuation, local sensing
@@ -95,12 +100,15 @@ L3 is implemented by two transport backends, both in `tapestry-os/subsys/transpo
   ESP32 bridge element.
 
 The on-wire frame format for both transports is defined in `tapestry/wire.h`
-(`tapestry_gossip_frame_t`, 19 bytes packed). Both transports feed received frames
+(`tapestry_gossip_frame_t`, 20 bytes packed). Both transports feed received frames
 directly into `wm_receive_gossip()` — L4 and above see no difference.
 
-Both are single-hop transports. A future L3 evolution would replace them with a true
-multi-hop mesh protocol (e.g. 802.15.4, BLE mesh, or custom RF) to remove range and
-infrastructure dependencies — without touching L4 or above.
+The frame carries a `hop_count` relay TTL. When `CONFIG_TAPESTRY_MESH_RELAY` is
+enabled, first-party frames start with `hop_count = 2`; each relay node decrements
+and re-advertises, capping relay depth at two hops (BATMAN-inspired opportunistic
+relay). When the option is disabled, `hop_count = 0` and frames are not re-broadcast.
+A future L3 evolution may extend this to a full multi-hop mesh (e.g. 802.15.4 or
+BLE mesh) without touching L4 or above.
 
 ## L4 — Collective State Manager
 
@@ -169,7 +177,28 @@ converged world model; convergence time is bounded by `WM_STALE_THRESHOLD_MS`
 (1500 ms). When a leader's entry goes stale the next `scr_tick()` automatically
 elects from the remaining fresh set.
 
-Roles: `SCR_ROLE_LEADER`, `SCR_ROLE_FOLLOWER`, `SCR_ROLE_NONE` (quorum lost).
+Non-leader elements self-assign an extended functional role from their
+capability flags (set at `scr_init()`); the assignment is also message-free.
+Priority order: RELAY > SENSOR > ACTUATOR > FOLLOWER.
+
+Roles:
+
+| Value | Role | Assigned when |
+|---|---|---|
+| 0 | `SCR_ROLE_NONE` | Quorum lost |
+| 1 | `SCR_ROLE_FOLLOWER` | Non-leader, no capability flags set |
+| 2 | `SCR_ROLE_LEADER` | Lowest element_id among fresh peers |
+| 3 | `SCR_ROLE_RELAY` | Non-leader with `SCR_CAP_RELAY` |
+| 4 | `SCR_ROLE_SENSOR` | Non-leader with `SCR_CAP_SENSOR` (no relay cap) |
+| 5 | `SCR_ROLE_ACTUATOR` | Non-leader with `SCR_CAP_ACTUATOR` only |
+
+**Task slot** — each element's ordinal index in the sorted fresh peer list
+(0 = leader). The BSE uses this for deterministic, collision-free
+vertex assignment without L5 performing task decomposition.
+
+**Abort protocol** — `SCR_ABORT_TRIGGERED` fires the cycle quorum drops to
+LOST; `SCR_ABORT_CLEARED` fires for exactly one cycle when quorum recovers.
+L6 (BSE / Choreographer) consumes these as one-tick signals.
 
 The public include is `#include <tapestry/scr.h>`, which transitively
 includes `<tapestry/csm.h>`. The implementation in `tapestry-os/subsys/scr/`
@@ -179,15 +208,38 @@ is pure C99 with no OS dependencies.
 
 ```
 tapestry/
+├── sdk/                           L7 Choreographer SDK (stable developer surface)
+│   ├── include/tapestry/
+│   │   └── choreo.h               L7 SDK API header (Goal / lifecycle / directive)
+│   ├── python/tapestry/
+│   │   ├── choreo.py              L7 Python mirror
+│   │   └── bse.py                 L6 Python stub
+│   └── examples/
+│       └── hello_swarm.py         Minimal worked example (no sim required)
+│
 ├── tapestry-os/                   Tapestry OS framework
 │   ├── include/tapestry/
+│   │   ├── wire.h                 L3 on-wire frame format (pure C99, no OS deps)
 │   │   ├── csm.h                  L4 public API boundary (pure C99, no OS deps)
 │   │   ├── scr.h                  L5 public API boundary (includes csm.h)
-│   │   └── wire.h                 L3 on-wire frame format (pure C99, no OS deps)
+│   │   ├── bse.h                  L6 interface contract (intent → directive)
+│   │   ├── runtime.h              L2 element runtime (full-stack main loop helper)
+│   │   ├── substrate.h            L1 HAL (motor, power, signal abstractions)
+│   │   ├── transport.h            L3 transport API (send / drain / telemetry)
+│   │   └── transceiver.h          L3 transceiver plugin interface
+│   ├── boards/
+│   │   └── bbc_microbit_v2/       micro:bit V2 board support (Cutebot HAL, BLE overlay)
 │   ├── subsys/csm/
-│   │   └── world_model.c          CSM implementation (pure C99)
+│   │   └── world_model.c          L4 CSM implementation (pure C99)
 │   ├── subsys/scr/
-│   │   └── scr.c                  SCR implementation (pure C99)
+│   │   └── scr.c                  L5 SCR implementation (pure C99)
+│   ├── subsys/bse/
+│   │   └── bse.c                  L6 BSE stub (geometry task decomposition)
+│   ├── subsys/choreo/
+│   │   └── choreo.c               L7 Choreographer stub (lifecycle + goal dispatch)
+│   ├── subsys/runtime/
+│   │   ├── runtime.c              L2 full-stack tick sequencer
+│   │   └── power.c/.h             L2 power state machine (active/idle/sleep/harvest)
 │   └── subsys/transport/
 │       ├── transport.c            Transceiver registry and multiplexer
 │       ├── gossip.c/.h            Wire framing, relay, HMAC auth
@@ -417,10 +469,11 @@ The `--quorum-min` and `--quorum-target` flags control the SCR quorum thresholds
 
 | Column | Description |
 |---|---|
-| `role` | 0=NONE, 1=FOLLOWER, 2=LEADER |
+| `role` | 0=NONE, 1=FOLLOWER, 2=LEADER, 3=RELAY, 4=SENSOR, 5=ACTUATOR |
 | `leader_id` | Elected leader element ID; 255 = no leader (quorum LOST) |
 | `quorum_state` | 0=LOST, 1=DEGRADED, 2=HEALTHY |
-| `fresh_count` | Non-self fresh peers visible this cycle |
+| `fresh_count` | Non-self trusted fresh peers visible this cycle |
+| `task_slot` | Ordinal in sorted fresh peer list (0 = leader); valid when quorum ≥ DEGRADED |
 | `election_count` | Cumulative leader changes since element startup |
 
 Plus all L4 telemetry columns (see L4 section above).

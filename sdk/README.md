@@ -9,7 +9,7 @@ below it is managed by Tapestry; application code calls only into this SDK.
 │  L7  Choreographer (your code)                  │  ← codes against sdk/
 │  L6  BSE — Behavior Synthesis Engine            │  ← tapestry-os/subsys/bse/
 │  L5  SCR — Swarm Coordination Runtime           │
-│  L4  CSM — Coherent Swarm Memory                │
+│  L4  CSM — Collective State Manager             │
 │  L3  Transport — UDP / BLE gossip               │
 │  L2  Element Runtime — Zephyr RTOS              │
 │  L1  Physical Substrate Interface               │
@@ -105,13 +105,14 @@ The SDK contains only interface artefacts; implementations live in `tapestry-os/
 
 ```
 sdk/
-  include/tapestry/choreo.h        L7 API header (stable interface)
+  include/tapestry/choreo.h        L7 SDK API header (Goal / lifecycle / directive)
   python/tapestry/choreo.py        L7 Python mirror
   python/tapestry/bse.py           L6 Python stub
   examples/hello_swarm.py          Minimal worked example (no sim required)
 
 tapestry-os/
-  include/tapestry/bse.h           L6 interface contract
-  subsys/bse/bse.c                 L6 C 
-  subsys/choreo/choreo.c           L7 C 
+  include/tapestry/choreo.h        L7 C header (choreo_init, choreo_tick, etc.)
+  include/tapestry/bse.h           L6 interface contract (intent → directive)
+  subsys/choreo/choreo.c           L7 Choreographer C stub
+  subsys/bse/bse.c                 L6 BSE C stub
 ```

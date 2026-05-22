@@ -28,6 +28,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <tapestry/wire.h>
 #include <tapestry/scr.h>   /* includes csm.h: element_state_t, world_model_t,
                                element_id_t, scr_state_t                       */
 
