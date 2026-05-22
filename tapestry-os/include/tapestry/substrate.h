@@ -24,10 +24,6 @@
 
 #include <stdint.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* ── Geometric primitives ────────────────────────────────────────────────── */
 
 typedef struct { float x, y, z;       } substrate_vec3_t;
@@ -89,7 +85,7 @@ typedef enum {
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
 /*
- * substrate_init — Initialise the substrate hardware.
+ * substrate_init — Initialize the substrate hardware.
  * Must be called once before any other substrate_* function.
  * Returns 0 on success, negative errno if hardware is unreachable.
  * All other substrate calls are no-ops when init returns non-zero.
@@ -100,7 +96,7 @@ int substrate_init(void);
  * substrate_move — Command a 6-DOF body-frame motion.
  * Components are normalized [-1.0, 1.0]; see substrate_twist_t for axis
  * conventions. Implementations clamp to their physical limits.
- * Passing a zero-initialised twist stops all motion.
+ * Passing a zero-initialized twist stops all motion.
  */
 void substrate_move(const substrate_twist_t *twist);
 
@@ -133,9 +129,5 @@ int substrate_sense(substrate_sensor_t type, float *out);
 void substrate_bond(void);
 void substrate_release(void);
 void substrate_emit(void);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* TAPESTRY_SUBSTRATE_H */

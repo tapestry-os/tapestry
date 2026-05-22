@@ -25,7 +25,7 @@ target_sources(app PRIVATE
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include    # <tapestry/scr.h>, <tapestry/bse.h>
     ${TAPESTRY_SDK}/include        # <tapestry/choreo.h>
-    ${TAPESTRY_OS_CSM}             # internal: world_model.h, state.h
+    ${TAPESTRY_OS_CSM}             # world_model.c; types via <tapestry/csm.h>
     ${CSM_ELEM_SRC}                # comms.h, movement.h (from csm element)
     ${TAPESTRY_CSM_SIM}            # sim_protocol.h
     src/                           # comms_scr.h

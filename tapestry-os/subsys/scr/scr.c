@@ -5,7 +5,7 @@
  * All state fits in a caller-allocated scr_state_t.
  */
 
-#include "scr.h"
+#include <tapestry/scr.h>
 #include <string.h>
 
 /* ── Internal helpers ─────────────────────────────────────────────────────── */

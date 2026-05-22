@@ -1,6 +1,6 @@
 manifest:
   # Tapestry lives at <workspace>/tapestry/ within a west workspace.
-  # To initialise a fresh workspace:
+  # To initialize a fresh workspace:
   #
   #   west init -m https://github.com/tapestry-os/tapestry --mr main tapestry-workspace
   #   cd tapestry-workspace

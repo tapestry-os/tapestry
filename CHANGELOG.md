@@ -16,7 +16,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **L4 + L5 ztest suites** — 8 L4 and 15 L5 unit tests; run on native_sim and
   validated on physical hardware
 - **L4 + L5 simulation harnesses** — Python asyncio orchestrators with gossip
-  broker, scenario injection, telemetry CSV writer, and matplotlib visualiser
+  broker, scenario injection, telemetry CSV writer, and matplotlib visualizer
 - **Hardware validation Phase 1** — L4/L5 ztests pass on ESP-WROVER-KIT
   (ESP32), EK-RA8D1 (RA8D1 / Cortex-M85), and BBC micro:bit V2 (nRF52833)
 - **Hardware validation Phase 2** — live two-element swarms over UDP/LAN

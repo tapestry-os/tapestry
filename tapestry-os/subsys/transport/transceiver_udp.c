@@ -25,7 +25,7 @@
 #include <zephyr/net/net_ip.h>
 #include <zephyr/logging/log.h>
 #include <tapestry/wire.h>
-#include "world_model.h"
+#include <tapestry/csm.h>
 
 LOG_MODULE_REGISTER(transceiver_udp, LOG_LEVEL_INF);
 

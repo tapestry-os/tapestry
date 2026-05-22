@@ -116,7 +116,7 @@ async def async_main(args):
 
     procs = spawn_elements(args.elements, args.element_bin)
 
-    # Give elements time to initialise their sockets before the scenario fires
+    # Give elements time to initialize their sockets before the scenario fires
     await asyncio.sleep(1.0)
 
     log.info(

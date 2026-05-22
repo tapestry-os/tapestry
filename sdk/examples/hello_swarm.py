@@ -49,7 +49,7 @@ GOAL = Goal(
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 print("Tapestry SDK — hello_swarm")
-print(f"Goal : {GOAL.type.name}  centre=(50, 50)  radius={GOAL.radius} logical units")
+print(f"Goal : {GOAL.type.name}  center=(50, 50)  radius={GOAL.radius} logical units")
 print(f"Arena: 100×100 logical units   Elements: {len(ELEMENTS)}")
 print()
 print(f"{'Element':>8}  {'Directive':>18}  {'Target':>20}")

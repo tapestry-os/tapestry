@@ -13,10 +13,6 @@
  *   CONFIG_BT              → transceiver_ble.c  (BLE advertising / scan)
  *   CONFIG_NETWORKING      → transceiver_udp.c + net_init.c  (UDP broadcast)
  *   Both                   → both backends; gossip_drain merges frames
- *   CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC → transceiver_acoustic.c (stub)
- *   CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL  → transceiver_optical.c  (stub)
- *   CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL → transceiver_chemical.c (stub)
- *
  * Telemetry routing:
  *   CONFIG_NETWORKING → UDP unicast to collector (every cycle)
  *   BLE-only          → serial CSV to stdout (throttled to GOSSIP_INTERVAL_MS)
@@ -26,6 +22,12 @@
 #include <tapestry/csm.h>
 #include "gossip.h"
 
+#ifdef CONFIG_BT
+#include <zephyr/drivers/hwinfo.h>
+#endif
+
+#include <string.h>
+
 #ifdef CONFIG_NETWORKING
 #include "transceiver_udp.h"
 #include "net_init.h"
@@ -33,16 +35,6 @@
 
 #ifdef CONFIG_BT
 #include "transceiver_ble.h"
-#endif
-
-#ifdef CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC
-#include "transceiver_acoustic.h"
-#endif
-#ifdef CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL
-#include "transceiver_optical.h"
-#endif
-#ifdef CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL
-#include "transceiver_chemical.h"
 #endif
 
 #include <zephyr/kernel.h>
@@ -81,15 +73,7 @@ int transport_init(void)
     active[n_active++] = &transceiver_ble;
 #endif
 
-#ifdef CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC
-    active[n_active++] = &transceiver_acoustic;
-#endif
-#ifdef CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL
-    active[n_active++] = &transceiver_optical;
-#endif
-#ifdef CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL
-    active[n_active++] = &transceiver_chemical;
-#endif
+
 
     for (int i = 0; i < n_active; i++) {
         int ret = active[i]->init();
@@ -128,6 +112,84 @@ int transport_drain(world_model_t *wm, element_id_t own_id)
     int n = gossip_drain(wm, own_id);
     gossip_relay_flush();
     return n;
+}
+
+/* ── transport_negotiate_id ──────────────────────────────────────────────── */
+
+static uint32_t hw_nonce(void)
+{
+#ifdef CONFIG_BT
+    uint8_t buf[4] = {0};
+    if (hwinfo_get_device_id(buf, sizeof(buf)) >= (ssize_t)sizeof(buf)) {
+        uint32_t n = 0;
+        memcpy(&n, buf, 4);
+        return n ? n : 1u;   /* 0 would sort first — shift to 1 */
+    }
+#endif
+    /* hwinfo unavailable — salt with uptime to avoid all-zero ties */
+    return (uint32_t)k_uptime_get() ^ 0xA5A5A5A5u;
+}
+
+element_id_t transport_negotiate_id(int *n_total_out)
+{
+    uint32_t own_nonce = hw_nonce();
+    uint32_t peer_nonces[MAX_ELEMENTS];
+    bool     claimed[MAX_ELEMENTS];
+    int      n_peers = 0;
+
+    memset(peer_nonces, 0, sizeof(peer_nonces));
+    memset(claimed,     0, sizeof(claimed));
+
+    transport_advertise_nonce(own_nonce);
+    LOG_INF("auto_id: nonce=0x%08x  window=%u ms",
+            own_nonce, CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS);
+
+    for (uint32_t elapsed = 0;
+         elapsed < CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS;
+         elapsed += WM_CYCLE_MS) {
+
+        uint32_t batch[8];
+        int got = transport_drain_nonces(batch, ARRAY_SIZE(batch));
+        for (int i = 0; i < got; i++) {
+            if (batch[i] == own_nonce) {
+                continue;   /* own echo — nRF RPA does not suppress self-rx */
+            }
+            bool dup = false;
+            for (int j = 0; j < n_peers; j++) {
+                if (peer_nonces[j] == batch[i]) { dup = true; break; }
+            }
+            if (!dup && n_peers < MAX_ELEMENTS) {
+                peer_nonces[n_peers++] = batch[i];
+            }
+        }
+
+        transport_drain_claimed(claimed, MAX_ELEMENTS);
+        k_msleep(WM_CYCLE_MS);
+    }
+
+    int n_running = 0;
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        if (claimed[i]) { n_running++; }
+    }
+
+    int own_rank = 0;
+    for (int i = 0; i < n_peers; i++) {
+        if (peer_nonces[i] < own_nonce) { own_rank++; }
+    }
+
+    element_id_t id   = (element_id_t)own_rank;
+    int          seen = 0;
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        if (!claimed[i]) {
+            if (seen == own_rank) { id = (element_id_t)i; break; }
+            seen++;
+        }
+    }
+
+    *n_total_out = n_peers + 1 + n_running;
+    LOG_INF("auto_id: rank=%d co_booting=%d running=%d -> id=%u n_total=%d",
+            own_rank, n_peers, n_running, (unsigned)id, *n_total_out);
+    return id;
 }
 
 /* ── Auto-ID (BLE discovery window) ─────────────────────────────────────── */
@@ -177,8 +239,6 @@ void transport_send_telemetry(const world_model_t *wm, element_id_t element_id,
 }
 
 #else /* BLE-only: emit serial CSV */
-
-#include "world_model.h"
 
 static void emit_serial_metric(element_id_t element_id,
                                 const world_model_t *wm,

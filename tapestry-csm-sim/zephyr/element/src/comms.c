@@ -115,7 +115,7 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
     float mean_age = (age_count > 0) ? (age_sum / (float)age_count) : 0.0f;
     /* Encode min_separation as uint16 at 0.01 unit resolution.
      * If no active peers exist keep sentinel value 0xFFFF so the
-     * visualiser can distinguish "no peers" from "peers at distance 0". */
+     * visualizer can distinguish "no peers" from "peers at distance 0". */
     uint16_t min_sep_enc = any_active_peer
                            ? (uint16_t)(min_sep * 100.0f)
                            : 0xFFFFu;

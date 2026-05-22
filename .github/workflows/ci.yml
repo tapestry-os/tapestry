@@ -181,19 +181,21 @@ jobs:
             tapestry/tapestry-scr-hw
 
       # ── BBC micro:bit V2 Phase 2 element ────────────────────────────────
-      # BLE gossip transport + Cutebot motor driver, built from tapestry-scr-hw.
+      # Full-stack (L4+L5+L6+L7) element from tapestry-scr-hw.
 
-      - name: Build Phase 2 element — bbc_microbit_v2 (elem 0)
+      - name: Build Phase 2 element — bbc_microbit_v2
         working-directory: ${{ github.workspace }}
         run: |
           west build -b bbc_microbit_v2 \
-            --build-dir tapestry/tapestry-scr-hw/build/hw-mb0 \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-mb \
             tapestry/tapestry-scr-hw
 
-      - name: Build Phase 2 element — bbc_microbit_v2 (elem 1)
+      # ── collective-formation example ─────────────────────────────────────
+      # L4-only formation demo; compile-only (flashing requires physical hardware).
+
+      - name: Build collective-formation — bbc_microbit_v2
         working-directory: ${{ github.workspace }}
         run: |
           west build -b bbc_microbit_v2 \
-            --build-dir tapestry/tapestry-scr-hw/build/hw-mb1 \
-            tapestry/tapestry-scr-hw \
-            -- -DCONFIG_TAPESTRY_ELEMENT_ID=1
+            --build-dir tapestry/examples/collective-formation/build/hw-mb \
+            tapestry/examples/collective-formation

@@ -56,7 +56,7 @@ typedef enum {
 
 typedef struct {
     tapestry_bse_intent_type_t type;
-    tapestry_position_t         target;   /* MOVE / CONVERGE destination    */
+    tapestry_position_t        target;   /* MOVE / CONVERGE destination    */
     float                      radius;   /* FORM radius; DISPERSE min dist */
     tapestry_bse_shape_t       shape;    /* FORM shape                     */
 } tapestry_bse_intent_t;
@@ -84,7 +84,7 @@ typedef enum {
 
 typedef struct {
     tapestry_bse_directive_type_t type;
-    tapestry_position_t            target;    /* MOVE_TO_POINT destination  */
+    tapestry_position_t           target;    /* MOVE_TO_POINT destination  */
     float                         spring_k;  /* MAINTAIN_SPRING stiffness  */
     float                         spacing;   /* MAINTAIN_SPRING target dist */
 } tapestry_bse_directive_t;
@@ -92,7 +92,7 @@ typedef struct {
 /* ── API ──────────────────────────────────────────────────────────────────── */
 
 /*
- * bse_init — Initialise BSE state for this element.
+ * bse_init — Initialize BSE state for this element.
  * Must be called once before bse_submit_intent / bse_tick.
  */
 void bse_init(element_id_t self_id);

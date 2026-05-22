@@ -215,27 +215,20 @@ USB drive that appears when each board is connected.  `west flash` is not used
 here — the micro:bit's built-in DAPLink bootloader makes drag-and-drop more
 reliable than pyocd.
 
-```bash
-# Build element 0
-west build -b bbc_microbit_v2 \
-    --build-dir tapestry/tapestry-scr-hw/build/hw-mb0 \
-    tapestry/tapestry-scr-hw
+One binary runs on all boards — element IDs are negotiated at boot via auto-ID:
 
-# Build element 1
+```bash
 west build -b bbc_microbit_v2 \
-    --build-dir tapestry/tapestry-scr-hw/build/hw-mb1 \
-    tapestry/tapestry-scr-hw \
-    -- -DCONFIG_TAPESTRY_ELEMENT_ID=1
+    --build-dir tapestry/tapestry-scr-hw/build/hw-mb \
+    tapestry/tapestry-scr-hw
 ```
 
-Flash each board (connect one at a time; the drive is always named `MICROBIT`):
+Flash each board with the same `.hex` (connect one at a time; the drive is always named `MICROBIT`):
 
 ```bash
-# Flash element 0
-cp tapestry/tapestry-scr-hw/build/hw-mb0/zephyr/zephyr.hex /media/$USER/MICROBIT/
-
-# Swap USB cable to second board, then flash element 1
-cp tapestry/tapestry-scr-hw/build/hw-mb1/zephyr/zephyr.hex /media/$USER/MICROBIT/
+cp tapestry/tapestry-scr-hw/build/hw-mb/zephyr/zephyr.hex /media/$USER/MICROBIT/
+# Swap USB cable to second board and copy again
+cp tapestry/tapestry-scr-hw/build/hw-mb/zephyr/zephyr.hex /media/$USER/MICROBIT/
 ```
 
 The board resets automatically when the copy completes.
@@ -255,7 +248,7 @@ python collect_serial.py --ports /dev/ttyACM0 /dev/ttyACM1 --out mb_run.csv
 
 1. Both boards powered on and within range: LEDs go from red (LOST) to
    green + blue (HEALTHY) within ~2 s of first BLE advertisement.
-   Element 0 (lowest ID) is always elected leader.
+   The element assigned the lowest ID at boot is elected leader.
 2. **Carry element 0 out of BLE range** (into another room):
    - Element 1 ages the peer entry: fresh → stale → inactive (~1500 ms)
    - `quorum_state` drops HEALTHY → DEGRADED → LOST
@@ -294,15 +287,12 @@ at the same time using the ESP32's hardware coexistence arbitration.
 [micro:bit]     ──USB serial──► collect_serial.py
 ```
 
-### Build — micro:bit element (element 2)
+### Build — micro:bit element
+
+Use the same binary built in the BLE variant section above (no per-robot flags needed):
 
 ```bash
-west build -b bbc_microbit_v2 \
-    --build-dir tapestry/tapestry-scr-hw/build/hw-mb2 \
-    tapestry/tapestry-scr-hw \
-    -- -DCONFIG_TAPESTRY_ELEMENT_ID=2
-
-west flash --build-dir tapestry/tapestry-scr-hw/build/hw-mb2
+west flash --build-dir tapestry/tapestry-scr-hw/build/hw-mb
 ```
 
 ### Quorum settings for three elements

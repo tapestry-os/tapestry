@@ -62,7 +62,7 @@ int main(void)
     const int   quorum_min       = env_int("QUORUM_MIN",        1);
     const int   quorum_target    = env_int("QUORUM_TARGET",     2);
 
-    /* ── Initialise own state ──────────────────────────────────────────── */
+    /* ── Initialize own state ──────────────────────────────────────────── */
     element_state_t own_state = {0};
     own_state.id               = (element_id_t)element_id;
     own_state.partition_island = 0;
@@ -78,18 +78,18 @@ int main(void)
             (double)consistency_bias,
             quorum_min, quorum_target);
 
-    /* ── Initialise L4 world model ──────────────────────────────────────── */
+    /* ── Initialize L4 world model ──────────────────────────────────────── */
     world_model_t wm;
     wm_init(&wm, own_state.id, &own_state, consistency_bias);
 
-    /* ── Initialise L5 SCR ──────────────────────────────────────────────── */
+    /* ── Initialize L5 SCR ──────────────────────────────────────────────── */
     scr_state_t scr;
     scr_init(&scr, own_state.id,
              (uint8_t)quorum_min,
              (uint8_t)quorum_target,
              SCR_CAP_NONE);
 
-    /* ── Initialise L7 choreo ───────────────────────────────────────────── */
+    /* ── Initialize L7 choreo ───────────────────────────────────────────── */
     choreo_init(own_state.id);
     {
         choreo_goal_t goal = {
@@ -101,7 +101,7 @@ int main(void)
         choreo_submit_goal(&goal);
     }
 
-    /* ── Initialise comms ───────────────────────────────────────────────── */
+    /* ── Initialize comms ───────────────────────────────────────────────── */
     comms_t comms;
     if (comms_init(&comms, own_state.id, (uint16_t)orch_port) != 0) {
         LOG_ERR("comms_init failed — aborting");

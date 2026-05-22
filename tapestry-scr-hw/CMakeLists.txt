@@ -69,7 +69,7 @@ endif()
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/scr.h>, <tapestry/transport.h>, <tapestry/substrate.h>, <tapestry/bse.h>, <tapestry/runtime.h>
     ${TAPESTRY_SDK}/include                        # <tapestry/choreo.h>
-    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h
+    ${TAPESTRY_OS_CSM}                             # world_model.c; types via <tapestry/csm.h>
     ${TAPESTRY_OS_SCR}                             # scr.h internals
     ${TAPESTRY_OS_RUNTIME}                         # power.h (internal)
     ${TAPESTRY_OS_TRANSPORT}                       # gossip.h, transceiver_ble.h, transceiver_udp.h, net_init.h

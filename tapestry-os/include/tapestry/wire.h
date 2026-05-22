@@ -40,7 +40,7 @@
  * Placeholder constants — not yet implemented.
  * Passed to gossip_send / transport_send as qos_tier but not carried in the
  * gossip wire frame and not acted on by any receiver.  Reserved for future
- * transport-layer prioritisation (relay queue ordering, drop policy, etc.).
+ * transport-layer prioritization (relay queue ordering, drop policy, etc.).
  * All call sites currently hardcode TAPESTRY_QOS_SOFT_RT.
  */
 
@@ -113,7 +113,7 @@ typedef struct {
     uint32_t logical_clock;
     uint32_t update_seq;
     uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
-    uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see state.h)  */
+    uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see csm.h)    */
     uint8_t  hop_count;            /* Relay TTL: 2 first-party, 0 = no relay  */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 

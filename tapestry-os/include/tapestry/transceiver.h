@@ -28,10 +28,6 @@
 
 #include <stdint.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* ── Medium type ─────────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -60,12 +56,8 @@ typedef struct {
      * Returns bytes written on success, negative errno on hardware error. */
     int (*rx)(uint8_t *buf, uint16_t max_len);
 
-    /* Set normalised [0.0, 1.0] transmit power.  No-op if unsupported. */
+    /* Set normalized [0.0, 1.0] transmit power.  No-op if unsupported. */
     void (*set_power)(float level);
 } tapestry_transceiver_t;
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* TAPESTRY_TRANSCEIVER_H */

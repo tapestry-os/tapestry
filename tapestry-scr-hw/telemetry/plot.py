@@ -1,8 +1,8 @@
 """
-plot.py — visualise Phase 2 hardware telemetry
+plot.py — visualize Phase 2 hardware telemetry
 
 Reads one or more CSVs produced by collect.py and generates a 5-panel
-figure showing L4 + L5 behaviour across both physical elements over time.
+figure showing L4 + L5 behavior across both physical elements over time.
 
 The key proof point — moving the ESP32 out of WiFi range — appears as:
   • fresh_ratio drops to 0 on the RA8D1 (peer no longer heard)

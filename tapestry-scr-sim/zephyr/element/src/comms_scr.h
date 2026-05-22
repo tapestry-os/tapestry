@@ -2,7 +2,7 @@
  * comms_scr.h — SCR metric transmission
  *
  * Thin extension to the L4 comms layer (comms.h from tapestry-csm-sim).
- * Adds one function that serialises the SCR state snapshot and sends it
+ * Adds one function that serializes the SCR state snapshot and sends it
  * to the orchestrator as a SIM_MSG_SCR_METRIC datagram.
  */
 
@@ -16,7 +16,7 @@
 #include <tapestry/wire.h>   /* tapestry_scr_metric_frame_t, TAPESTRY_MSG_SCR_METRIC */
 
 /*
- * comms_send_scr_metric — Serialise scr_state and election_count as a
+ * comms_send_scr_metric — Serialize scr_state and election_count as a
  * TAPESTRY_MSG_SCR_METRIC datagram and send to the orchestrator.
  */
 void comms_send_scr_metric(const comms_t *c,

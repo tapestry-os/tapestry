@@ -28,6 +28,23 @@ config TAPESTRY_WIRE_AUTH_KEY
 	  default before deploying hardware; all elements in a deployment must
 	  share the same key string.
 
+config TAPESTRY_AUTO_ID_WINDOW_MS
+	int "Auto-ID nonce exchange window duration (ms)"
+	default 4000
+	help
+	  Duration of the boot-time nonce exchange window used by the auto-ID
+	  protocol.  All co-booting elements must agree on this value implicitly
+	  (no explicit end-of-window signal is exchanged), so it must be the same
+	  across every element in a deployment.
+
+	  During this window each booting element advertises id=ELEMENT_ID_INVALID
+	  with its hardware nonce.  After the window each element rank-orders the
+	  collected nonces and assigns itself the corresponding unclaimed ID.
+
+	  Increase if boot-time radio congestion or slow BLE stack bring-up causes
+	  elements to miss peers' nonce beacons (symptom: duplicate IDs at startup).
+	  Decrease on faster hardware where 4 s of idle startup is undesirable.
+
 config TAPESTRY_MESH_RELAY
 	bool "Two-hop opportunistic relay forwarding (BATMAN-inspired mesh)"
 	default n

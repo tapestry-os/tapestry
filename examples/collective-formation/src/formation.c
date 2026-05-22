@@ -37,7 +37,7 @@ LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
  * The gap between them prevents oscillation near equilibrium: a small
  * correction that slightly overshoots does not immediately trigger a
  * counter-correction, and gossip-propagated micro-adjustments from
- * neighbours do not restart a robot that has just settled. */
+ * neighbors do not restart a robot that has just settled. */
 #define FORCE_STOP   25.0f   /* ~2 units / 6 mm from equilibrium  */
 #define FORCE_START  90.0f   /* > one-cycle overshoot force (~81 units) */
 
@@ -67,7 +67,7 @@ void demo_odometry_update(demo_odometry_t *odo,
 
     odo->heading += omega * dt;
 
-    /* Normalise to (-π, π] */
+    /* Normalize to (-π, π] */
     while (odo->heading >  M_PI_F) { odo->heading -= 2.0f * M_PI_F; }
     while (odo->heading < -M_PI_F) { odo->heading += 2.0f * M_PI_F; }
 

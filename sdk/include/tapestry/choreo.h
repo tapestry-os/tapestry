@@ -87,7 +87,7 @@ typedef uint8_t choreo_capabilities_t;
  * The BSE decomposes it into per-element directives each cycle.
  *
  * The stub supports one active goal at a time.  The commercial BSE supports
- * a prioritised goal queue with preemption and sequencing.
+ * a prioritized goal queue with preemption and sequencing.
  */
 
 typedef enum {
@@ -109,7 +109,7 @@ typedef struct {
 /* ── SDK API ──────────────────────────────────────────────────────────────── */
 
 /*
- * choreo_init — Initialise the Choreographer for this element.
+ * choreo_init — Initialize the Choreographer for this element.
  * Must be called once, before any other choreo_* function.
  */
 void choreo_init(element_id_t self_id);

@@ -3,7 +3,7 @@ collect.py — hardware telemetry collector for Tapestry Phase 2
 
 Listens on UDP for L4 CSM metric and L5 SCR metric packets sent by
 physical elements.  Writes a combined CSV (one row per element per cycle)
-using the same schema as tapestry-scr-sim so plot.py can visualise it.
+using the same schema as tapestry-scr-sim so plot.py can visualize it.
 
 Usage:
     python collect.py --out hw_run.csv

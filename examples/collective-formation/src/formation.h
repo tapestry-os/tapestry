@@ -12,7 +12,7 @@
  *       750 mm/s × 100 / 300 mm = 250.0 units/s  (1 unit = 3 mm)
  *     (750 mm/s extrapolated from measured 150 mm/s at 20%.)
  *
- *   DEMO_WHEEL_TRACK — wheel-centre-to-wheel-centre in logical units.
+ *   DEMO_WHEEL_TRACK — wheel-center-to-wheel-center in logical units.
  *     Cutebot Mini track ≈ 85 mm. In a 0.3 m arena: 85/3 ≈ 28.0.
  *
  * Formation tuning:
@@ -60,7 +60,7 @@ typedef struct {
     float heading;  /* Radians, 0 = +x direction */
 } demo_odometry_t;
 
-/* Initialise odometry at (x, y) with heading 0 (+x direction). */
+/* Initialize odometry at (x, y) with heading 0 (+x direction). */
 void demo_odometry_init(demo_odometry_t *odo, float x, float y);
 
 /*

@@ -1,8 +1,8 @@
 """
 Tapestry Choreographer SDK — Python package.
 
-Provides the L7 choreography interface (Choreo) backed by the L6
-BSE stub (BSE).  Import and use:
+Provides the L7 Choreographer interface (Choreo) backed by the L6
+Behavior Synthesis Engine (BSE).  Import and use:
 
     from tapestry.choreo import Choreo, Goal, GoalType
 

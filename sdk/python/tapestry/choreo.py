@@ -117,7 +117,7 @@ class Choreo:
 
     capabilities — SCR_CAP_* hardware bitmask for this element.  Pass None
         (default) to skip the capability check entirely, mirroring the C stub
-        behaviour when choreo_register_scr() has not been called.
+        behavior when choreo_register_scr() has not been called.
     """
 
     QUORUM_LOST = 0

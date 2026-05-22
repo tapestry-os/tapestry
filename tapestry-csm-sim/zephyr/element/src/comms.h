@@ -32,12 +32,12 @@ typedef struct {
 int comms_init(comms_t *c, element_id_t element_id, uint16_t orch_port);
 
 /*
- * comms_send_gossip — Serialise own_state as SIM_MSG_GOSSIP and send to orch.
+ * comms_send_gossip — Serialize own_state as SIM_MSG_GOSSIP and send to orch.
  */
 void comms_send_gossip(const comms_t *c, const element_state_t *own_state);
 
 /*
- * comms_send_metric — Serialise the world model's current metric as
+ * comms_send_metric — Serialize the world model's current metric as
  * SIM_MSG_METRIC and send to orch.
  */
 void comms_send_metric(const comms_t *c, const world_model_t *wm,

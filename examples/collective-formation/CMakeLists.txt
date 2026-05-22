@@ -27,17 +27,6 @@ if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)
 endif()
 
-# Stub transceiver backends (not active in any current build).
-if(CONFIG_TAPESTRY_TRANSCEIVER_ACOUSTIC)
-    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_acoustic.c)
-endif()
-if(CONFIG_TAPESTRY_TRANSCEIVER_OPTICAL)
-    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_optical.c)
-endif()
-if(CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL)
-    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_chemical.c)
-endif()
-
 # Substrate: Cutebot on micro:bit, null stub everywhere else.
 if(CONFIG_I2C)
     target_sources(app PRIVATE
@@ -50,7 +39,7 @@ endif()
 
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include                    # <tapestry/csm.h>, <tapestry/transport.h>, <tapestry/substrate.h>
-    ${TAPESTRY_OS_CSM}                             # world_model.h, state.h
+    ${TAPESTRY_OS_CSM}                             # world_model.c; types via <tapestry/csm.h>
     ${TAPESTRY_OS_TRANSPORT}                       # gossip.h, transceiver_ble.h, net_init.h
     ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h
     src

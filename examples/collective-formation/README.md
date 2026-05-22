@@ -1,8 +1,8 @@
 # Demo — Collective Formation
 
-BBC micro:bit V2 + Cutebot Mini robots self-organise into a regular formation
+BBC micro:bit V2 + Cutebot Mini robots self-organize into a regular formation
 using the Tapestry L4 world model and BLE gossip. No central controller.
-No L5 SCR — formation is a pure L4 emergent behaviour.
+No L5 SCR — formation is a pure L4 emergent behavior.
 
 ## How it works
 
@@ -26,7 +26,6 @@ No L5 SCR — formation is a pure L4 emergent behaviour.
 |---|---|
 | Board | BBC micro:bit V2 (nRF52833, Cortex-M4F) |
 | Robot chassis | Elecfreaks Cutebot Mini |
-| Transport | BLE advertising / passive scan (no pairing) |
 | Arena | 300 mm × 300 mm |
 | Formation | ~150 mm square side (50 logical units) |
 
@@ -66,7 +65,7 @@ Defined in [src/formation.h](src/formation.h). Override at build time with
 | Constant | Default | Meaning |
 |---|---|---|
 | `DEMO_SPEED_SCALE` | 250.0 | Logical units/s at 100% motor speed |
-| `DEMO_WHEEL_TRACK` | 28.0 | Wheel-centre to wheel-centre, logical units |
+| `DEMO_WHEEL_TRACK` | 28.0 | Wheel-center to wheel-center, logical units |
 | `DEMO_TARGET_SPACING` | 59.0 | Desired peer spacing (→ ~150 mm side) |
 
 **Recalibrating for a different arena:**

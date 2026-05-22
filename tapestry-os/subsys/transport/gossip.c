@@ -24,7 +24,7 @@
 
 #include <string.h>
 #include <tapestry/wire.h>
-#include "world_model.h"
+#include <tapestry/csm.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>

@@ -30,10 +30,6 @@
 #include <tapestry/substrate.h>   /* substrate_power_state_t                  */
 #include <tapestry/scr.h>         /* scr_state_t, world_model_t, element_id_t */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* ── Configuration ───────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -49,7 +45,7 @@ typedef struct {
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
 /*
- * tapestry_runtime_init — Initialise all runtime subsystems.
+ * tapestry_runtime_init — Initialize all runtime subsystems.
  *
  * Calls substrate_init(), transport_init(), wm_init(), scr_init(), and
  * choreo_init() (L7) in order.  substrate_init() failure is non-fatal
@@ -127,9 +123,5 @@ substrate_power_state_t tapestry_power_get(void);
  * tapestry_ota_*       — over-the-air firmware update
  * tapestry_percept_*   — local sensor fusion pipeline
  */
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* TAPESTRY_RUNTIME_H */

@@ -26,6 +26,13 @@ CTRL_SET_PARTITION = 1
 CTRL_SET_POWER     = 2
 CTRL_SHUTDOWN      = 3
 
+# ── Power states (mirror substrate_power_state_t in substrate.h) ──────────────
+
+POWER_ACTIVE  = 0   # full sensing, actuation, and communication
+POWER_IDLE    = 1   # communication only; actuation paused
+POWER_SLEEP   = 2   # deep sleep; wakes on timer or interrupt
+POWER_HARVEST = 3   # energy harvesting; minimal activity
+
 # ── Struct formats ────────────────────────────────────────────────────────────
 #
 # HEADER_FMT   '<BBH'             type, src_id, payload_len             — 4 bytes

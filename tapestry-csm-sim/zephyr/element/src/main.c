@@ -55,7 +55,7 @@ int main(void)
     const int   orch_port         = env_int("ORCH_PORT",         SIM_ORCH_PORT);
     const float consistency_bias  = env_float("CONSISTENCY_BIAS", 0.0f);
 
-    /* ---- Initialise own state ------------------------------------------ */
+    /* ---- Initialize own state ------------------------------------------ */
     element_state_t own_state = {0};
     own_state.id               = (element_id_t)element_id;
     own_state.partition_island = 0;
@@ -73,11 +73,11 @@ int main(void)
             (double)own_state.position.x,
             (double)own_state.position.y);
 
-    /* ---- Initialise world model --------------------------------------- */
+    /* ---- Initialize world model --------------------------------------- */
     world_model_t wm;
     wm_init(&wm, own_state.id, &own_state, consistency_bias);
 
-    /* ---- Initialise comms --------------------------------------------- */
+    /* ---- Initialize comms --------------------------------------------- */
     comms_t comms;
     if (comms_init(&comms, own_state.id, (uint16_t)orch_port) != 0) {
         LOG_ERR("comms_init failed — aborting");

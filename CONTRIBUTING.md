@@ -15,7 +15,7 @@ Tested on Raspberry Pi aarch64 (Zephyr 4.4.0-rc1) and Ubuntu 22.04 x86_64.
 ## First-time setup
 
 ```bash
-# 1. Initialise a west workspace with Tapestry as the manifest project
+# 1. Initialize a west workspace with Tapestry as the manifest project
 west init -m https://github.com/tapestry-os/tapestry --mr main tapestry-workspace
 cd tapestry-workspace
 

@@ -5,7 +5,7 @@ Same runner contract as tapestry-csm-sim/orchestrator/scenarios.py:
 each scenario is an async generator yielding (delay_s, action_fn, kwargs).
 
 L4 scenarios (default, flapping, asymmetric, sleep) are carried over
-unchanged — they remain valid for observing SCR behaviour under the same
+unchanged — they remain valid for observing SCR behavior under the same
 network conditions.
 
 L5-specific scenarios

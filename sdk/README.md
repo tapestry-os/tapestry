@@ -7,7 +7,7 @@ below it is managed by Tapestry; application code calls only into this SDK.
 ```
 ┌─────────────────────────────────────────────────┐
 │  L7  Choreographer (your code)                  │  ← codes against sdk/
-│  L6  BSE — Behavior Synthesis Engine (stub)     │  ← tapestry-os/subsys/bse/
+│  L6  BSE — Behavior Synthesis Engine            │  ← tapestry-os/subsys/bse/
 │  L5  SCR — Swarm Coordination Runtime           │
 │  L4  CSM — Coherent Swarm Memory                │
 │  L3  Transport — UDP / BLE gossip               │
@@ -19,8 +19,7 @@ below it is managed by Tapestry; application code calls only into this SDK.
 > **Stub implementation — not for production use.**
 > The BSE backing this SDK implements intent parsing only (geometry-based
 > directive synthesis).  The physics-aware planner, ML inference runtime,
-> simulation bridge, and feedback controller are commercial BSE components
-> not present in this release.
+> simulation bridge, and feedback controller are not present in this release.
 
 ## Quick start — Python (simulation / research)
 
@@ -46,7 +45,7 @@ directive = choreo.get_directive()
 ## Quick start — C (embedded / Zephyr)
 
 Include `sdk/include` and `tapestry-os/include` in your build, and add the
-stub sources to your `CMakeLists.txt`:
+sources to your `CMakeLists.txt`:
 
 ```cmake
 set(TAPESTRY_OS_BSE    ${TAPESTRY_OS_ROOT}/subsys/bse)
@@ -113,6 +112,6 @@ sdk/
 
 tapestry-os/
   include/tapestry/bse.h           L6 interface contract
-  subsys/bse/bse.c                 L6 C stub
-  subsys/choreo/choreo.c           L7 C stub
+  subsys/bse/bse.c                 L6 C 
+  subsys/choreo/choreo.c           L7 C 
 ```

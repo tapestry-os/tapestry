@@ -12,7 +12,7 @@ target_sources(app PRIVATE
 
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include   # <tapestry/csm.h>
-    ${TAPESTRY_OS_CSM}            # internal: world_model.c includes world_model.h
+    ${TAPESTRY_OS_CSM}            # world_model.c; types via <tapestry/csm.h>
 )
 
 target_link_libraries(app PRIVATE m)

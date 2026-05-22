@@ -3,7 +3,8 @@
  *
  * Owns the per-element cycle for the full L4+L5+L6 stack:
  *   transport_drain → wm_tick → wm_update_self → scr_tick
- *   (→ choreo_tick via L5 on_tick hook) → gossip send → telemetry → power policy
+ *   (→ choreo_tick via L5 on_tick hook) → election tracking
+ *   → gossip send → telemetry → power policy
  *
  * Applications call tapestry_runtime_tick() once per WM_CYCLE_MS and then
  * read tapestry_runtime_scr() to drive substrate_move() and

@@ -85,11 +85,11 @@ or biochemical state machines — while L3–L7 remain stable.
 
 L3 is implemented by two transport backends, both in `tapestry-os/subsys/transport/`:
 
-- **UDP broadcast** (`udp/udp_gossip.c`) — each element broadcasts its state to the subnet
+- **UDP broadcast** (`transceiver_udp.c`) — each element broadcasts its state to the subnet
   on a fixed port; any element within the same L2 segment receives it with no addressing
   or routing configuration. Used by the simulation harness and the WiFi/Ethernet hardware
   elements (ESP32, RA8D1).
-- **BLE advertising** (`ble/ble_gossip.c`) — each element advertises its state in a
+- **BLE advertising** (`transceiver_ble.c`) — each element advertises its state in a
   non-connectable BLE manufacturer-specific record; any element within radio range (~10 m)
   receives it passively. Used by micro:bit elements and as a secondary transport on the
   ESP32 bridge element.
@@ -185,19 +185,15 @@ tapestry/
 │   │   ├── scr.h                  L5 public API boundary (includes csm.h)
 │   │   └── wire.h                 L3 on-wire frame format (pure C99, no OS deps)
 │   ├── subsys/csm/
-│   │   ├── state.h                Core types: element_state_t, position_t, …
-│   │   ├── world_model.h          CSM internal API
 │   │   └── world_model.c          CSM implementation (pure C99)
 │   ├── subsys/scr/
-│   │   ├── scr.h                  SCR internal API: scr_state_t, roles, quorum
 │   │   └── scr.c                  SCR implementation (pure C99)
 │   └── subsys/transport/
-│       ├── ble/
-│       │   ├── ble_gossip.h       BLE advertising gossip transport API
-│       │   └── ble_gossip.c       BLE implementation (Zephyr bt_* API)
-│       └── udp/
-│           ├── udp_gossip.h       UDP broadcast gossip transport API
-│           └── udp_gossip.c       UDP implementation (Zephyr zsock_* API)
+│       ├── transport.c            Transceiver registry and multiplexer
+│       ├── gossip.c/.h            Wire framing, relay, HMAC auth
+│       ├── transceiver_ble.c/.h   BLE advertising backend (Zephyr bt_* API)
+│       ├── transceiver_udp.c/.h   UDP broadcast backend (Zephyr zsock_* API)
+│       └── net_init.c/.h          WiFi / Ethernet bring-up (Zephyr net_mgmt)
 │
 ├── tapestry-csm-sim/              L4 simulation harness
 │   ├── sim_protocol.h             Sim-only additions: ports, control protocol,
@@ -220,10 +216,9 @@ tapestry/
 │       ├── protocol.py            Python mirror of wire.h + sim_protocol.h structs
 │       ├── telemetry.py           Per-cycle CSV writer
 │       ├── scenarios.py           Timed partition/power injection scripts
-│       └── plot.py                5-panel matplotlib efficacy visualiser
+│       └── plot.py                5-panel matplotlib efficacy visualizer
 │
 ├── tapestry-scr-sim/              L5 simulation harness
-│   ├── scr_protocol.h             Sim-only compat aliases over <tapestry/wire.h>
 │   ├── tests/                     ztest unit tests for L5
 │   │   ├── CMakeLists.txt
 │   │   ├── prj.conf
@@ -240,19 +235,18 @@ tapestry/
 │       ├── protocol.py            Python mirror of wire.h + scr_protocol.h structs
 │       ├── telemetry.py           Combined L4+L5 CSV writer (one row per element/cycle)
 │       ├── scenarios.py           L4 scenarios + leader_loss, cascade
-│       └── plot.py                5-panel SCR visualiser: quorum, agreement, roles
+│       └── plot.py                5-panel SCR visualizer: quorum, agreement, roles
 │
 └── tapestry-scr-hw/               Hardware swarm firmware (Phase 1 + Phase 2)
     ├── README.md                  Build, flash, and telemetry instructions
     ├── Kconfig                    Element configuration (ID, ports, WiFi, ORCH_IP)
     ├── src/
-    │   ├── main.c                 Element main loop (L4 + L5); wires OS transport
-    │   │                          and adaptation layers together
-    │   └── net_init.c/h           WiFi / Ethernet bring-up (Zephyr net_mgmt)
+    │   └── main.c                 Element main loop (L4 + L5); wires OS transport
+    │                              and adaptation layers together
     └── telemetry/
         ├── collect.py             UDP metric collector → CSV
         ├── protocol.py            Python mirror of wire.h structs
-        └── plot.py                5-panel hardware telemetry visualiser
+        └── plot.py                5-panel hardware telemetry visualizer
 ```
 
 ## Architectural boundary
@@ -262,14 +256,12 @@ None contains Zephyr or OS-specific types. The include hierarchy is:
 
 ```
 <tapestry/scr.h>          L4 + L5 surface (firmware that runs both layers)
-  └── <tapestry/csm.h>    L4 surface only
-        ├── subsys/csm/state.h
-        └── subsys/csm/world_model.h
+  └── <tapestry/csm.h>    L4 surface only (element_state_t, world_model_t, …)
 
 <tapestry/wire.h>         L3 on-wire frame format (pure C99; no OS deps)
   ↑ included by:
-    subsys/transport/ble/ble_gossip.h   (Zephyr bt_* dependent)
-    subsys/transport/udp/udp_gossip.h   (Zephyr zsock_* dependent)
+    subsys/transport/transceiver_ble.h   (Zephyr bt_* dependent)
+    subsys/transport/transceiver_udp.h   (Zephyr zsock_* dependent)
 ```
 
 `tapestry-os/subsys/csm/` and `tapestry-os/subsys/scr/` are pure C99 and
@@ -287,7 +279,7 @@ preserved via `git subtree split` and `west.yml`.
 **Prerequisites:** [Zephyr SDK](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html) 0.17.0+, Python ≥ 3.11. Tested on Raspberry Pi aarch64 and Ubuntu 22.04 (Zephyr 4.4.0-rc1).
 
 ```bash
-# 1. Initialise west workspace
+# 1. Initialize west workspace
 west init -m https://github.com/tapestry-os/tapestry --mr main tapestry-workspace
 cd tapestry-workspace
 west update

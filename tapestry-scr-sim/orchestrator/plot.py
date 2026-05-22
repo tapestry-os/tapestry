@@ -1,5 +1,5 @@
 """
-plot.py — Tapestry L5 SCR simulation telemetry visualiser.
+plot.py — Tapestry L5 SCR simulation telemetry visualizer.
 
 Reads one or two combined L4+L5 telemetry CSV files (produced by
 tapestry-scr-sim/orchestrator/main.py) and produces a 5-panel figure
@@ -33,7 +33,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-COLOURS = ['#2196F3', '#FF5722', '#4CAF50', '#9C27B0']
+COLORS = ['#2196F3', '#FF5722', '#4CAF50', '#9C27B0']
 
 ELEMENT_ID_INVALID = 255
 
@@ -132,14 +132,14 @@ def partition_regions(df: pd.DataFrame) -> list[tuple[float, float]]:
 
 # ── Panel drawing ─────────────────────��────────────────────────────────────���──
 
-def _draw_panel(ax, stats: pd.DataFrame, colour: str, label: str,
+def _draw_panel(ax, stats: pd.DataFrame, color: str, label: str,
                 regions: list, ylabel: str, ylim=None, hline=None):
     t = stats.index.values
     m = stats['mean'].values
     s = stats['std'].values
 
-    ax.plot(t, m, color=colour, linewidth=1.8, label=label)
-    ax.fill_between(t, m - s, m + s, color=colour, alpha=0.15)
+    ax.plot(t, m, color=color, linewidth=1.8, label=label)
+    ax.fill_between(t, m - s, m + s, color=color, alpha=0.15)
 
     for r_start, r_end in regions:
         ax.axvspan(r_start, r_end, color='#FFC107', alpha=0.15)
@@ -168,13 +168,13 @@ def plot(paths: list[str], labels: list[str], out: str | None):
     legend_handles = []
 
     for ds_idx, (df, label) in enumerate(zip(datasets, labels)):
-        colour = COLOURS[ds_idx % len(COLOURS)]
-        legend_handles.append(mpatches.Patch(color=colour, label=label))
+        color = COLORS[ds_idx % len(COLORS)]
+        legend_handles.append(mpatches.Patch(color=color, label=label))
 
         # Panel 1 — quorum_state (0=LOST, 1=DEGRADED, 2=HEALTHY)
         _draw_panel(axes[0],
                     per_cycle_stats(df, 'quorum_state'),
-                    colour, label, regions,
+                    color, label, regions,
                     ylabel='Quorum state [0=LOST … 2=HEALTHY]',
                     ylim=(-0.1, 2.3),
                     hline=2.0)
@@ -182,7 +182,7 @@ def plot(paths: list[str], labels: list[str], out: str | None):
         # Panel 2 — leader agreement
         _draw_panel(axes[1],
                     leader_agreement_series(df),
-                    colour, label, regions,
+                    color, label, regions,
                     ylabel='Leader agreement [0–1]',
                     ylim=(0, 1.05),
                     hline=1.0)
@@ -190,7 +190,7 @@ def plot(paths: list[str], labels: list[str], out: str | None):
         # Panel 3 — is_leader count (should be exactly 1 in healthy state)
         _draw_panel(axes[2],
                     is_leader_count_series(df),
-                    colour, label, regions,
+                    color, label, regions,
                     ylabel='# elements as LEADER',
                     ylim=(-0.1, None),
                     hline=1.0)
@@ -198,14 +198,14 @@ def plot(paths: list[str], labels: list[str], out: str | None):
         # Panel 4 — fresh_count
         _draw_panel(axes[3],
                     per_cycle_stats(df, 'fresh_count'),
-                    colour, label, regions,
+                    color, label, regions,
                     ylabel='Fresh peer count',
                     ylim=(0, None))
 
         # Panel 5 — min_separation (safety proxy from L4)
         _draw_panel(axes[4],
                     per_cycle_stats(df, 'min_separation'),
-                    colour, label, regions,
+                    color, label, regions,
                     ylabel='Min separation (u)',
                     ylim=(0, None),
                     hline=3.0)

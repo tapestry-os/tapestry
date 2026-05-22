@@ -2,12 +2,12 @@
  * world_model.c — Tapestry L4 Simulation
  *
  * Implementation of the Collective State Manager (CSM).
- * See world_model.h for full API documentation and design rationale.
+ * See <tapestry/csm.h> for full API documentation and design rationale.
  */
 
 #include <string.h>
 #include <math.h>
-#include "world_model.h"
+#include <tapestry/csm.h>
 
 /* ── Internal helpers ────────────────────────────────────────────────────── */
 

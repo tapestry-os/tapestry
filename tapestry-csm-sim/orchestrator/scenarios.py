@@ -5,10 +5,8 @@ A scenario is an async generator that yields (delay_s, action_fn, kwargs)
 tuples.  run() drives the generator, sleeping between events, then idles
 until the requested duration elapses.
 
-Power state constants mirror power_state_t in state.h:
-    POWER_ACTIVE = 0   sensing, gossiping, updating position
-    POWER_IDLE   = 1   gossiping but not updating position
-    POWER_SLEEP  = 2   not gossiping; last state persists until expired
+Power state constants are imported from protocol.py, which mirrors
+substrate_power_state_t in tapestry-os/include/tapestry/substrate.h.
 
 Built-in scenarios
 ──────────────────
@@ -24,11 +22,9 @@ Built-in scenarios
 import asyncio
 import logging
 
-log = logging.getLogger(__name__)
+from protocol import POWER_ACTIVE, POWER_SLEEP
 
-POWER_ACTIVE = 0
-POWER_IDLE   = 1
-POWER_SLEEP  = 2
+log = logging.getLogger(__name__)
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 

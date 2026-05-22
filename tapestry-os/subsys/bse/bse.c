@@ -7,7 +7,7 @@
  * What this stub does:
  *   - Intent parsing: reads the active intent type.
  *   - Task decomposition (FORM): maps the FORM goal to per-element vertex
- *     assignments — a regular N-gon centred on intent.target, N = active
+ *     assignments — a regular N-gon centered on intent.target, N = active
  *     fresh element count.  Each element independently derives its own
  *     vertex from its peer-rank ordinal; no coordination messages needed.
  *   - For MOVE / CONVERGE: emits MOVE_TO_POINT to intent.target for all

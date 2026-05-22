@@ -4,7 +4,7 @@
  * Tests are independent: each builds its own world model and SCR state
  * from scratch, injects peers via wm_receive_gossip(), and asserts the
  * expected quorum state, leader, role, task slot, abort state, and BFT
- * filtering behaviour.
+ * filtering behavior.
  *
  * Conventions:
  *   - quorum_min    = 1  (need >= 1 fresh peer for DEGRADED)
@@ -27,7 +27,7 @@
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
 /*
- * make_wm — Initialise a world model for element `owner_id`.
+ * make_wm — Initialize a world model for element `owner_id`.
  * Spreads the owner position deterministically (same formula as main.c).
  */
 static void make_wm(world_model_t *wm, element_id_t owner_id)
@@ -58,7 +58,7 @@ static void inject_peer(world_model_t *wm, element_id_t id, uint32_t clock)
 }
 
 /*
- * make_scr — Initialise SCR with standard test parameters and no capabilities.
+ * make_scr — Initialize SCR with standard test parameters and no capabilities.
  */
 static void make_scr(scr_state_t *scr, element_id_t own_id)
 {
@@ -66,7 +66,7 @@ static void make_scr(scr_state_t *scr, element_id_t own_id)
 }
 
 /*
- * make_scr_with_caps — Initialise SCR with specific capability flags.
+ * make_scr_with_caps — Initialize SCR with specific capability flags.
  */
 static void make_scr_with_caps(scr_state_t *scr, element_id_t own_id,
                                 scr_capability_t caps)
