@@ -157,7 +157,7 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
         break;
 
     case CHOREO_STATE_SUSPENDED:
-        bse_tick(wm, scr);   /* BSE issues HOLD directive while quorum is LOST */
+        bse_tick(wm, scr);
         if (scr->quorum_state != SCR_QUORUM_LOST) {
             s_state = CHOREO_STATE_RUNNING;
         }

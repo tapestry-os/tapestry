@@ -1,0 +1,14 @@
+description: |
+  Bitcraze Crazyflie 2.1 brushless motor PWM channels.
+
+  Four PWM entries in order M1 (front-right CCW), M2 (back-right CCW),
+  M3 (back-left CW), M4 (front-left CW).  All channels share one STM32
+  TIM2 PWM device.  Period is 2 500 000 ns (400 Hz RC PWM).
+
+compatible: "bitcraze,cf21-motors"
+
+properties:
+  pwms:
+    type: phandle-array
+    required: true
+    description: Four PWM channels M1..M4 (one STM32 timer, channels 1-4).

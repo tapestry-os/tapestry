@@ -1,0 +1,6 @@
+board:
+  name: crazyflie21
+  full_name: Bitcraze Crazyflie 2.1 Brushless
+  vendor: bitcraze
+  socs:
+    - name: stm32f405xx

@@ -47,7 +47,7 @@ void substrate_set_signal(substrate_signal_t signal)
 {
     switch (signal) {
     case SUBSTRATE_SIGNAL_ACTIVE:   cutebot_set_leds(0,   200, 0);   break; /* green  */
-    case SUBSTRATE_SIGNAL_DEGRADED: cutebot_set_leds(200, 200, 0);   break; /* yellow */
+    case SUBSTRATE_SIGNAL_DEGRADED: cutebot_set_leds(200,  80, 0);   break; /* orange */
     case SUBSTRATE_SIGNAL_FAILED:   cutebot_set_leds(200,   0, 0);   break; /* red    */
     case SUBSTRATE_SIGNAL_IDLE:     cutebot_set_leds(0,     0, 200); break; /* blue   */
     case SUBSTRATE_SIGNAL_NONE:

@@ -5,20 +5,23 @@
  * dead-reckoning odometry to keep own_state.position current.
  *
  * Physical calibration:
- *   DEMO_SPEED_SCALE — logical units per second at 100% motor speed.
- *     Formula: SPEED_SCALE = robot_speed_mm_per_s * 100 / WORLD_MM
- *     where WORLD_MM is the physical width of your arena in mm.
- *     Calibrated for 0.3 m arena and ~0.15 m/s Cutebot speed:
- *       750 mm/s × 100 / 300 mm = 250.0 units/s  (1 unit = 3 mm)
- *     (750 mm/s extrapolated from measured 150 mm/s at 20%.)
+ *   DEMO_MAX_SPEED — effective linearisation constant, NOT true 100% speed.
+ *     The motor curve is non-linear: at 22% commanded speed Cutebots already
+ *     do ~32% of max velocity.  Calibrate at the actual commanded speed (22%)
+ *     so dead-reckoning is correct in practice:
+ *       DEMO_MAX_SPEED = speed_mm_per_s_at_22pct / 0.22 * 100 / arena_mm
+ *     Measured fleet average 238 mm/s at 22%, 800 mm arena (1 unit = 8 mm):
+ *       238 / 0.22 * 100 / 800 = 135.0
+ *     Per-robot values (compile with -DDEMO_MAX_SPEED=N):
+ *       Bot 0: 120  Bot 1: 137  Bot 2: 145  Bot 3: 139
  *
  *   DEMO_WHEEL_TRACK — wheel-center-to-wheel-center in logical units.
- *     Cutebot Mini track ≈ 85 mm. In a 0.3 m arena: 85/3 ≈ 28.0.
+ *     Cutebot Mini track ≈ 85 mm. In an 800 mm arena: 85/8 = 10.6.
  *
  * Formation tuning:
  *   DEMO_TARGET_SPACING — desired peer-to-peer spacing in logical units.
- *     59 units → equilibrium side ≈ 50 units = 150 mm in a 300 mm arena.
- *     Smaller = tighter cluster. Larger = robots spread to arena edges.
+ *     25 units ≈ 200 mm in an 800 mm arena. Starting point — tune up to
+ *     spread robots further or down to tighten the cluster.
  *
  * Override any constant at compile time:
  *   west build ... -- -DDEMO_TARGET_SPACING=40.0f
@@ -34,22 +37,27 @@
 /* ── Calibration defaults ───────────────────────────────────────────────── */
 
 #ifndef DEMO_WHEEL_TRACK
-#define DEMO_WHEEL_TRACK   28.0f   /* logical units, wheel-to-wheel (0.3 m arena) */
+#define DEMO_WHEEL_TRACK   10.6f   /* logical units, wheel-to-wheel (800 mm arena) */
 #endif
 
 #ifndef DEMO_MAX_SPEED
-#define DEMO_MAX_SPEED    250.0f   /* logical units/s at speed_norm=1.0
-                                     * Formula: robot_speed_mm_per_s * 100 / WORLD_MM
-                                     * 0.3 m arena, ~0.75 m/s max: 750 * 100 / 300 = 250 */
+#define DEMO_MAX_SPEED    135.0f   /* linearisation constant at 22% commanded speed
+                                     * Formula: speed_mm_per_s_at_22pct / 0.22 * 100 / arena_mm
+                                     * 800 mm arena, fleet avg 238 mm/s at 22%: 238/0.22*100/800 = 135 */
 #endif
 
-/* Maximum yaw rate (rad/s) at rate_norm=1.0 — derived from wheel track and max speed.
+/* Maximum yaw rate (rad/s) at rate_norm=1.0.
+ * Although DEMO_MAX_SPEED is a low-speed linearisation constant (not true 100%
+ * speed), using it here works because the motor non-linearity at 22% raises
+ * effective speed by the same factor (~1.43×), so DEMO_MAX_OMEGA correctly
+ * predicts physical omega for both in-place and arc turns at stiction speed.
  * Not overridable: change DEMO_MAX_SPEED or DEMO_WHEEL_TRACK instead. */
 #define DEMO_MAX_OMEGA    (2.0f * DEMO_MAX_SPEED / DEMO_WHEEL_TRACK)
 
 #ifndef DEMO_TARGET_SPACING
-#define DEMO_TARGET_SPACING 59.0f  /* desired peer spacing, logical units →
-                                     * equilibrium side = 59 × 0.854 ≈ 50 units = 150 mm */
+#define DEMO_TARGET_SPACING 50.0f  /* desired peer spacing, logical units →
+                                     * equilibrium side = T × 0.854 (4-robot square geometry)
+                                     * 50 units → equilibrium ≈ 43 units = 341 mm in 800 mm arena */
 #endif
 
 /* ── Dead-reckoning state ───────────────────────────────────────────────── */
@@ -58,6 +66,7 @@ typedef struct {
     float x;        /* Current position in logical world coords [0, WORLD_SIZE] */
     float y;
     float heading;  /* Radians, 0 = +x direction */
+    bool  moving;   /* Hysteresis state for demo_compute_drive */
 } demo_odometry_t;
 
 /* Initialize odometry at (x, y) with heading 0 (+x direction). */
@@ -67,6 +76,7 @@ void demo_odometry_init(demo_odometry_t *odo, float x, float y);
  * Update dead-reckoning estimate from the last motion command.
  *   speed_norm: forward velocity [-1.0, 1.0], passed to substrate_move().
  *   rate_norm:  yaw rate         [-1.0, 1.0], positive = CCW (turn left).
+ *   Also resets odo->moving when peer count transitions from 0 → non-zero.
  *   dt_ms: elapsed milliseconds since last call (typically WM_CYCLE_MS).
  */
 void demo_odometry_update(demo_odometry_t *odo,
@@ -88,7 +98,7 @@ void demo_odometry_update(demo_odometry_t *odo,
  * When no peers are visible, the robot holds position (both outputs zero).
  */
 void demo_compute_drive(const world_model_t *wm,
-                         const demo_odometry_t *odo,
+                         demo_odometry_t *odo,
                          float *speed_out,
                          float *rate_out);
 

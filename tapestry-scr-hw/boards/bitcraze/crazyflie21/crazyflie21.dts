@@ -1,0 +1,117 @@
+/*
+ * crazyflie21.dts — Zephyr board DTS for Bitcraze Crazyflie 2.1 Brushless
+ *
+ * MCU:   STM32F405RGT6 (Cortex-M4F, 168 MHz, 1 MB flash, 192 KB SRAM)
+ * Clock: 40 MHz TCXO (hse-bypass) → PLL → 168 MHz SYSCLK
+ *
+ * Pin assignments marked TODO must be verified against the CF2.1 brushless
+ * schematic before flashing real hardware:
+ *   https://www.bitcraze.io/documentation/hardware/crazyflie_2_1/
+ *
+ * Motor PWM and the nRF51 HCI UART are configured in the app overlay
+ * (tapestry-os/boards/crazyflie21/crazyflie21.overlay).
+ */
+
+/dts-v1/;
+#include <st/f4/stm32f405Xg.dtsi>
+#include <st/f4/stm32f405rgtx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "Bitcraze Crazyflie 2.1 Brushless";
+	compatible = "bitcraze,crazyflie21";
+
+	chosen {
+		zephyr,sram   = &sram0;
+		zephyr,flash  = &flash0;
+		zephyr,ccm    = &ccm0;
+		zephyr,console    = &usart1;
+		zephyr,shell-uart = &usart1;
+	};
+
+	aliases {
+		led0 = &status_led;
+	};
+
+	/*
+	 * Single status LED driven by GPIO.
+	 * TODO: verify PC1 against the CF2.1 brushless schematic.
+	 *       On the stock CF2.1, status LEDs are on PC0/PC1/PC2/PC3;
+	 *       PC1 is used here as the primary indicator.
+	 */
+	leds {
+		compatible = "gpio-leds";
+		status_led: status_led_0 {
+			gpios = <&gpioc 1 GPIO_ACTIVE_HIGH>;
+			label = "Status LED";
+		};
+	};
+};
+
+/* ── Clocks ──────────────────────────────────────────────────────────────── */
+
+&clk_hse {
+	/*
+	 * CF2.1 uses a 40 MHz VCTCXO oscillator (bypass mode — no crystal).
+	 * PLL: VCO_in = 40/40 = 1 MHz, VCO_out = 336 MHz
+	 *      SYSCLK = 336/2 = 168 MHz, USB = 336/7 = 48 MHz
+	 */
+	hse-bypass;
+	clock-frequency = <DT_FREQ_M(40)>;
+	status = "okay";
+};
+
+&pll {
+	div-m = <40>;
+	mul-n = <336>;
+	div-p = <2>;
+	div-q = <7>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks        = <&pll>;
+	clock-frequency = <DT_FREQ_M(168)>;
+	ahb-prescaler = <1>;
+	apb1-prescaler = <4>;   /* APB1 max 42 MHz */
+	apb2-prescaler = <2>;   /* APB2 max 84 MHz */
+};
+
+/* ── Debug / console UART ────────────────────────────────────────────────── */
+
+/*
+ * USART1 on PA9/PA10 is routed to the expansion port and is used as the
+ * Zephyr console / shell.
+ * TODO: verify PA9/PA10 availability on the brushless variant.
+ */
+&usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+/* ── nRF51822 BLE radio co-processor ────────────────────────────────────── */
+
+/*
+ * The nRF51822 is connected to the STM32F405 via USART6 (PC6/PC7).
+ * Zephyr BT_HCI_UART uses this UART once the nRF51 is reflashed with
+ * standard HCI firmware (see PORTING.md / crazyflie21.conf TODO).
+ * Disabled here; the app overlay enables it when CONFIG_BT_HCI_UART=y.
+ *
+ * TODO: verify USART6 pin assignment from CF2.1 schematic.
+ *       Alternate candidate: USART3 on PB10/PB11 (conflicts with TIM2_CH4).
+ */
+&usart6 {
+	pinctrl-0 = <&usart6_tx_pc6 &usart6_rx_pc7>;
+	pinctrl-names = "default";
+	current-speed = <1000000>;   /* nRF51 HCI UART: 1 Mbps */
+	status = "disabled";
+};
+
+/* ── GPIO banks ───────────────────────────────────────────────────────────── */
+
+&gpioa { status = "okay"; };
+&gpiob { status = "okay"; };
+&gpioc { status = "okay"; };

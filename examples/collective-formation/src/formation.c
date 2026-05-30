@@ -38,8 +38,9 @@ LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
  * correction that slightly overshoots does not immediately trigger a
  * counter-correction, and gossip-propagated micro-adjustments from
  * neighbors do not restart a robot that has just settled. */
-#define FORCE_STOP   25.0f   /* ~2 units / 6 mm from equilibrium  */
-#define FORCE_START  90.0f   /* > one-cycle overshoot force (~81 units) */
+#define FORCE_STOP   25.0f   /* ~3 units / 24 mm from equilibrium (800 mm arena)  */
+#define FORCE_START  50.0f   /* > FORCE_STOP; initial cluster forces are 300+ so FORCE_START
+                              * is easily exceeded at boot */
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -55,6 +56,7 @@ void demo_odometry_init(demo_odometry_t *odo, float x, float y)
     odo->x       = x;
     odo->y       = y;
     odo->heading = 0.0f;
+    odo->moving  = false;
 }
 
 void demo_odometry_update(demo_odometry_t *odo,
@@ -84,9 +86,23 @@ void demo_odometry_update(demo_odometry_t *odo,
 /* ── Formation control ────────────────────────────────────────────────────── */
 
 void demo_compute_drive(const world_model_t *wm,
-                         const demo_odometry_t *odo,
+                         demo_odometry_t *odo,
                          float *speed_out, float *rate_out)
 {
+    /* Require all active peers to be fresh before moving.
+     * A stale entry means the world model is incomplete — forces computed
+     * from partial data are asymmetric and will drive the formation wrong.
+     * This makes the green/yellow LED state the hard gate on actuation. */
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_active && !e->is_self && e->is_stale) {
+            odo->moving = false;
+            *speed_out  = 0.0f;
+            *rate_out   = 0.0f;
+            return;
+        }
+    }
+
     float fx         = 0.0f;
     float fy         = 0.0f;
     int   peer_count = 0;
@@ -121,24 +137,25 @@ void demo_compute_drive(const world_model_t *wm,
     if (peer_count == 0) {
         /* No peers visible: hold position and wait for BLE gossip.
          * BLE scanning is passive — physical movement does not help
-         * discovery, and wandering corrupts the dead-reckoning origin. */
-        *speed_out = 0.0f;
-        *rate_out  = 0.0f;
+         * discovery, and wandering corrupts the dead-reckoning origin.
+         * Reset moving so the robot re-evaluates force when peers return. */
+        odo->moving = false;
+        *speed_out  = 0.0f;
+        *rate_out   = 0.0f;
         return;
     }
 
     /* Hysteresis: require a larger force to start moving than to stop.
      * Prevents oscillation and gossip-cascade near equilibrium. */
-    static bool moving = false;
     float force_mag = sqrtf(fx * fx + fy * fy);
 
-    if (!moving && force_mag >= FORCE_START) {
-        moving = true;
-    } else if (moving && force_mag < FORCE_STOP) {
-        moving = false;
+    if (!odo->moving && force_mag >= FORCE_START) {
+        odo->moving = true;
+    } else if (odo->moving && force_mag < FORCE_STOP) {
+        odo->moving = false;
     }
 
-    if (!moving) {
+    if (!odo->moving) {
         *speed_out = 0.0f;
         *rate_out  = 0.0f;
         return;
@@ -162,13 +179,21 @@ void demo_compute_drive(const world_model_t *wm,
     float turn  = clampf(f_lat * TURN_GAIN / DEMO_TARGET_SPACING,
                          -15.0f, 15.0f);
 
-    /* Snap: any non-zero speed command must reach the stiction threshold
-     * or the motors will not turn.  The force_mag check above already
-     * guards the zero case so anything reaching here should move. */
-    if (speed > 0.0f && speed < (float)MIN_STICTION) {
-        speed = (float)MIN_STICTION;
-    } else if (speed < 0.0f && speed > -(float)MIN_STICTION) {
-        speed = -(float)MIN_STICTION;
+    /* Both wheels must clear stiction independently.
+     * Substrate computes: left = speed - turn, right = speed + turn.
+     * The inner wheel (speed - |turn|) stalls if speed <= |turn| + MIN_STICTION,
+     * causing an uncontrolled pivot and rapid heading error in dead-reckoning.
+     * Fix: boost forward speed so the inner wheel always reaches MIN_STICTION.
+     * For in-place turns (speed==0), snap the turn command itself to MIN_STICTION
+     * so both wheels overcome stiction. */
+    float abs_turn = fabsf(turn);
+    float needed   = (float)MIN_STICTION + abs_turn;
+    if (speed > 0.0f && speed < needed) {
+        speed = needed;
+    } else if (speed < 0.0f && -speed < needed) {
+        speed = -needed;
+    } else if (speed == 0.0f && abs_turn > 0.0f && abs_turn < (float)MIN_STICTION) {
+        turn = (turn > 0.0f) ? (float)MIN_STICTION : -(float)MIN_STICTION;
     }
 
     *speed_out = speed / 100.0f;
@@ -210,26 +235,31 @@ void demo_display_position(const demo_odometry_t *odo)
 
 void demo_set_leds(const world_model_t *wm)
 {
-    int fresh = 0;
+    int fresh  = 0;
+    int active = 0;
 
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
-        if (e->is_active && !e->is_self && !e->is_stale) {
+        if (!e->is_active || e->is_self) {
+            continue;
+        }
+        active++;
+        if (!e->is_stale) {
             fresh++;
         }
     }
 
-    static int last_fresh = -1;
-    if (fresh != last_fresh) {
-        static const char *const labels[] = { "failed", "degraded", "active" };
-        int idx = fresh >= 2 ? 2 : fresh;
-        LOG_INF("peers=%d  signal=%s", fresh, labels[idx]);
-        last_fresh = fresh;
+    static int last_fresh  = -1;
+    static int last_active = -1;
+    if (fresh != last_fresh || active != last_active) {
+        LOG_INF("peers fresh=%d active=%d", fresh, active);
+        last_fresh  = fresh;
+        last_active = active;
     }
 
     substrate_signal_t sig;
-    if      (fresh >= 2) sig = SUBSTRATE_SIGNAL_ACTIVE;
-    else if (fresh == 1) sig = SUBSTRATE_SIGNAL_DEGRADED;
-    else                 sig = SUBSTRATE_SIGNAL_FAILED;
+    if      (active == 0)      sig = SUBSTRATE_SIGNAL_FAILED;    /* isolated        */
+    else if (fresh  <  active) sig = SUBSTRATE_SIGNAL_DEGRADED;  /* some stale      */
+    else                       sig = SUBSTRATE_SIGNAL_ACTIVE;    /* all fresh       */
     substrate_set_signal(sig);
 }

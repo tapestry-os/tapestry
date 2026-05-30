@@ -34,27 +34,28 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
-static float start_clampf(float v, float lo, float hi)
-{
-    return v < lo ? lo : (v > hi ? hi : v);
-}
-
 /*
- * Place robot 'id' on a regular n_total-gon whose side equals
- * DEMO_TARGET_SPACING — the spring equilibrium radius.
+ * Seed each robot near the arena center on a tiny 3-unit circle, and
+ * return the outward-facing heading angle.
+ *
+ * The 3-unit radius keeps all robots visually clustered at start while
+ * placing adjacent robots ~4 units apart — far below DEMO_TARGET_SPACING —
+ * so spring repulsion immediately drives them outward.
+ *
+ * The heading is set to the outward angle so every robot's spring force
+ * projects fully forward on tick 1.  Without this, robots whose force
+ * points opposite to heading 0 drive backward and collide with neighbors.
+ *
+ * Physical placement: orient each robot so its physical forward direction
+ * matches its assigned heading (see README for per-ID compass directions).
  */
-static void compute_start_pos(element_id_t id, int n_total, float *x, float *y)
+static void compute_start_pos(element_id_t id, int n_total,
+                               float *x, float *y, float *heading)
 {
-    if (n_total <= 1) {
-        *x = 50.0f;
-        *y = 50.0f;
-        return;
-    }
-    float n = (float)n_total;
-    float R = DEMO_TARGET_SPACING / (2.0f * sinf(M_PI_F / n));
-    float a = 2.0f * M_PI_F * (float)id / n;
-    *x = start_clampf(50.0f + R * cosf(a), 5.0f, 95.0f);
-    *y = start_clampf(50.0f + R * sinf(a), 5.0f, 95.0f);
+    float a = 2.0f * M_PI_F * (float)id / (float)(n_total > 1 ? n_total : 1);
+    *x       = 50.0f + 3.0f * cosf(a);
+    *y       = 50.0f + 3.0f * sinf(a);
+    *heading = a;
 }
 
 /* ── Main ─────────────────────────────────────────────────────────────────── */
@@ -72,12 +73,12 @@ int main(void)
     int n_total;
     const element_id_t element_id = transport_negotiate_id(&n_total);
 
-    float sx, sy;
-    compute_start_pos(element_id, n_total, &sx, &sy);
+    float sx, sy, shead;
+    compute_start_pos(element_id, n_total, &sx, &sy, &shead);
 
-    LOG_INF("Demo — element %u  start (%.1f, %.1f)  target_spacing=%.1f",
+    LOG_INF("Demo — element %u  start (%.1f, %.1f)  heading=%.2f rad  target_spacing=%.1f",
             (unsigned)element_id, (double)sx, (double)sy,
-            (double)DEMO_TARGET_SPACING);
+            (double)shead, (double)DEMO_TARGET_SPACING);
 
     element_state_t own_state = {0};
     own_state.id          = element_id;
@@ -91,10 +92,45 @@ int main(void)
 
     demo_odometry_t odo;
     demo_odometry_init(&odo, sx, sy);
+    odo.heading = shead;
 
     float    speed_cmd    = 0.0f;
     float    rate_cmd     = 0.0f;
     uint32_t gossip_accum = GOSSIP_INTERVAL_MS;   /* send immediately on first tick */
+
+    /*
+     * Convergence hold: wait until all n_total-1 expected peers are visible
+     * and fresh in the world model before starting movement.  Prevents robots
+     * that finished the ID window early from driving into a partial formation
+     * while later robots are still exiting their own windows.
+     *
+     * Caps at DEMO_SYNC_GRACE_MS so a missing robot doesn't stall the demo.
+     */
+#define DEMO_SYNC_GRACE_MS 4000
+    for (uint32_t waited = 0; waited < DEMO_SYNC_GRACE_MS; waited += WM_CYCLE_MS) {
+        transport_drain(&wm, element_id);
+        wm_tick(&wm, WM_CYCLE_MS);
+        demo_set_leds(&wm);
+
+        int fresh = 0;
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &wm.entries[i];
+            if (e->is_active && !e->is_self && !e->is_stale) {
+                fresh++;
+            }
+        }
+        if (fresh >= n_total - 1) {
+            break;
+        }
+
+        gossip_accum += WM_CYCLE_MS;
+        if (gossip_accum >= GOSSIP_INTERVAL_MS) {
+            own_state.update_seq++;
+            transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
+            gossip_accum = 0;
+        }
+        k_msleep(WM_CYCLE_MS);
+    }
 
     LOG_INF("Demo ready — entering main loop");
 

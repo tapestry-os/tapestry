@@ -46,3 +46,6 @@ target_include_directories(app PRIVATE
 )
 
 target_link_libraries(app PRIVATE m)
+
+# Demo tuning — override transport.c #ifndef defaults without touching Kconfig.
+target_compile_definitions(app PRIVATE CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS=8000)
