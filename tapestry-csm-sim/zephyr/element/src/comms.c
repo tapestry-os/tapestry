@@ -33,6 +33,7 @@ int comms_init(comms_t *c, element_id_t element_id, uint16_t orch_port)
 {
     c->own_port  = (uint16_t)(SIM_ELEMENT_BASE_PORT + element_id);
     c->orch_port = orch_port;
+    c->shutdown  = false;
 
     c->sock = zsock_socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (c->sock < 0) {

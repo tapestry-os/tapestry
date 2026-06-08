@@ -5,6 +5,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-06-08
+
+### Fixed
+- **L4 sim element** — fixed uninitialized `comms.shutdown` flag in
+  `comms_init`; could cause the element's main loop to exit immediately
+  on startup if stack memory happened to be non-zero
+
 ## [0.6.0] — 2026-05-21
 
 ### Added

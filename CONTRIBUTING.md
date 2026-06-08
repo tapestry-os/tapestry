@@ -6,7 +6,7 @@
 |---|---|---|
 | [Zephyr SDK](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html) | 0.17.0+ | Provides `west` and native_sim toolchain |
 | [west](https://docs.zephyrproject.org/latest/develop/west/index.html) | 1.2.0+ | Installed with the Zephyr SDK |
-| Python | 3.11+ | For the simulation orchestrators |
+| Python | 3.12+ | For the simulation orchestrators |
 | CMake | 3.20.0+ | Bundled with the Zephyr SDK |
 | ninja | any | Bundled with the Zephyr SDK |
 
@@ -15,27 +15,37 @@ Tested on Raspberry Pi aarch64 (Zephyr 4.4.0-rc1) and Ubuntu 22.04 x86_64.
 ## First-time setup
 
 ```bash
-# 1. Initialize a west workspace with Tapestry as the manifest project
-west init -m https://github.com/tapestry-os/tapestry --mr main tapestry-workspace
-cd tapestry-workspace
+# 1. Create workspace and virtual environment
+mkdir tapestry-workspace && cd tapestry-workspace
+uv venv --prompt tapestry --python 3.12
+source .venv/bin/activate
+uv pip install west 
 
-# 2. Fetch Zephyr and its modules
+# 2. Initialize a west workspace with Tapestry as the manifest project
+west init -m https://github.com/tapestry-os/tapestry
+
+# 3. Fetch Zephyr and its modules
 west update
 
-# 3. Export the Zephyr CMake package (needed once per workspace)
+# 4. Export the Zephyr CMake package (needed once per workspace)
 west zephyr-export
 
-# 4. Set up the Python virtual environment for the simulation orchestrators
-cd tapestry
-python3 -m venv .venv
-source .venv/bin/activate
-pip install pandas matplotlib
+# 5. Set up all Zephyr dependencies
+uv pip install -r zephyr/scripts/requirements.txt
+
+# 6. Set up all simulation orchestrator dependencies
+uv pip install pandas matplotlib
 ```
 
-## Building and testing
+Also install the 
+[Zephyr SDK](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html) 
+and run the setup script if it is not already on the development computer.
+
+## Building Simulator and Testing
 
 All commands run from the workspace root (`tapestry-workspace/`) unless
-otherwise noted.
+otherwise noted. Build the test suits targeting Zephyr's `native_sim` 
+simulator as a native Linux executable.  
 
 ```bash
 # L4 unit tests
@@ -51,7 +61,7 @@ west build -b native_sim/native/64 \
 ./tapestry/tapestry-scr-sim/build/tests/zephyr/zephyr.exe
 ```
 
-See [README.md](README.md) for simulation element build and run commands.
+See [README.md](README.md) for other simulation element build and run commands.
 
 ## Code conventions
 
