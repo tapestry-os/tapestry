@@ -1,7 +1,7 @@
 /*
  * main.c — Crazyflie 2.1 motor mixing unit tests
  *
- * Tests cf21_mix() in crazyflie21_mix.h without any Zephyr hardware drivers.
+ * Tests cf21_mix() in crazyflie21br_mix.h without any Zephyr hardware drivers.
  * All test inputs are exact float fractions so results are reproducible
  * across platforms; epsilon comparisons guard against rounding.
  *
@@ -26,7 +26,7 @@
 
 #include <zephyr/ztest.h>
 #include <math.h>
-#include "crazyflie21_mix.h"
+#include "crazyflie21br_mix.h"
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 

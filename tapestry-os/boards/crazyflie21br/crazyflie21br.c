@@ -1,5 +1,5 @@
 /*
- * crazyflie21.c — Crazyflie 2.1 brushless motor driver (Zephyr PWM)
+ * crazyflie21br.c — Crazyflie 2.1 brushless motor driver (Zephyr PWM)
  *
  * Motor layout (view from above):
  *   M4(CW)  M1(CCW)   ← front
@@ -11,10 +11,10 @@
  *   Full      = CF21_PWM_FULL_NS     (2 000 000 ns = 2.0 ms)
  *
  * DTS alias "cf21-motors" must expose four PWM channels in order M1..M4.
- * Pin assignments live in crazyflie21.overlay.
+ * Pin assignments live in crazyflie21br.overlay.
  */
 
-#include "crazyflie21.h"
+#include "crazyflie21br.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -22,7 +22,7 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(crazyflie21, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(crazyflie21br, LOG_LEVEL_INF);
 
 /* ── Timing constants ────────────────────────────────────────────────────── */
 
@@ -76,7 +76,11 @@ int cf21_init(void)
         LOG_ERR("Status LED GPIO not ready");
         return -ENODEV;
     }
-    gpio_pin_configure_dt(&cf21_led, GPIO_OUTPUT_INACTIVE);
+    gpio_pin_configure_dt(&cf21_led, GPIO_OUTPUT_ACTIVE);   /* LED on: boot reached */
+    k_msleep(200);
+    gpio_pin_set_dt(&cf21_led, 0);                          /* LED off */
+    k_msleep(200);
+    gpio_pin_set_dt(&cf21_led, 1);                          /* LED on: stay on until runtime */
 
     for (int i = 0; i < 4; i++) {
         if (!pwm_is_ready_dt(&motors[i])) {

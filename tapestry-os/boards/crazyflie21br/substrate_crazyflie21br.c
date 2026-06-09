@@ -1,9 +1,9 @@
 /*
- * tapestry-os/boards/crazyflie21/substrate_crazyflie21.c
+ * tapestry-os/boards/crazyflie21br/substrate_crazyflie21br.c
  * Tapestry L1 substrate implementation for the Bitcraze Crazyflie 2.1 brushless.
  *
  * Implements <tapestry/substrate.h> by delegating to the Crazyflie 2.1
- * PWM driver (crazyflie21.c) via the motor mixing math (crazyflie21_mix.h).
+ * PWM driver (crazyflie21br.c) via the motor mixing math (crazyflie21br_mix.h).
  *
  * Motion model — quadrotor, 6-DOF:
  *   linear.x   forward (+) / backward (-)  → nose-down/up pitch  → P term
@@ -33,8 +33,8 @@
 
 #include <stdbool.h>
 #include <tapestry/substrate.h>
-#include "crazyflie21.h"
-#include "crazyflie21_mix.h"
+#include "crazyflie21br.h"
+#include "crazyflie21br_mix.h"
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 

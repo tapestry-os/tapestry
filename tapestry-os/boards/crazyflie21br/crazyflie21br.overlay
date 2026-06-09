@@ -1,0 +1,77 @@
+/*
+ * crazyflie21br.overlay — Tapestry DTS overlay for Crazyflie 2.1 brushless
+ *
+ * Applied on top of tapestry-scr-hw/boards/bitcraze/crazyflie21br/crazyflie21br.dts.
+ *
+ * Hardware: STM32F405RGT6, 168 MHz, FPU
+ * Motor ESC protocol: RC PWM at 400 Hz (2500 µs period)
+ *   1000 µs = armed / idle
+ *   2000 µs = full throttle
+ *
+ * Motor layout (from above):
+ *   M4(CW)  M1(CCW)   ← front
+ *   M3(CW)  M2(CCW)   ← back
+ *
+ * Pin assignments verified against CF2.1 brushless schematic Rev.G (2024-08-12):
+ *   https://www.bitcraze.io/documentation/hardware/crazyflie_2_1_brushless/
+ *
+ * Motor → GPIO → TIM2 channel (from Bitcraze motorMapCF21Brushless in motors_def.c):
+ *   M1 (front-right CCW) → PA1  → TIM2_CH2
+ *   M2 (back-right  CCW) → PB11 → TIM2_CH4
+ *   M3 (back-left   CW)  → PA15 → TIM2_CH1  (PA15 via JTAG-disable remap)
+ *   M4 (front-left  CW)  → PB10 → TIM2_CH3
+ *
+ * ESC protocol: factory firmware uses DSHOT; RC PWM works if ESCs are
+ * reconfigured via BLHeli Suite to standard PWM mode.
+ *
+ * nRF51 UART → USART6: PC6 = STM32 TX (NRF_RX net), PC7 = STM32 RX (NRF_TX net).
+ * LED → PC1 (LED_GREEN_L), active-low (common-anode, STM32 sinks cathode).
+ */
+
+/ {
+	aliases {
+		cf21-motors = &cf21_motors;
+	};
+
+	cf21_motors: cf21-motors {
+		compatible = "bitcraze,cf21-motors";
+		/*
+		 * Four ESC PWM channels in M1..M4 order.
+		 * Period = 2 500 000 ns (400 Hz).  All channels on TIM2.
+		 * Channel numbers are 1-based (Zephyr STM32 PWM driver convention).
+		 */
+		pwms = <&pwm2 2 2500000 PWM_POLARITY_NORMAL>,  /* M1 front-right CCW  TIM2_CH2 PA1  */
+		       <&pwm2 4 2500000 PWM_POLARITY_NORMAL>,  /* M2 back-right  CCW  TIM2_CH4 PB11 */
+		       <&pwm2 1 2500000 PWM_POLARITY_NORMAL>,  /* M3 back-left   CW   TIM2_CH1 PA15 */
+		       <&pwm2 3 2500000 PWM_POLARITY_NORMAL>;  /* M4 front-left  CW   TIM2_CH3 PB10 */
+	};
+};
+
+&timers2 {
+	status = "okay";
+
+	pwm2: pwm {
+		status = "okay";
+		pinctrl-0 = <
+			&tim2_ch1_pa15   /* M3 back-left   — PA15 via JTAG-disable remap (CF21BL firmware motorMapCF21Brushless) */
+			&tim2_ch2_pa1    /* M1 front-right — PA1  (CF21BL firmware motorMapCF21Brushless) */
+			&tim2_ch3_pb10   /* M4 front-left  — PB10 (CF21BL firmware motorMapCF21Brushless) */
+			&tim2_ch4_pb11   /* M2 back-right  — PB11 (CF21BL firmware motorMapCF21Brushless) */
+		>;
+		pinctrl-names = "default";
+	};
+};
+
+/*
+ * nRF51822 BLE radio co-processor — USART6 PC6/PC7 verified Rev.G.
+ *
+ * Net names from STM32 perspective: PC6 drives NRF_RX (nRF51 receive),
+ * PC7 receives NRF_TX (nRF51 transmit).  Maps to USART6_TX/RX (AF8).
+ *
+ * PREREQUISITE to enable BLE: reflash nRF51 with HCI firmware (Nordic
+ * hci_uart sample or Zephyr hci_uart app), then uncomment CONFIG_BT
+ * block in tapestry-scr-hw/boards/crazyflie21br.conf.
+ */
+&usart6 {
+	status = "okay";
+};

@@ -1,8 +1,8 @@
 /*
- * crazyflie21_mix.h — Crazyflie 2.1 motor mixing math
+ * crazyflie21br_mix.h — Crazyflie 2.1 motor mixing math
  *
  * Pure C99 header; no OS or Zephyr dependencies.
- * Included by substrate_crazyflie21.c and the tapestry-cf21-sim test harness.
+ * Included by substrate_crazyflie21br.c and the tapestry-cf21-sim test harness.
  *
  * Motor layout (view from above, front = +x body frame):
  *
@@ -53,8 +53,8 @@
  * All outputs clamped to [0.0, 1.0] before returning.
  */
 
-#ifndef TAPESTRY_CRAZYFLIE21_MIX_H
-#define TAPESTRY_CRAZYFLIE21_MIX_H
+#ifndef TAPESTRY_CRAZYFLIE21BR_MIX_H
+#define TAPESTRY_CRAZYFLIE21BR_MIX_H
 
 #include <tapestry/substrate.h>
 
@@ -91,4 +91,4 @@ static inline void cf21_mix(const substrate_twist_t *twist, cf21_motors_t *out)
     out->m4 = cf21_clampf(T + R + P + Y);   /* front-left,  CW  */
 }
 
-#endif /* TAPESTRY_CRAZYFLIE21_MIX_H */
+#endif /* TAPESTRY_CRAZYFLIE21BR_MIX_H */

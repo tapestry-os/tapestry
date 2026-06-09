@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20.0)
 
-# Out-of-tree board definitions (crazyflie21).  Must be set before find_package.
+# Out-of-tree board definitions (crazyflie21br).  Must be set before find_package.
 list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 # tapestry-os/dts/bindings/ holds custom DTS bindings (e.g. bitcraze,cf21-motors).
@@ -9,9 +9,9 @@ list(APPEND DTS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os)
 if("${BOARD}" STREQUAL "bbc_microbit_v2")
     set(DTC_OVERLAY_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os/boards/bbc_microbit_v2/bbc_microbit_v2.overlay)
-elseif("${BOARD}" STREQUAL "crazyflie21")
+elseif("${BOARD}" STREQUAL "crazyflie21br")
     set(DTC_OVERLAY_FILE
-        ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os/boards/crazyflie21/crazyflie21.overlay)
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os/boards/crazyflie21br/crazyflie21br.overlay)
 endif()
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
@@ -65,7 +65,21 @@ if(CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_chemical.c)
 endif()
 
-# Substrate: Cutebot on micro:bit, CF2.1 brushless on crazyflie21, null elsewhere.
+# CF2.1 early IWDG kick — must be compiled unconditionally so it runs even in
+# minimal blink-test builds (CONFIG_PWM=n).  The Bitcraze bootloader arms the
+# IWDG before jumping to us; without this, the watchdog fires within ~100-353ms.
+#
+# CF2.1 CRTP log backend — sends Zephyr LOG_* output as syslink console packets
+# over USART6 to the nRF51 co-processor; read_console.py receives them via radio.
+# Compiled only when CONFIG_LOG=y (i.e. the log subsystem is present).
+if("${BOARD}" STREQUAL "crazyflie21br")
+    target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_iwdg.c)
+    if(CONFIG_LOG)
+        target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_crtp_log.c)
+    endif()
+endif()
+
+# Substrate: Cutebot on micro:bit, CF2.1 brushless on crazyflie21br, null elsewhere.
 if(CONFIG_I2C)
     target_sources(app PRIVATE
         ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot.c
@@ -73,8 +87,8 @@ if(CONFIG_I2C)
     )
 elseif(CONFIG_PWM)
     target_sources(app PRIVATE
-        ${TAPESTRY_OS_BOARDS}/crazyflie21/substrate_crazyflie21.c
-        ${TAPESTRY_OS_BOARDS}/crazyflie21/crazyflie21.c
+        ${TAPESTRY_OS_BOARDS}/crazyflie21br/substrate_crazyflie21br.c
+        ${TAPESTRY_OS_BOARDS}/crazyflie21br/crazyflie21br.c
     )
 else()
     target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/substrate_null.c)
@@ -88,7 +102,7 @@ target_include_directories(app PRIVATE
     ${TAPESTRY_OS_RUNTIME}                         # power.h (internal)
     ${TAPESTRY_OS_TRANSPORT}                       # gossip.h, transceiver_ble.h, transceiver_udp.h, net_init.h
     ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2          # cutebot.h
-    ${TAPESTRY_OS_BOARDS}/crazyflie21             # crazyflie21_mix.h, crazyflie21.h
+    ${TAPESTRY_OS_BOARDS}/crazyflie21br             # crazyflie21br_mix.h, crazyflie21br.h
     src
 )
 

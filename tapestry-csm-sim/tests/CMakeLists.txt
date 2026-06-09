@@ -1,4 +1,9 @@
 cmake_minimum_required(VERSION 3.20.0)
+
+# Out-of-tree board definitions (crazyflie21br lives in tapestry-scr-hw/boards/).
+# Must be set before find_package so Zephyr finds the board DTS.
+list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-scr-hw)
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(test_csm)
 
@@ -9,6 +14,18 @@ target_sources(app PRIVATE
     src/main.c
     ${TAPESTRY_OS_CSM}/world_model.c
 )
+
+# crazyflie21br hardware additions:
+#   cf21_iwdg.c     — extends bootloader IWDG to ~32 s so the full test suite
+#                     completes before the watchdog resets the board.
+#   cf21_crtp_log.c — routes ztest output over USART6 to the nRF51 radio;
+#                     read_console.py shows PASS/FAIL on the host.
+if("${BOARD}" STREQUAL "crazyflie21br")
+    target_sources(app PRIVATE ${TAPESTRY_OS_ROOT}/boards/crazyflie21br/cf21_iwdg.c)
+    if(CONFIG_LOG)
+        target_sources(app PRIVATE ${TAPESTRY_OS_ROOT}/boards/crazyflie21br/cf21_crtp_log.c)
+    endif()
+endif()
 
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include   # <tapestry/csm.h>

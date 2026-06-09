@@ -1,5 +1,5 @@
 /*
- * crazyflie21.h — Crazyflie 2.1 motor and LED driver API
+ * crazyflie21br.h — Crazyflie 2.1 motor and LED driver API
  *
  * Controls the four brushless ESCs and the status LED on the
  * STM32F405-based Crazyflie 2.1 via Zephyr PWM drivers.
@@ -10,15 +10,15 @@
  *   Motor value [0.0, 1.0] maps linearly to [1000, 2000] µs.
  *
  * The driver requires a DTS node alias "cf21-motors" that exposes
- * four PWM channels (see crazyflie21.overlay).
+ * four PWM channels (see crazyflie21br.overlay).
  */
 
-#ifndef TAPESTRY_CRAZYFLIE21_H
-#define TAPESTRY_CRAZYFLIE21_H
+#ifndef TAPESTRY_CRAZYFLIE21BR_H
+#define TAPESTRY_CRAZYFLIE21BR_H
 
 #include <stdbool.h>
 #include <stdint.h>
-#include "crazyflie21_mix.h"   /* cf21_motors_t */
+#include "crazyflie21br_mix.h"   /* cf21_motors_t */
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,4 +62,4 @@ void cf21_set_led(uint8_t brightness);
 }
 #endif
 
-#endif /* TAPESTRY_CRAZYFLIE21_H */
+#endif /* TAPESTRY_CRAZYFLIE21BR_H */

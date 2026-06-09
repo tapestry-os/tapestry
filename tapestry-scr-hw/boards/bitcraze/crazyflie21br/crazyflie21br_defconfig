@@ -7,6 +7,10 @@
 CONFIG_ARM_MPU=y
 CONFIG_HW_STACK_PROTECTION=y
 
+# Link Zephyr at the slot0 partition (0x08010000) so cfloader/crazyradio2
+# places the image at the correct address (Bitcraze bootloader occupies 0x08000000..0x0800FFFF).
+CONFIG_USE_DT_CODE_PARTITION=y
+
 CONFIG_CLOCK_CONTROL=y
 CONFIG_PINCTRL=y
 
