@@ -26,6 +26,10 @@
  *
  * nRF51 UART → USART6: PC6 = STM32 TX (NRF_RX net), PC7 = STM32 RX (NRF_TX net).
  * LED → PC1 (LED_GREEN_L), active-low (common-anode, STM32 sinks cathode).
+ * ESC reset → PC15, open-drain active-low, shared across all four ESCs.
+ *   STM32 reset leaves PC15 floating → ESCs held in reset.
+ *   cf21_init() drives it HIGH (open-drain deassert) to release ESCs.
+ *   Source: motors.c / hasPC15ESCReset in Bitcraze crazyflie-firmware.
  */
 
 / {

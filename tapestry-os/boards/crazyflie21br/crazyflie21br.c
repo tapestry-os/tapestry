@@ -29,7 +29,13 @@ LOG_MODULE_REGISTER(crazyflie21br, LOG_LEVEL_INF);
 #define CF21_PWM_PERIOD_NS   2500000U   /* 400 Hz period              */
 #define CF21_PWM_IDLE_NS     1000000U   /* 1 ms = armed / idle        */
 #define CF21_PWM_FULL_NS     2000000U   /* 2 ms = full throttle       */
-#define CF21_ARM_MS          2000U      /* ESC arm sequence hold time */
+#define CF21_ARM_MS          3000U      /* ESC arm sequence hold time (≥ startup + arming) */
+
+/* Minimum PWM width at which all four ESCs spin.
+ * Measured 2026-06-09 on hardware with BLHeli_S 16.7, RC PWM mode:
+ *   18% → 1180 µs — all four motors spinning (first confirmed step).
+ *   20% → 1200 µs — confirmed cleanly. */
+#define CF21_PWM_MIN_NS      1180000U   /* 1180 µs = 18% of [1000, 2000] range */
 
 /* ── DTS bindings ────────────────────────────────────────────────────────── */
 
@@ -54,9 +60,9 @@ static bool  g_armed  = false;
 
 static uint32_t motor_to_ns(float v)
 {
-    /* v in [0.0, 1.0]; map to [CF21_PWM_IDLE_NS, CF21_PWM_FULL_NS] */
-    uint32_t range = CF21_PWM_FULL_NS - CF21_PWM_IDLE_NS;
-    return CF21_PWM_IDLE_NS + (uint32_t)(v * (float)range);
+    /* v in [0.0, 1.0]; map to [CF21_PWM_MIN_NS, CF21_PWM_FULL_NS] */
+    uint32_t range = CF21_PWM_FULL_NS - CF21_PWM_MIN_NS;
+    return CF21_PWM_MIN_NS + (uint32_t)(v * (float)range);
 }
 
 static void write_motor(int idx, float value)
@@ -72,6 +78,19 @@ static void write_motor(int idx, float value)
 
 int cf21_init(void)
 {
+    /* PC15 = shared ESC reset, open-drain active-low, pull-up to ensure clean
+     * rising edge.  Hold HIGH initially so the line is defined while we set up
+     * PWM.  The actual reset pulse comes AFTER idle PWM is running — BLHeli_S
+     * must see a valid signal the instant reset is released or it enters its
+     * bootloader instead of normal mode (per crazyflie-firmware/motors.c). */
+    const struct device *gpioc = DEVICE_DT_GET(DT_NODELABEL(gpioc));
+    bool have_esc_reset = device_is_ready(gpioc);
+    if (have_esc_reset) {
+        gpio_pin_configure(gpioc, 15, GPIO_OUTPUT_HIGH | GPIO_OPEN_DRAIN | GPIO_PULL_UP);
+    } else {
+        LOG_WRN("GPIOC not ready — ESC reset pin not driven");
+    }
+
     if (!gpio_is_ready_dt(&cf21_led)) {
         LOG_ERR("Status LED GPIO not ready");
         return -ENODEV;
@@ -89,10 +108,22 @@ int cf21_init(void)
         }
     }
 
-    /* Drive idle pulse to all ESCs and hold for arming sequence */
+    /* Start idle PWM on all channels — signal must be live before ESC reset. */
     for (int i = 0; i < 4; i++) {
         pwm_set_dt(&motors[i], CF21_PWM_PERIOD_NS, CF21_PWM_IDLE_NS);
     }
+
+    /* Pulse PC15 LOW→HIGH with PWM already running so BLHeli_S sees the RC
+     * signal immediately on release and enters normal mode (not bootloader). */
+    if (have_esc_reset) {
+        k_msleep(50);
+        gpio_pin_set(gpioc, 15, 0);   /* assert reset */
+        k_msleep(1);
+        gpio_pin_set(gpioc, 15, 1);   /* release into live PWM */
+        LOG_INF("CF21 ESC reset pulse sent");
+    }
+
+    /* Hold idle PWM for ESC startup melody + arming sequence. */
     k_msleep(CF21_ARM_MS);
 
     g_ready = true;

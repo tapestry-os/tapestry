@@ -70,10 +70,10 @@ void substrate_set_power(substrate_power_state_t state)
         break;
 
     case SUBSTRATE_POWER_IDLE: {
-        /* Keep ESCs armed but zero all motor outputs so motors spin at idle.
-         * The BSE continues to run; motion resumes on the next substrate_move(). */
-        static const substrate_twist_t zero = {0};
-        substrate_move(&zero);
+        /* Keep ESCs armed but drive collective to T=0 so motors spin at minimum.
+         * Must use linear.z=-1 (T=0, 1 ms pulse); zero twist gives T=0.5 (50%). */
+        static const substrate_twist_t idle = { .linear = { .z = -1.0f } };
+        substrate_move(&idle);
         break;
     }
 
