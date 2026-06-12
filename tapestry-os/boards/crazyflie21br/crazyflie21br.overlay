@@ -79,3 +79,54 @@
 &usart6 {
 	status = "okay";
 };
+
+/*
+ * BMI088 IMU (gyro + accel) on I2C3 — pin assignments confirmed against this
+ * brushless board's actual schematic (2026-06-11), which differs from the
+ * stock CF2.1 SPI wiring originally assumed (that schematic's PB13/14/15
+ * are NRF_SWCLK / STM debug pins on this board, not BMI088 SPI):
+ *   I2C3: SCL=PA8 (IMU_SCL), SDA=PC9 (IMU_SDA)
+ *   CSB1/CSB2 (accel/gyro chip-select) not connected — relies on BMI088
+ *   internal pull-up to default to I2C mode.
+ *   Gyro INT3 (data-ready, ~1 kHz) = PC14, Accel INT1 = PC13 (not yet wired).
+ *
+ * I2C addresses: SDO1 (accel address pin) tied to GND -> accel addr 0x18.
+ * Gyro confirmed at 0x69 (SDO2 pulled high on this board, opposite of the
+ * accel's SDO1=GND), not the BMI088 default 0x68.
+ *
+ * accel-fs: this chip is a BMI088 (not BMI085) — the in-tree bmi08x driver's
+ * BMI088 range table only has {3,6,12,24} g.  Requesting 8 would silently
+ * select the ±12g hardware range while computing the conversion scale for
+ * ±8g (a 1.5x error in every accel reading).  Use 12 directly so the
+ * configured range and the scale factor agree (closest available to the
+ * nominal ±8g starting point).
+ *
+ * gyro-hz "1000_116" = BW 116 Hz / ODR 1000 Hz, matching stock firmware and
+ * giving the ~1 kHz INT3 data-ready interrupt the stabilizer loop is slaved
+ * to.  accel-hz "800" is the data-sync-recommended pairing for this gyro
+ * ODR (see bmi08x_accel.c comment) even though data-sync isn't enabled here.
+ */
+&i2c3 {
+	pinctrl-0 = <&i2c3_scl_pa8 &i2c3_sda_pc9>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	status = "okay";
+
+	bmi088_accel: bmi088-accel@18 {
+		compatible = "bosch,bmi08x-accel";
+		reg = <0x18>;
+		accel-hz = "800";
+		accel-fs = <12>;
+	};
+
+	bmi088_gyro: bmi088-gyro@69 {
+		compatible = "bosch,bmi08x-gyro";
+		reg = <0x69>;
+		int-gpios = <&gpioc 14 GPIO_ACTIVE_HIGH>;
+		/* INT3 = data-ready, active-high push-pull */
+		int3-4-map-io = <0x01>;
+		int3-4-conf-io = <0x01>;
+		gyro-fs = <2000>;
+		gyro-hz = "1000_116";
+	};
+};

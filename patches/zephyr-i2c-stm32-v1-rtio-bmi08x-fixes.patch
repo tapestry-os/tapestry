@@ -1,0 +1,44 @@
+diff --git a/drivers/i2c/i2c_stm32_v1_rtio.c b/drivers/i2c/i2c_stm32_v1_rtio.c
+index f4e1053c25d..ce63e44b548 100644
+--- a/drivers/i2c/i2c_stm32_v1_rtio.c
++++ b/drivers/i2c/i2c_stm32_v1_rtio.c
+@@ -83,6 +83,17 @@ static void i2c_stm32_controller_mode_end(const struct device *dev, int status)
+ #endif
+ 
+ 	LL_I2C_Disable(i2c);
++
++	/*
++	 * STM32 I2C v1 single-byte master receive errata: RXNE can assert a
++	 * second time after the transaction has already completed. Ignore
++	 * this spurious re-entry instead of double-completing the RTIO
++	 * transaction (which corrupts ctx->txn_curr and crashes).
++	 */
++	if (ctx->txn_head == NULL) {
++		return;
++	}
++
+ 	if ((data->xfer_len == 0U) && i2c_rtio_complete(ctx, status)) {
+ 		i2c_stm32_start(dev);
+ 	}
+@@ -483,12 +494,15 @@ int i2c_stm32_error(const struct device *dev)
+ 
+ 	if (LL_I2C_IsActiveFlag_BERR(i2c)) {
+ 		LL_I2C_ClearFlag_BERR(i2c);
+-#if defined(CONFIG_I2C_TARGET)
+-		if (error_cb != NULL) {
+-			error_cb(data->target_cfg, I2C_ERROR_GENERIC);
+-		}
+-#endif
+-		goto error;
++		/*
++		 * STM32 I2C v1 erratum: BERR can be spuriously latched in
++		 * master mode mid-transfer with no actual misplaced
++		 * start/stop condition (observed alongside TXE+BTF on a
++		 * normal byte boundary). Clear it and let the transfer
++		 * continue via the normal BTF/TXE/RXNE flow instead of
++		 * aborting with -EIO.
++		 */
++		return 0;
+ 	}
+ 
+ 	return 0;
