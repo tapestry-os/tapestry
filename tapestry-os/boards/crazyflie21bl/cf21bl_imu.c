@@ -1,20 +1,20 @@
 /*
- * cf21_imu.c — BMI088 IMU driver wrapper for the Crazyflie 2.1 brushless
+ * cf21bl_imu.c — BMI088 IMU driver wrapper for the Crazyflie 2.1 brushless
  *
- * See cf21_imu.h for the public API and unit conventions.
+ * See cf21bl_imu.h for the public API and unit conventions.
  *
  * Sampling is slaved to the gyro's INT3 data-ready interrupt (PC14,
- * ~1 kHz, see crazyflie21br.overlay). The bmi08x driver runs its own
+ * ~1 kHz, see crazyflie21bl.overlay). The bmi08x driver runs its own
  * trigger thread (CONFIG_BMI08X_GYRO_TRIGGER_OWN_THREAD) which calls
  * gyro_drdy_handler() below; that handler bumps a counter (for rate
- * measurement) and posts a semaphore that cf21_imu_read() waits on.
+ * measurement) and posts a semaphore that cf21bl_imu_read() waits on.
  *
  * Sensor filtering matches CF21BL stock firmware (sensors_bmi088_bmp3xx.c):
  *   - 2nd-order Butterworth LPF: gyro 80 Hz cutoff, accel 30 Hz cutoff
  *   - Attitude: Mahony quaternion filter, twoKp=0.8, twoKi=0.002
  */
 
-#include "cf21_imu.h"
+#include "cf21bl_imu.h"
 
 #include <math.h>
 
@@ -23,10 +23,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(cf21_imu, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(cf21bl_imu, LOG_LEVEL_INF);
 
 #define RAD_TO_DEG  57.29577951308232f   /* 180 / pi */
-#define CF21_PI      3.14159265358979f
+#define CF21BL_PI      3.14159265358979f
 
 /* Low-pass filter cutoff frequencies — from CF21BL stock firmware */
 #define GYRO_LPF_CUTOFF_HZ   80.0f
@@ -56,13 +56,13 @@ static lpf2p_t g_accel_lpf[3];
 static void lpf2p_init(lpf2p_t *f, float sample_hz, float cutoff_hz)
 {
     const float fr  = sample_hz / cutoff_hz;
-    const float ohm = tanf(CF21_PI / fr);
-    const float c   = 1.0f + 2.0f * cosf(CF21_PI / 4.0f) * ohm + ohm * ohm;
+    const float ohm = tanf(CF21BL_PI / fr);
+    const float c   = 1.0f + 2.0f * cosf(CF21BL_PI / 4.0f) * ohm + ohm * ohm;
     f->b0 = ohm * ohm / c;
     f->b1 = 2.0f * f->b0;
     f->b2 = f->b0;
     f->a1 = 2.0f * (ohm * ohm - 1.0f) / c;
-    f->a2 = (1.0f - 2.0f * cosf(CF21_PI / 4.0f) * ohm + ohm * ohm) / c;
+    f->a2 = (1.0f - 2.0f * cosf(CF21BL_PI / 4.0f) * ohm + ohm * ohm) / c;
     f->d1 = 0.0f;
     f->d2 = 0.0f;
 }
@@ -94,7 +94,7 @@ static void gyro_drdy_handler(const struct device *dev, const struct sensor_trig
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
-int cf21_imu_init(void)
+int cf21bl_imu_init(void)
 {
     if (!device_is_ready(accel_dev)) {
         LOG_ERR("BMI088 accel device not ready");
@@ -124,7 +124,7 @@ int cf21_imu_init(void)
     return 0;
 }
 
-int cf21_imu_read(cf21_imu_sample_t *out)
+int cf21bl_imu_read(cf21bl_imu_sample_t *out)
 {
     k_sem_take(&drdy_sem, K_FOREVER);
 
@@ -166,7 +166,7 @@ int cf21_imu_read(cf21_imu_sample_t *out)
     return 0;
 }
 
-uint32_t cf21_imu_get_drdy_count(void)
+uint32_t cf21bl_imu_get_drdy_count(void)
 {
     return drdy_count;
 }
@@ -191,18 +191,18 @@ uint32_t cf21_imu_get_drdy_count(void)
  *   pitch > 0 = nose-up
  *   yaw   > 0 = counterclockwise (turn left)
  */
-void cf21_imu_filter_init(void)
+void cf21bl_imu_filter_init(void)
 {
     mq0 = 1.0f; mq1 = 0.0f; mq2 = 0.0f; mq3 = 0.0f;
     mifbx = 0.0f; mifby = 0.0f; mifbz = 0.0f;
 }
 
-void cf21_imu_filter_update(const cf21_imu_sample_t *sample, float dt_s,
-                             cf21_imu_attitude_t *out)
+void cf21bl_imu_filter_update(const cf21bl_imu_sample_t *sample, float dt_s,
+                             cf21bl_imu_attitude_t *out)
 {
     float gx = sample->gyro_rps[0];
     /* Mahony algorithm uses CF raw gyro convention: gy > 0 = nose-DOWN.
-     * gyro_rps[1] was negated in cf21_imu_read() (nose-UP positive) for the
+     * gyro_rps[1] was negated in cf21bl_imu_read() (nose-UP positive) for the
      * rate PID, but the Mahony quaternion integration requires the un-negated
      * value.  CF firmware feeds raw (un-negated) gyro.y to sensfusion6UpdateQ
      * and only negates it in controller_pid.c for the rate controller. */

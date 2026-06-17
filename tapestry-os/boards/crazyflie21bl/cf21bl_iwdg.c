@@ -1,5 +1,5 @@
 /*
- * cf21_iwdg.c — early IWDG kick for Crazyflie 2.1 brushless
+ * cf21bl_iwdg.c — early IWDG kick for Crazyflie 2.1 brushless
  *
  * Runs at PRE_KERNEL_1 priority 0: before any Zephyr driver.
  *
@@ -40,7 +40,7 @@
 /* RCC_CSR: LSION=bit0, LSIRDY=bit1 */
 #define RCC_CSR  (*(volatile uint32_t *)0x40023874U)
 
-static int cf21_iwdg_init(void)
+static int cf21bl_iwdg_init(void)
 {
     /* Step 1: force LSI on.
      * Writing 0xCCCC to IWDG_KR starts the IWDG and forces LSI on (RM0090
@@ -82,20 +82,20 @@ static int cf21_iwdg_init(void)
     return 0;
 }
 
-static void cf21_iwdg_kick_fn(struct k_timer *t)
+static void cf21bl_iwdg_kick_fn(struct k_timer *t)
 {
     ARG_UNUSED(t);
     IWDG_KR = 0xAAAAU;
 }
 
-static K_TIMER_DEFINE(cf21_iwdg_timer, cf21_iwdg_kick_fn, NULL);
+static K_TIMER_DEFINE(cf21bl_iwdg_timer, cf21bl_iwdg_kick_fn, NULL);
 
-static int cf21_iwdg_start_timer(void)
+static int cf21bl_iwdg_start_timer(void)
 {
     /* Kick every 10 s — well within the ~32 s timeout. */
-    k_timer_start(&cf21_iwdg_timer, K_SECONDS(10), K_SECONDS(10));
+    k_timer_start(&cf21bl_iwdg_timer, K_SECONDS(10), K_SECONDS(10));
     return 0;
 }
 
-SYS_INIT(cf21_iwdg_init,         PRE_KERNEL_1, 0);
-SYS_INIT(cf21_iwdg_start_timer,  APPLICATION,  0);
+SYS_INIT(cf21bl_iwdg_init,         PRE_KERNEL_1, 0);
+SYS_INIT(cf21bl_iwdg_start_timer,  APPLICATION,  0);

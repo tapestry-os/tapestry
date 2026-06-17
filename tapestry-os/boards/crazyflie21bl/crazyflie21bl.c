@@ -1,22 +1,22 @@
 /*
- * crazyflie21br.c — Crazyflie 2.1 brushless motor driver (Zephyr PWM)
+ * crazyflie21bl.c — Crazyflie 2.1 brushless motor driver (Zephyr PWM)
  *
  * Motor layout (view from above):
  *   M4(CW)   M1(CCW)   ← front
  *   M3(CCW)  M2(CW)    ← back
  *
  * ESC PWM signal (400 Hz, standard RC):
- *   Period    = CF21_PWM_PERIOD_NS   (2 500 000 ns = 2.5 ms = 400 Hz)
- *   Idle      = CF21_PWM_IDLE_NS     (1 000 000 ns = 1.0 ms)
- *   Full      = CF21_PWM_FULL_NS     (2 000 000 ns = 2.0 ms)
+ *   Period    = CF21BL_PWM_PERIOD_NS   (2 500 000 ns = 2.5 ms = 400 Hz)
+ *   Idle      = CF21BL_PWM_IDLE_NS     (1 000 000 ns = 1.0 ms)
+ *   Full      = CF21BL_PWM_FULL_NS     (2 000 000 ns = 2.0 ms)
  *
  * DTS alias "cf21-motors" must expose four PWM channels in order M1..M4.
- * Pin assignments live in crazyflie21br.overlay.
+ * Pin assignments live in crazyflie21bl.overlay.
  */
 
-#include "crazyflie21br.h"
-#ifdef CONFIG_CF21_STABILIZER
-#include "cf21_stabilizer.h"
+#include "crazyflie21bl.h"
+#ifdef CONFIG_CF21BL_STABILIZER
+#include "cf21bl_stabilizer.h"
 #endif
 
 #include <zephyr/kernel.h>
@@ -25,33 +25,33 @@
 #include <zephyr/drivers/pwm.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(crazyflie21br, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(crazyflie21bl, LOG_LEVEL_INF);
 
 /* ── Timing constants ────────────────────────────────────────────────────── */
 
-#define CF21_PWM_PERIOD_NS   2500000U   /* 400 Hz period              */
-#define CF21_PWM_IDLE_NS     1000000U   /* 1 ms = armed / idle        */
-#define CF21_PWM_FULL_NS     2000000U   /* 2 ms = full throttle       */
-#define CF21_ARM_MS          3000U      /* ESC arm sequence hold time (≥ startup + arming) */
+#define CF21BL_PWM_PERIOD_NS   2500000U   /* 400 Hz period              */
+#define CF21BL_PWM_IDLE_NS     1000000U   /* 1 ms = armed / idle        */
+#define CF21BL_PWM_FULL_NS     2000000U   /* 2 ms = full throttle       */
+#define CF21BL_ARM_MS          3000U      /* ESC arm sequence hold time (≥ startup + arming) */
 
 /* Minimum PWM width at which all four ESCs spin.
  * Measured 2026-06-09 on hardware with BLHeli_S 16.7, RC PWM mode:
  *   18% → 1180 µs — all four motors spinning (first confirmed step).
  *   20% → 1200 µs — confirmed cleanly. */
-#define CF21_PWM_MIN_NS      1180000U   /* 1180 µs = 18% of [1000, 2000] range */
+#define CF21BL_PWM_MIN_NS      1180000U   /* 1180 µs = 18% of [1000, 2000] range */
 
 /* ── DTS bindings ────────────────────────────────────────────────────────── */
 
-#define CF21_MOTORS_NODE    DT_ALIAS(cf21_motors)
+#define CF21BL_MOTORS_NODE    DT_ALIAS(cf21bl_motors)
 
-static const struct gpio_dt_spec cf21_led =
+static const struct gpio_dt_spec cf21bl_led =
     GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 
 static const struct pwm_dt_spec motors[4] = {
-    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 0),   /* M1 front-right CCW */
-    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 1),   /* M2 back-right  CW  */
-    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 2),   /* M3 back-left   CCW */
-    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 3),   /* M4 front-left  CW  */
+    PWM_DT_SPEC_GET_BY_IDX(CF21BL_MOTORS_NODE, 0),   /* M1 front-right CCW */
+    PWM_DT_SPEC_GET_BY_IDX(CF21BL_MOTORS_NODE, 1),   /* M2 back-right  CW  */
+    PWM_DT_SPEC_GET_BY_IDX(CF21BL_MOTORS_NODE, 2),   /* M3 back-left   CCW */
+    PWM_DT_SPEC_GET_BY_IDX(CF21BL_MOTORS_NODE, 3),   /* M4 front-left  CW  */
 };
 
 /* ── State ───────────────────────────────────────────────────────────────── */
@@ -63,17 +63,17 @@ static bool  g_armed  = false;
 
 static uint32_t motor_to_ns(float v)
 {
-    /* v in [0.0, 1.0]; map to [CF21_PWM_IDLE_NS, CF21_PWM_FULL_NS].
-     * v=0.0 → 1000 µs (idle, not spinning); v=0.18 → 1180 µs (CF21_PWM_MIN_NS,
+    /* v in [0.0, 1.0]; map to [CF21BL_PWM_IDLE_NS, CF21BL_PWM_FULL_NS].
+     * v=0.0 → 1000 µs (idle, not spinning); v=0.18 → 1180 µs (CF21BL_PWM_MIN_NS,
      * empirical spin threshold); v=1.0 → 2000 µs (full throttle). */
-    uint32_t range = CF21_PWM_FULL_NS - CF21_PWM_IDLE_NS;
-    return CF21_PWM_IDLE_NS + (uint32_t)(v * (float)range);
+    uint32_t range = CF21BL_PWM_FULL_NS - CF21BL_PWM_IDLE_NS;
+    return CF21BL_PWM_IDLE_NS + (uint32_t)(v * (float)range);
 }
 
 static void write_motor(int idx, float value)
 {
-    uint32_t pulse = g_armed ? motor_to_ns(value) : CF21_PWM_IDLE_NS;
-    int ret = pwm_set_dt(&motors[idx], CF21_PWM_PERIOD_NS, pulse);
+    uint32_t pulse = g_armed ? motor_to_ns(value) : CF21BL_PWM_IDLE_NS;
+    int ret = pwm_set_dt(&motors[idx], CF21BL_PWM_PERIOD_NS, pulse);
     if (ret) {
         LOG_WRN("M%d PWM write failed: %d", idx + 1, ret);
     }
@@ -81,7 +81,7 @@ static void write_motor(int idx, float value)
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
-int cf21_init(void)
+int cf21bl_init(void)
 {
     /* PC15 = shared ESC reset, open-drain active-low, pull-up to ensure clean
      * rising edge.  Hold HIGH initially so the line is defined while we set up
@@ -96,15 +96,15 @@ int cf21_init(void)
         LOG_WRN("GPIOC not ready — ESC reset pin not driven");
     }
 
-    if (!gpio_is_ready_dt(&cf21_led)) {
+    if (!gpio_is_ready_dt(&cf21bl_led)) {
         LOG_ERR("Status LED GPIO not ready");
         return -ENODEV;
     }
-    gpio_pin_configure_dt(&cf21_led, GPIO_OUTPUT_ACTIVE);   /* LED on: boot reached */
+    gpio_pin_configure_dt(&cf21bl_led, GPIO_OUTPUT_ACTIVE);   /* LED on: boot reached */
     k_msleep(200);
-    gpio_pin_set_dt(&cf21_led, 0);                          /* LED off */
+    gpio_pin_set_dt(&cf21bl_led, 0);                          /* LED off */
     k_msleep(200);
-    gpio_pin_set_dt(&cf21_led, 1);                          /* LED on: stay on until runtime */
+    gpio_pin_set_dt(&cf21bl_led, 1);                          /* LED on: stay on until runtime */
 
     for (int i = 0; i < 4; i++) {
         if (!pwm_is_ready_dt(&motors[i])) {
@@ -115,7 +115,7 @@ int cf21_init(void)
 
     /* Start idle PWM on all channels — signal must be live before ESC reset. */
     for (int i = 0; i < 4; i++) {
-        pwm_set_dt(&motors[i], CF21_PWM_PERIOD_NS, CF21_PWM_IDLE_NS);
+        pwm_set_dt(&motors[i], CF21BL_PWM_PERIOD_NS, CF21BL_PWM_IDLE_NS);
     }
 
     /* Pulse PC15 LOW→HIGH with PWM already running so BLHeli_S sees the RC
@@ -129,14 +129,14 @@ int cf21_init(void)
     }
 
     /* Hold idle PWM for ESC startup melody + arming sequence. */
-    k_msleep(CF21_ARM_MS);
+    k_msleep(CF21BL_ARM_MS);
 
     g_ready = true;
     g_armed = false;
     LOG_INF("Crazyflie 2.1 ESCs armed (idle)");
 
-#ifdef CONFIG_CF21_STABILIZER
-    int stab_ret = cf21_stabilizer_start();
+#ifdef CONFIG_CF21BL_STABILIZER
+    int stab_ret = cf21bl_stabilizer_start();
     if (stab_ret) {
         LOG_WRN("Stabilizer start failed: %d — direct motor control only", stab_ret);
     }
@@ -145,7 +145,7 @@ int cf21_init(void)
     return 0;
 }
 
-void cf21_set_motors(const cf21_motors_t *motors_out)
+void cf21bl_set_motors(const cf21bl_motors_t *motors_out)
 {
     if (!g_ready) {
         return;
@@ -156,7 +156,7 @@ void cf21_set_motors(const cf21_motors_t *motors_out)
     write_motor(3, motors_out->m4);
 }
 
-void cf21_set_armed(bool armed)
+void cf21bl_set_armed(bool armed)
 {
     if (!g_ready) {
         return;
@@ -165,7 +165,7 @@ void cf21_set_armed(bool armed)
     if (!armed) {
         /* Return all channels to idle immediately */
         for (int i = 0; i < 4; i++) {
-            pwm_set_dt(&motors[i], CF21_PWM_PERIOD_NS, CF21_PWM_IDLE_NS);
+            pwm_set_dt(&motors[i], CF21BL_PWM_PERIOD_NS, CF21BL_PWM_IDLE_NS);
         }
         LOG_INF("CF21 disarmed");
     } else {
@@ -173,7 +173,7 @@ void cf21_set_armed(bool armed)
     }
 }
 
-void cf21_set_led(uint8_t brightness)
+void cf21bl_set_led(uint8_t brightness)
 {
-    gpio_pin_set_dt(&cf21_led, brightness > 0);
+    gpio_pin_set_dt(&cf21bl_led, brightness > 0);
 }

@@ -1,7 +1,7 @@
 /*
  * main.c — Crazyflie 2.1 motor mixing unit tests
  *
- * Tests cf21_mix() in crazyflie21br_mix.h without any Zephyr hardware drivers.
+ * Tests cf21bl_mix() in crazyflie21bl_mix.h without any Zephyr hardware drivers.
  * All test inputs are exact float fractions so results are reproducible
  * across platforms; epsilon comparisons guard against rounding.
  *
@@ -26,7 +26,7 @@
 
 #include <zephyr/ztest.h>
 #include <math.h>
-#include "crazyflie21br_mix.h"
+#include "crazyflie21bl_mix.h"
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -36,21 +36,21 @@
     zassert_true(fabsf((val) - (expected)) < FLOAT_EPS, \
                  msg ": got %.6f expected %.6f", (double)(val), (double)(expected))
 
-static cf21_motors_t mix(float lx, float ly, float lz,
+static cf21bl_motors_t mix(float lx, float ly, float lz,
                          float ax, float ay, float az)
 {
     substrate_twist_t t = {
         .linear  = { .x = lx, .y = ly, .z = lz },
         .angular = { .x = ax, .y = ay, .z = az  },
     };
-    cf21_motors_t out;
-    cf21_mix(&t, &out);
+    cf21bl_motors_t out;
+    cf21bl_mix(&t, &out);
     return out;
 }
 
 /* ── Test suite ──────────────────────────────────────────────────────────── */
 
-ZTEST_SUITE(cf21_mix, NULL, NULL, NULL, NULL, NULL);
+ZTEST_SUITE(cf21bl_mix, NULL, NULL, NULL, NULL, NULL);
 
 /*
  * test_zero_twist
@@ -58,9 +58,9 @@ ZTEST_SUITE(cf21_mix, NULL, NULL, NULL, NULL, NULL);
  * All twist components zero → T = 0.5, R = P = Y = 0.
  * Every motor must output exactly 0.5 (half throttle / hover point).
  */
-ZTEST(cf21_mix, test_zero_twist)
+ZTEST(cf21bl_mix, test_zero_twist)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.5f, "M1 zero-twist");
     ASSERT_NEAR(m.m2, 0.5f, "M2 zero-twist");
@@ -74,9 +74,9 @@ ZTEST(cf21_mix, test_zero_twist)
  * linear.z = +1.0 → T = 1.0, no roll/pitch/yaw.
  * All motors must reach full power.
  */
-ZTEST(cf21_mix, test_full_throttle)
+ZTEST(cf21bl_mix, test_full_throttle)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 0.0f);
 
     ASSERT_NEAR(m.m1, 1.0f, "M1 full throttle");
     ASSERT_NEAR(m.m2, 1.0f, "M2 full throttle");
@@ -90,9 +90,9 @@ ZTEST(cf21_mix, test_full_throttle)
  * linear.z = -1.0 → T = 0.0.
  * All motors must be at idle (zero output).
  */
-ZTEST(cf21_mix, test_idle_throttle)
+ZTEST(cf21bl_mix, test_idle_throttle)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, -1.0f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, -1.0f,  0.0f, 0.0f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.0f, "M1 idle");
     ASSERT_NEAR(m.m2, 0.0f, "M2 idle");
@@ -110,9 +110,9 @@ ZTEST(cf21_mix, test_idle_throttle)
  *   M1 = 0.5 − 0.25 = 0.25   M2 = 0.5 + 0.25 = 0.75
  *   M3 = 0.5 − 0.25 = 0.25   M4 = 0.5 + 0.25 = 0.75
  */
-ZTEST(cf21_mix, test_yaw_ccw)
+ZTEST(cf21bl_mix, test_yaw_ccw)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 0.25f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 0.25f);
 
     ASSERT_NEAR(m.m1, 0.25f, "M1 yaw-CCW");
     ASSERT_NEAR(m.m2, 0.75f, "M2 yaw-CCW");
@@ -132,9 +132,9 @@ ZTEST(cf21_mix, test_yaw_ccw)
  * Expected (signs flip vs. CCW case):
  *   M1 = 0.75   M2 = 0.25   M3 = 0.75   M4 = 0.25
  */
-ZTEST(cf21_mix, test_yaw_cw)
+ZTEST(cf21bl_mix, test_yaw_cw)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -0.25f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -0.25f);
 
     ASSERT_NEAR(m.m1, 0.75f, "M1 yaw-CW");
     ASSERT_NEAR(m.m2, 0.25f, "M2 yaw-CW");
@@ -154,9 +154,9 @@ ZTEST(cf21_mix, test_yaw_cw)
  *   M3 = 0.5 + 0.25 = 0.75 (BL, left side)
  *   M4 = 0.5 + 0.25 = 0.75 (FL, left side)
  */
-ZTEST(cf21_mix, test_roll_right_side_down)
+ZTEST(cf21bl_mix, test_roll_right_side_down)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.25f, 0.0f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.25f, 0.0f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.25f, "M1 roll-RSD");
     ASSERT_NEAR(m.m2, 0.25f, "M2 roll-RSD");
@@ -183,9 +183,9 @@ ZTEST(cf21_mix, test_roll_right_side_down)
  *   M3 = 0.5 − 0.25 = 0.25 (BL, back)
  *   M4 = 0.5 + 0.25 = 0.75 (FL, front)
  */
-ZTEST(cf21_mix, test_pitch_nose_up)
+ZTEST(cf21bl_mix, test_pitch_nose_up)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.25f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.25f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.75f, "M1 pitch-up");
     ASSERT_NEAR(m.m2, 0.25f, "M2 pitch-up");
@@ -211,9 +211,9 @@ ZTEST(cf21_mix, test_pitch_nose_up)
  *   M1 = 0.5 + (−0.25) = 0.25   M4 = 0.25
  *   M2 = 0.5 − (−0.25) = 0.75   M3 = 0.75
  */
-ZTEST(cf21_mix, test_forward)
+ZTEST(cf21bl_mix, test_forward)
 {
-    cf21_motors_t m = mix(0.25f, 0.0f, 0.0f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t m = mix(0.25f, 0.0f, 0.0f,  0.0f, 0.0f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.25f, "M1 forward");
     ASSERT_NEAR(m.m2, 0.75f, "M2 forward");
@@ -236,9 +236,9 @@ ZTEST(cf21_mix, test_forward)
  *   M1 = 0.5 − (−0.25) = 0.75   M2 = 0.75
  *   M3 = 0.5 + (−0.25) = 0.25   M4 = 0.25
  */
-ZTEST(cf21_mix, test_lateral_left)
+ZTEST(cf21bl_mix, test_lateral_left)
 {
-    cf21_motors_t m = mix(0.0f, 0.25f, 0.0f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.25f, 0.0f,  0.0f, 0.0f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.75f, "M1 left");
     ASSERT_NEAR(m.m2, 0.75f, "M2 left");
@@ -262,9 +262,9 @@ ZTEST(cf21_mix, test_lateral_left)
  *   M1 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
  *   M3 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
  */
-ZTEST(cf21_mix, test_clamp_high)
+ZTEST(cf21bl_mix, test_clamp_high)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 0.5f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 0.5f);
 
     zassert_true(m.m2 <= 1.0f, "M2 must not exceed 1.0");
     zassert_true(m.m4 <= 1.0f, "M4 must not exceed 1.0");
@@ -286,9 +286,9 @@ ZTEST(cf21_mix, test_clamp_high)
  *   M2 (unclamped) = 0.0 + 0.5 =  0.5 → not clamped
  *   M4 (unclamped) = 0.0 + 0.5 =  0.5 → not clamped
  */
-ZTEST(cf21_mix, test_clamp_low)
+ZTEST(cf21bl_mix, test_clamp_low)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, -1.0f,  0.0f, 0.0f, 0.5f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, -1.0f,  0.0f, 0.0f, 0.5f);
 
     zassert_true(m.m1 >= 0.0f, "M1 must not go below 0.0");
     zassert_true(m.m3 >= 0.0f, "M3 must not go below 0.0");
@@ -309,10 +309,10 @@ ZTEST(cf21_mix, test_clamp_low)
  *   m_ccw.m3 == m_cw.m4
  *   m_ccw.m4 == m_cw.m3
  */
-ZTEST(cf21_mix, test_symmetry_yaw)
+ZTEST(cf21bl_mix, test_symmetry_yaw)
 {
-    cf21_motors_t ccw = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f,  0.2f);
-    cf21_motors_t cw  = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -0.2f);
+    cf21bl_motors_t ccw = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f,  0.2f);
+    cf21bl_motors_t cw  = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -0.2f);
 
     ASSERT_NEAR(ccw.m1, cw.m2, "CCW.M1 == CW.M2");
     ASSERT_NEAR(ccw.m2, cw.m1, "CCW.M2 == CW.M1");
@@ -328,10 +328,10 @@ ZTEST(cf21_mix, test_symmetry_yaw)
  *   m_rsd.m1 == m_lsd.m3   right motor in RSD == left motor in LSD
  *   m_rsd.m3 == m_lsd.m1
  */
-ZTEST(cf21_mix, test_symmetry_roll)
+ZTEST(cf21bl_mix, test_symmetry_roll)
 {
-    cf21_motors_t rsd = mix(0.0f, 0.0f, 0.0f,  0.2f, 0.0f, 0.0f);
-    cf21_motors_t lsd = mix(0.0f, 0.0f, 0.0f, -0.2f, 0.0f, 0.0f);
+    cf21bl_motors_t rsd = mix(0.0f, 0.0f, 0.0f,  0.2f, 0.0f, 0.0f);
+    cf21bl_motors_t lsd = mix(0.0f, 0.0f, 0.0f, -0.2f, 0.0f, 0.0f);
 
     ASSERT_NEAR(rsd.m1, lsd.m3, "RSD.M1 == LSD.M3 (right mirror of left)");
     ASSERT_NEAR(rsd.m3, lsd.m1, "RSD.M3 == LSD.M1");
@@ -347,10 +347,10 @@ ZTEST(cf21_mix, test_symmetry_roll)
  *   m_up.m1 == m_dn.m2   front motor in nose-up == back motor in nose-down
  *   m_up.m2 == m_dn.m1
  */
-ZTEST(cf21_mix, test_symmetry_pitch)
+ZTEST(cf21bl_mix, test_symmetry_pitch)
 {
-    cf21_motors_t up = mix(0.0f, 0.0f, 0.0f,  0.0f,  0.2f, 0.0f);
-    cf21_motors_t dn = mix(0.0f, 0.0f, 0.0f,  0.0f, -0.2f, 0.0f);
+    cf21bl_motors_t up = mix(0.0f, 0.0f, 0.0f,  0.0f,  0.2f, 0.0f);
+    cf21bl_motors_t dn = mix(0.0f, 0.0f, 0.0f,  0.0f, -0.2f, 0.0f);
 
     ASSERT_NEAR(up.m1, dn.m2, "nose-up.M1 == nose-down.M2 (front mirror of back)");
     ASSERT_NEAR(up.m2, dn.m1, "nose-up.M2 == nose-down.M1");
@@ -371,9 +371,9 @@ ZTEST(cf21_mix, test_symmetry_pitch)
  *   M3 = 0.5 + 0.1 − 0.15 = 0.45
  *   M4 = 0.5 + 0.1 + 0.15 = 0.75
  */
-ZTEST(cf21_mix, test_superposition)
+ZTEST(cf21bl_mix, test_superposition)
 {
-    cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.1f, 0.15f, 0.0f);
+    cf21bl_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.1f, 0.15f, 0.0f);
 
     ASSERT_NEAR(m.m1, 0.55f, "M1 roll+pitch superposition");
     ASSERT_NEAR(m.m2, 0.25f, "M2 roll+pitch superposition");
@@ -389,10 +389,10 @@ ZTEST(cf21_mix, test_superposition)
  *
  * At T = 0.25 and T = 0.75, all four outputs must be equal to T.
  */
-ZTEST(cf21_mix, test_throttle_scale)
+ZTEST(cf21bl_mix, test_throttle_scale)
 {
-    cf21_motors_t lo = mix(0.0f, 0.0f, -0.5f,  0.0f, 0.0f, 0.0f);
-    cf21_motors_t hi = mix(0.0f, 0.0f,  0.5f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t lo = mix(0.0f, 0.0f, -0.5f,  0.0f, 0.0f, 0.0f);
+    cf21bl_motors_t hi = mix(0.0f, 0.0f,  0.5f,  0.0f, 0.0f, 0.0f);
 
     /* T = (-0.5 + 1) / 2 = 0.25 */
     ASSERT_NEAR(lo.m1, 0.25f, "lo M1");

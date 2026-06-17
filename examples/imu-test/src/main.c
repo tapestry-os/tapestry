@@ -1,14 +1,14 @@
 /*
  * imu-test — BMI088 IMU bring-up (sensor-only, no actuation)
  *
- * Initializes the BMI088 accel+gyro over I2C3 (cf21_imu), runs a
+ * Initializes the BMI088 accel+gyro over I2C3 (cf21bl_imu), runs a
  * complementary filter on the gyro/accel data, and logs raw readings,
  * roll/pitch estimates, and the measured gyro INT3 (PC14) interrupt rate.
  *
  * Does NOT call substrate_init() / link the motor driver — props can stay
  * on, ESCs are never armed.
  *
- * Build:  west build -p always -b crazyflie21br tapestry/examples/imu-test
+ * Build:  west build -p always -b crazyflie21bl tapestry/examples/imu-test
  * Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu  (activate ~/code/tapestry/.venv)
  * Read:   minicom -D /dev/ttyUSB0 -b 115200   (USART3)
  *         python3 ~/code/tapestry/read_console.py   (CRTP radio)
@@ -17,7 +17,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
-#include "cf21_imu.h"
+#include "cf21bl_imu.h"
 
 LOG_MODULE_REGISTER(imu_test, LOG_LEVEL_INF);
 
@@ -26,34 +26,34 @@ LOG_MODULE_REGISTER(imu_test, LOG_LEVEL_INF);
 
 int main(void)
 {
-    LOG_INF("=== CF21br IMU bring-up (sensor-only, no actuation) ===");
+    LOG_INF("=== CF21bl IMU bring-up (sensor-only, no actuation) ===");
 
-    if (cf21_imu_init() != 0) {
-        LOG_ERR("cf21_imu_init failed - aborting");
+    if (cf21bl_imu_init() != 0) {
+        LOG_ERR("cf21bl_imu_init failed - aborting");
         return -1;
     }
 
-    cf21_imu_filter_init();
+    cf21bl_imu_filter_init();
 
     int64_t last_report_ms = k_uptime_get();
-    uint32_t last_drdy = cf21_imu_get_drdy_count();
+    uint32_t last_drdy = cf21bl_imu_get_drdy_count();
     uint32_t sample_count = 0;
 
     while (1) {
-        cf21_imu_sample_t sample;
-        int ret = cf21_imu_read(&sample);
+        cf21bl_imu_sample_t sample;
+        int ret = cf21bl_imu_read(&sample);
         if (ret) {
-            LOG_WRN("cf21_imu_read failed: %d", ret);
+            LOG_WRN("cf21bl_imu_read failed: %d", ret);
             continue;
         }
         sample_count++;
 
-        cf21_imu_attitude_t att;
-        cf21_imu_filter_update(&sample, 1.0f / GYRO_ODR_HZ, &att);
+        cf21bl_imu_attitude_t att;
+        cf21bl_imu_filter_update(&sample, 1.0f / GYRO_ODR_HZ, &att);
 
         int64_t now_ms = k_uptime_get();
         if (now_ms - last_report_ms >= REPORT_INTERVAL_MS) {
-            uint32_t drdy = cf21_imu_get_drdy_count();
+            uint32_t drdy = cf21bl_imu_get_drdy_count();
             uint32_t drdy_rate =
                 (uint32_t)((uint64_t)(drdy - last_drdy) * 1000U / (now_ms - last_report_ms));
 

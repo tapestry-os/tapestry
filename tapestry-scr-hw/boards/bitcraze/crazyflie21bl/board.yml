@@ -1,5 +1,5 @@
 board:
-  name: crazyflie21br
+  name: crazyflie21bl
   full_name: Bitcraze Crazyflie 2.1 Brushless
   vendor: bitcraze
   socs:

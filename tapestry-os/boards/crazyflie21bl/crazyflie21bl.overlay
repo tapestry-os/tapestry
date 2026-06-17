@@ -1,7 +1,7 @@
 /*
- * crazyflie21br.overlay — Tapestry DTS overlay for Crazyflie 2.1 brushless
+ * crazyflie21bl.overlay — Tapestry DTS overlay for Crazyflie 2.1 brushless
  *
- * Applied on top of tapestry-scr-hw/boards/bitcraze/crazyflie21br/crazyflie21br.dts.
+ * Applied on top of tapestry-scr-hw/boards/bitcraze/crazyflie21bl/crazyflie21bl.dts.
  *
  * Hardware: STM32F405RGT6, 168 MHz, FPU
  * Motor ESC protocol: RC PWM at 400 Hz (2500 µs period)
@@ -28,16 +28,16 @@
  * LED → PC1 (LED_GREEN_L), active-low (common-anode, STM32 sinks cathode).
  * ESC reset → PC15, open-drain active-low, shared across all four ESCs.
  *   STM32 reset leaves PC15 floating → ESCs held in reset.
- *   cf21_init() drives it HIGH (open-drain deassert) to release ESCs.
+ *   cf21bl_init() drives it HIGH (open-drain deassert) to release ESCs.
  *   Source: motors.c / hasPC15ESCReset in Bitcraze crazyflie-firmware.
  */
 
 / {
 	aliases {
-		cf21-motors = &cf21_motors;
+		cf21bl-motors = &cf21bl_motors;
 	};
 
-	cf21_motors: cf21-motors {
+	cf21bl_motors: cf21-motors {
 		compatible = "bitcraze,cf21-motors";
 		/*
 		 * Four ESC PWM channels in M1..M4 order.
@@ -74,7 +74,7 @@
  *
  * PREREQUISITE to enable BLE: reflash nRF51 with HCI firmware (Nordic
  * hci_uart sample or Zephyr hci_uart app), then uncomment CONFIG_BT
- * block in tapestry-scr-hw/boards/crazyflie21br.conf.
+ * block in tapestry-scr-hw/boards/crazyflie21bl.conf.
  */
 &usart6 {
 	status = "okay";

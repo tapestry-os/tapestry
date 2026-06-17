@@ -1,34 +1,34 @@
 # Kconfig — Crazyflie 2.1 brushless board module options
 #
 # Source from your application Kconfig (after "source Kconfig.zephyr"):
-#   rsource "../tapestry-os/boards/crazyflie21br/Kconfig"
+#   rsource "../tapestry-os/boards/crazyflie21bl/Kconfig"
 
-config CF21_STABILIZER
+config CF21BL_STABILIZER
 	bool "Cascaded attitude controller (rate loop + optional angle loop)"
-	depends on BOARD_CRAZYFLIE21BR && FPU
+	depends on BOARD_CRAZYFLIE21BL && FPU
 	default n
 	help
-	  Enables cf21_stabilizer.c: a ~1 kHz PID stabilizer thread slaved to
+	  Enables cf21bl_stabilizer.c: a ~1 kHz PID stabilizer thread slaved to
 	  the BMI088 INT3 data-ready interrupt.  substrate_move() becomes a
 	  setpoint setter; the stabilizer drives motors independently.
 
 	  Requires adding to CMakeLists.txt (inside if(CONFIG_PWM)):
-	    if(CONFIG_CF21_STABILIZER)
+	    if(CONFIG_CF21BL_STABILIZER)
 	      target_sources(app PRIVATE
-	        ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_stabilizer.c
-	        ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_imu.c)
+	        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_stabilizer.c
+	        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_imu.c)
 	    endif()
 
-if CF21_STABILIZER
+if CF21BL_STABILIZER
 
-config CF21_ANGLE_MODE
+config CF21BL_ANGLE_MODE
 	bool "Enable outer angle-error P loop (self-leveling)"
 	default n
 	help
 	  Adds a P controller on roll/pitch angle error above the rate loop,
-	  reading from the complementary filter (cf21_imu_filter_update).
+	  reading from the complementary filter (cf21bl_imu_filter_update).
 	  substrate_move() angular.x/y become roll/pitch angle setpoints
 	  (scaled to ±30 degrees) rather than rate setpoints.
 	  angular.z remains a yaw rate setpoint in both modes.
 
-endif # CF21_STABILIZER
+endif # CF21BL_STABILIZER

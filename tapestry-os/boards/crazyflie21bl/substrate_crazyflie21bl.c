@@ -1,9 +1,9 @@
 /*
- * tapestry-os/boards/crazyflie21br/substrate_crazyflie21br.c
+ * tapestry-os/boards/crazyflie21bl/substrate_crazyflie21bl.c
  * Tapestry L1 substrate implementation for the Bitcraze Crazyflie 2.1 brushless.
  *
  * Implements <tapestry/substrate.h> by delegating to the Crazyflie 2.1
- * PWM driver (crazyflie21br.c) via the motor mixing math (crazyflie21br_mix.h).
+ * PWM driver (crazyflie21bl.c) via the motor mixing math (crazyflie21bl_mix.h).
  *
  * Motion model — quadrotor, 6-DOF:
  *   linear.x   forward (+) / backward (-)  → nose-down/up pitch  → P term
@@ -19,7 +19,7 @@
  *
  * Power state mapping:
  *   ACTIVE   → armed; substrate_move() commands apply immediately.
- *   IDLE     → armed; BSE pauses motion; motors at idle via cf21_set_motors(0,0,0,0).
+ *   IDLE     → armed; BSE pauses motion; motors at idle via cf21bl_set_motors(0,0,0,0).
  *   SLEEP    → disarmed; all motors cut to idle pulse.
  *   HARVEST  → disarmed; same as SLEEP.
  *
@@ -33,39 +33,39 @@
 
 #include <stdbool.h>
 #include <tapestry/substrate.h>
-#include "crazyflie21br.h"
-#include "crazyflie21br_mix.h"
-#ifdef CONFIG_CF21_STABILIZER
-#include "cf21_stabilizer.h"
+#include "crazyflie21bl.h"
+#include "crazyflie21bl_mix.h"
+#ifdef CONFIG_CF21BL_STABILIZER
+#include "cf21bl_stabilizer.h"
 #endif
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
 int substrate_init(void)
 {
-    return cf21_init();
+    return cf21bl_init();
 }
 
 void substrate_move(const substrate_twist_t *twist)
 {
-#ifdef CONFIG_CF21_STABILIZER
-    cf21_stabilizer_set_setpoint(twist);
+#ifdef CONFIG_CF21BL_STABILIZER
+    cf21bl_stabilizer_set_setpoint(twist);
 #else
-    cf21_motors_t motors;
-    cf21_mix(twist, &motors);
-    cf21_set_motors(&motors);
+    cf21bl_motors_t motors;
+    cf21bl_mix(twist, &motors);
+    cf21bl_set_motors(&motors);
 #endif
 }
 
 void substrate_set_signal(substrate_signal_t signal)
 {
     switch (signal) {
-    case SUBSTRATE_SIGNAL_ACTIVE:   cf21_set_led(255); break;
-    case SUBSTRATE_SIGNAL_DEGRADED: cf21_set_led(128); break;
-    case SUBSTRATE_SIGNAL_IDLE:     cf21_set_led(64);  break;
-    case SUBSTRATE_SIGNAL_FAILED:   cf21_set_led(32);  break;  /* TODO: blink */
+    case SUBSTRATE_SIGNAL_ACTIVE:   cf21bl_set_led(255); break;
+    case SUBSTRATE_SIGNAL_DEGRADED: cf21bl_set_led(128); break;
+    case SUBSTRATE_SIGNAL_IDLE:     cf21bl_set_led(64);  break;
+    case SUBSTRATE_SIGNAL_FAILED:   cf21bl_set_led(32);  break;  /* TODO: blink */
     case SUBSTRATE_SIGNAL_NONE:
-    default:                        cf21_set_led(0);   break;
+    default:                        cf21bl_set_led(0);   break;
     }
 }
 
@@ -73,7 +73,7 @@ void substrate_set_power(substrate_power_state_t state)
 {
     switch (state) {
     case SUBSTRATE_POWER_ACTIVE:
-        cf21_set_armed(true);
+        cf21bl_set_armed(true);
         break;
 
     case SUBSTRATE_POWER_IDLE: {
@@ -86,7 +86,7 @@ void substrate_set_power(substrate_power_state_t state)
 
     case SUBSTRATE_POWER_SLEEP:
     case SUBSTRATE_POWER_HARVEST:
-        cf21_set_armed(false);
+        cf21bl_set_armed(false);
         break;
     }
 }

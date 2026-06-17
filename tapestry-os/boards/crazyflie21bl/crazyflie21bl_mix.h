@@ -1,8 +1,8 @@
 /*
- * crazyflie21br_mix.h — Crazyflie 2.1 motor mixing math
+ * crazyflie21bl_mix.h — Crazyflie 2.1 motor mixing math
  *
  * Pure C99 header; no OS or Zephyr dependencies.
- * Included by substrate_crazyflie21br.c and the tapestry-cf21-sim test harness.
+ * Included by substrate_crazyflie21bl.c and the tapestry-cf21-sim test harness.
  *
  * Motor layout (view from above, front = +x body frame):
  *
@@ -23,7 +23,7 @@
  *
  * Verify on hardware before closed-loop flight: spin M2(BR)+M4(FL) at low
  * throttle — frame should rotate CCW (yaw left, +Z). If CW, negate all
- * four Y terms in cf21_mix().
+ * four Y terms in cf21bl_mix().
  *
  * Tapestry substrate_twist_t axes consumed (substrate.h conventions):
  *   linear.z   collective thrust : -1.0 = idle,        +1.0 = full throttle
@@ -53,8 +53,8 @@
  * All outputs clamped to [0.0, 1.0] before returning.
  */
 
-#ifndef TAPESTRY_CRAZYFLIE21BR_MIX_H
-#define TAPESTRY_CRAZYFLIE21BR_MIX_H
+#ifndef TAPESTRY_CRAZYFLIE21BL_MIX_H
+#define TAPESTRY_CRAZYFLIE21BL_MIX_H
 
 #include <tapestry/substrate.h>
 
@@ -65,11 +65,11 @@ typedef struct {
     float m2;  /* back-right,  CW  [0.0, 1.0] */
     float m3;  /* back-left,   CCW [0.0, 1.0] */
     float m4;  /* front-left,  CW  [0.0, 1.0] */
-} cf21_motors_t;
+} cf21bl_motors_t;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
-static inline float cf21_clampf(float v)
+static inline float cf21bl_clampf(float v)
 {
     if (v < 0.0f) return 0.0f;
     if (v > 1.0f) return 1.0f;
@@ -78,17 +78,17 @@ static inline float cf21_clampf(float v)
 
 /* ── Motor mixing ────────────────────────────────────────────────────────── */
 
-static inline void cf21_mix(const substrate_twist_t *twist, cf21_motors_t *out)
+static inline void cf21bl_mix(const substrate_twist_t *twist, cf21bl_motors_t *out)
 {
     float T = (twist->linear.z + 1.0f) * 0.5f;   /* collective [0, 1]  */
     float R = twist->angular.x - twist->linear.y; /* roll  cmd          */
     float P = twist->angular.y - twist->linear.x; /* pitch cmd          */
     float Y = twist->angular.z;                   /* yaw   cmd          */
 
-    out->m1 = cf21_clampf(T - R + P - Y);   /* front-right, CCW */
-    out->m2 = cf21_clampf(T - R - P + Y);   /* back-right,  CW  */
-    out->m3 = cf21_clampf(T + R - P - Y);   /* back-left,   CCW */
-    out->m4 = cf21_clampf(T + R + P + Y);   /* front-left,  CW  */
+    out->m1 = cf21bl_clampf(T - R + P - Y);   /* front-right, CCW */
+    out->m2 = cf21bl_clampf(T - R - P + Y);   /* back-right,  CW  */
+    out->m3 = cf21bl_clampf(T + R - P - Y);   /* back-left,   CCW */
+    out->m4 = cf21bl_clampf(T + R + P + Y);   /* front-left,  CW  */
 }
 
-#endif /* TAPESTRY_CRAZYFLIE21BR_MIX_H */
+#endif /* TAPESTRY_CRAZYFLIE21BL_MIX_H */

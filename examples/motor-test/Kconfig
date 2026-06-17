@@ -1,11 +1,11 @@
 mainmenu "Tapestry motor-test"
 
 source "Kconfig.zephyr"
-rsource "../../tapestry-os/boards/crazyflie21br/Kconfig"
+rsource "../../tapestry-os/boards/crazyflie21bl/Kconfig"
 
 config MOTOR_TEST_YAW_VERIFY
 	bool "Yaw-sign verification mode (props on, frame loose)"
-	depends on BOARD_CRAZYFLIE21BR
+	depends on BOARD_CRAZYFLIE21BL
 	default n
 	help
 	  Replaces the collective-thrust sweep with a two-phase yaw-sign
@@ -18,15 +18,15 @@ config MOTOR_TEST_YAW_VERIFY
 
 	  Default n = collective-thrust sweep (props OFF, frame secured).
 	  Enable by adding CONFIG_MOTOR_TEST_YAW_VERIFY=y to
-	  boards/crazyflie21br.conf, then rebuild and reflash.
+	  boards/crazyflie21bl.conf, then rebuild and reflash.
 
-config CF21_HOVER_TEST
+config CF21BL_HOVER_TEST
 	bool "Tethered hover test (Step 4 angle-loop self-leveling)"
-	depends on BOARD_CRAZYFLIE21BR && CF21_STABILIZER
+	depends on BOARD_CRAZYFLIE21BL && CF21BL_STABILIZER
 	default n
 	help
 	  Arms the ESCs and holds a fixed collective indefinitely, with all
-	  angular setpoints zero.  With CONFIG_CF21_ANGLE_MODE=y the outer
+	  angular setpoints zero.  With CONFIG_CF21BL_ANGLE_MODE=y the outer
 	  angle loop drives roll and pitch toward level; hand-tilting the
 	  tethered frame should produce a restoring response.
 
@@ -36,15 +36,15 @@ config CF21_HOVER_TEST
 
 	  Mutually exclusive with MOTOR_TEST_YAW_VERIFY: only one may be set.
 
-if CF21_HOVER_TEST
+if CF21BL_HOVER_TEST
 
-config CF21_HOVER_THROTTLE_PCT
+config CF21BL_HOVER_THROTTLE_PCT
 	int "Hover collective [%]  (18 = min-spin, ~65 = measured hover)"
 	range 18 100
 	default 30
 	help
 	  Collective thrust percentage.  Maps to linear.z = pct/50 - 1,
-	  i.e. T = pct/100 in cf21_mix.  Start conservatively (30 %) and
+	  i.e. T = pct/100 in cf21bl_mix.  Start conservatively (30 %) and
 	  increase until the tethered frame lifts against the tether weight.
 
-endif # CF21_HOVER_TEST
+endif # CF21BL_HOVER_TEST

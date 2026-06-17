@@ -9,7 +9,7 @@ reapplied after any `west update` that touches `zephyr/`.
 
 Fixes two real bugs in `drivers/i2c/i2c_stm32_v1_rtio.c` (STM32 I2C v1 RTIO
 driver) discovered while bringing up the BMI088 gyro over I2C3 on
-crazyflie21br:
+crazyflie21bl:
 
 1. A spurious second RXNE interrupt after a single-byte master read
    double-completes the RTIO transaction and crashes (`txn_head == NULL`

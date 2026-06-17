@@ -1,5 +1,5 @@
 /*
- * crazyflie21br_usb_console.overlay — USB CDC ACM console retry
+ * crazyflie21bl_usb_console.overlay — USB CDC ACM console retry
  *
  * Switches the Zephyr console/shell from the (now-confirmed-working) wired
  * USART3 to USB CDC ACM over the STM32F405's OTG_FS peripheral on PA11/PA12.
@@ -12,13 +12,13 @@
  * disable VBUS sensing automatically (see USB_VBUS_SENSING in usb_dc_stm32.c).
  *
  * USB's 48 MHz clock comes from the same PLL_Q=7 path whose baud-rate-style
- * symptoms were caused by the wrong &clk_hse frequency (see crazyflie21br.dts);
+ * symptoms were caused by the wrong &clk_hse frequency (see crazyflie21bl.dts);
  * this overlay exists to test whether that fix also unblocks USB.
  *
  * Build:
- *   west build -p always -b crazyflie21br tapestry/tapestry-scr-hw -- \
+ *   west build -p always -b crazyflie21bl tapestry/tapestry-scr-hw -- \
  *     -DCONFIG_PWM=n \
- *     -DEXTRA_DTC_OVERLAY_FILE=boards/crazyflie21br_usb_console.overlay \
+ *     -DEXTRA_DTC_OVERLAY_FILE=boards/crazyflie21bl_usb_console.overlay \
  *     -DCONFIG_USB_DEVICE_STACK_NEXT=y \
  *     -DCONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT=y \
  *     -DCONFIG_CDC_ACM_SERIAL_PRODUCT_STRING="\"Tapestry CF21 console\""

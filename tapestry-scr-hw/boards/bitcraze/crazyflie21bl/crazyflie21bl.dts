@@ -1,5 +1,5 @@
 /*
- * crazyflie21br.dts — Zephyr board DTS for Bitcraze Crazyflie 2.1 Brushless
+ * crazyflie21bl.dts — Zephyr board DTS for Bitcraze Crazyflie 2.1 Brushless
  *
  * MCU:   STM32F405RGT6 (Cortex-M4F, 168 MHz, 1 MB flash, 192 KB SRAM)
  * Clock: 8 MHz HSE crystal → PLL (M=8,N=336,P=2,Q=7) → 168 MHz SYSCLK / 48 MHz USB
@@ -8,7 +8,7 @@
  * Connect a 3.3 V USB-serial adapter: white (adapter RX) → PC10, green (adapter TX) → PC11, GND.
  *
  * Motor PWM and the nRF51 HCI UART are configured in the app overlay
- * (tapestry-os/boards/crazyflie21br/crazyflie21br.overlay).
+ * (tapestry-os/boards/crazyflie21bl/crazyflie21bl.overlay).
  */
 
 /dts-v1/;
@@ -18,7 +18,7 @@
 
 / {
 	model = "Bitcraze Crazyflie 2.1 Brushless";
-	compatible = "bitcraze,crazyflie21br";
+	compatible = "bitcraze,crazyflie21bl";
 
 	chosen {
 		zephyr,sram           = &sram0;
@@ -119,13 +119,13 @@
  * Pin assignment verified against CF2.1 Brushless schematic Rev.G.
  *
  * Enabled here so that all builds (app and tests) can use USART6 for
- * CRTP syslink console output (cf21_crtp_log.c).  The nRF51 factory
+ * CRTP syslink console output (cf21bl_crtp_log.c).  The nRF51 factory
  * firmware forwards CRTP console packets over 2.4 GHz radio to
  * crazyradio2; read_console.py receives them on the host.
  *
  * When the nRF51 is reflashed with HCI firmware for BLE, uncomment
- * CONFIG_BT_HCI_UART in tapestry-scr-hw/boards/crazyflie21br.conf and
- * disable cf21_crtp_log.c (the two uses of USART6 are mutually exclusive).
+ * CONFIG_BT_HCI_UART in tapestry-scr-hw/boards/crazyflie21bl.conf and
+ * disable cf21bl_crtp_log.c (the two uses of USART6 are mutually exclusive).
  */
 /* Raise PC6 (USART6_TX) slew rate from Zephyr's default 2 MHz low-speed to
  * very-high-speed (100 MHz).  The CF firmware uses GPIO_Speed_25MHz; without

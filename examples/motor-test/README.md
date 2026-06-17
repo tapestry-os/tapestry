@@ -4,23 +4,23 @@ A motor characterisation sweep used to find the usable throttle/speed range
 of a robot's drive system before running a higher-level demo. Two boards are
 supported, each with its own sweep:
 
-- **crazyflie21br** — collective thrust sweep to find the minimum ESC PWM
+- **crazyflie21bl** — collective thrust sweep to find the minimum ESC PWM
   width at which all four motors spin (BLHeli_S RC PWM mode).
 - **bbc_microbit_v2** (Cutebot) — forward-speed sweep to find the stiction
   threshold and measure speed vs. throttle.
 
 Results feed into `examples/collective-formation` (`DEMO_MAX_SPEED`,
-`DEMO_WHEEL_TRACK`) and into `tapestry-os/boards/crazyflie21br/crazyflie21br.c`
-(`CF21_PWM_MIN_NS`).
+`DEMO_WHEEL_TRACK`) and into `tapestry-os/boards/crazyflie21bl/crazyflie21bl.c`
+(`CF21BL_PWM_MIN_NS`).
 
-## crazyflie21br — ESC characterisation
+## crazyflie21bl — ESC characterisation
 
 **Procedure**
 
 1. **Remove all propellers.** Secure the frame to the bench (tape or clamps).
 2. Build and flash:
    ```sh
-   west build -p always -b crazyflie21br tapestry/examples/motor-test
+   west build -p always -b crazyflie21bl tapestry/examples/motor-test
    cfloader flash build/zephyr/zephyr.bin stm32-dfu   # activate ~/code/tapestry/.venv first
    ```
 3. Connect a console (see below).
@@ -31,11 +31,11 @@ Results feed into `examples/collective-formation` (`DEMO_MAX_SPEED`,
    as a wiring sanity check — if it doesn't spin, the ESCs likely still need
    reflashing to RC PWM mode.
 6. Note the lowest step where **all four** motors audibly/tactilely spin.
-7. Compute `CF21_PWM_MIN_NS = 1000000 + threshold_pct * 10000` and set it in
-   `tapestry-os/boards/crazyflie21br/crazyflie21br.c`.
+7. Compute `CF21BL_PWM_MIN_NS = 1000000 + threshold_pct * 10000` and set it in
+   `tapestry-os/boards/crazyflie21bl/crazyflie21bl.c`.
 
 **Measured result (2026-06-09):** all four motors spin from 18% (1180 µs),
-clean at 20% (1200 µs). `CF21_PWM_MIN_NS = 1180000` is already set.
+clean at 20% (1200 µs). `CF21BL_PWM_MIN_NS = 1180000` is already set.
 
 ### Console
 

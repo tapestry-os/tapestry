@@ -1,5 +1,5 @@
 /*
- * cf21_crtp_log.c — Zephyr log backend → syslink CRTP console → nRF51 radio
+ * cf21bl_crtp_log.c — Zephyr log backend → syslink CRTP console → nRF51 radio
  *
  * Encodes Zephyr LOG_* output as syslink-framed CRTP console packets and
  * sends them over USART6 (PC6/PC7, 1 Mbps) to the nRF51822 co-processor.
@@ -24,7 +24,7 @@
  * It auto-starts and runs alongside any other configured backends.
  *
  * Usage:
- *   Build:  west build -p always -b crazyflie21br tapestry/tapestry-scr-hw
+ *   Build:  west build -p always -b crazyflie21bl tapestry/tapestry-scr-hw
  *   Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu
  *   Read:   python3 ~/code/tapestry/read_console.py
  */
