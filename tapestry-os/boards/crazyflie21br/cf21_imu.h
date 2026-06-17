@@ -34,6 +34,7 @@ typedef struct {
 typedef struct {
     float roll_deg;
     float pitch_deg;
+    float yaw_deg;   /* available from Mahony quaternion; not used by stabilizer yet */
 } cf21_imu_attitude_t;
 
 /*
@@ -58,14 +59,14 @@ int cf21_imu_read(cf21_imu_sample_t *out);
 uint32_t cf21_imu_get_drdy_count(void);
 
 /*
- * cf21_imu_filter_init — (re)initialize the complementary filter state.
- * alpha is the gyro-integration weight in [0, 1] (e.g. 0.98).
+ * cf21_imu_filter_init — (re)initialize the Mahony quaternion filter.
+ * Gains: twoKp=0.8, twoKi=0.002 (CF21BL stock values).
  */
-void cf21_imu_filter_init(float alpha);
+void cf21_imu_filter_init(void);
 
 /*
- * cf21_imu_filter_update — fuse one IMU sample into the complementary
- * filter and return the updated roll/pitch estimate in degrees.
+ * cf21_imu_filter_update — fuse one IMU sample into the Mahony quaternion
+ * filter and return the updated roll/pitch/yaw estimate in degrees.
  * dt_s is the time since the previous call, in seconds.
  */
 void cf21_imu_filter_update(const cf21_imu_sample_t *sample, float dt_s,

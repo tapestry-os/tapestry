@@ -49,7 +49,10 @@ LOG_MODULE_REGISTER(cf21_stabilizer, LOG_LEVEL_INF);
 #define CF21_MAX_ANGLE_DEG      30.0f   /* ±30° for angle mode full-stick */
 #define CF21_MAX_ANGLE_RATE_RPS CF21_MAX_RATE_RPS
 
-/* Rate PID gains — roll and pitch (symmetric) */
+/* Rate PID gains — roll and pitch (symmetric)
+ * CF21BL stock converted: Kp=200×(180/π)/32767=0.350, Ki=0.699, Kd=0.00437.
+ * PWM actuator latency (~5-10ms) + LPF phase delay (~2ms gyro, ~5ms accel)
+ * requires lower gains than DSHOT-based CF firmware; start at 0.11 and tune up. */
 #define CF21_RP_KP      0.11f
 #define CF21_RP_KI      0.22f
 #define CF21_RP_KD      0.0011f
@@ -63,8 +66,10 @@ LOG_MODULE_REGISTER(cf21_stabilizer, LOG_LEVEL_INF);
 #define CF21_YAW_ILIM   0.1f
 #define CF21_YAW_OLIM   0.3f
 
-/* Outer angle loop — P only (Step 4) */
+/* Outer angle loop (PD_ROLL_KP=6.0, KI=3.0, deg/s per deg → rad/s per deg via × π/180) */
 #define CF21_ANGLE_KP   0.105f  /* rad/s per degree error */
+#define CF21_ANGLE_KI   0.052f  /* rad/s per degree·s — corrects steady trim offsets */
+#define CF21_ANGLE_ILIM 0.35f   /* ±20 deg/s equivalent (CF21BL integration limit) */
 
 /* ── PID ────────────────────────────────────────────────────────────────────── */
 
@@ -132,6 +137,11 @@ static cf21_pid_t g_pid_roll;
 static cf21_pid_t g_pid_pitch;
 static cf21_pid_t g_pid_yaw;
 
+#ifdef CONFIG_CF21_ANGLE_MODE
+static cf21_pid_t g_pid_roll_angle;
+static cf21_pid_t g_pid_pitch_angle;
+#endif
+
 /* ── Stabilizer thread ──────────────────────────────────────────────────────── */
 
 K_THREAD_STACK_DEFINE(g_stab_stack, CF21_STAB_STACK_SIZE);
@@ -169,13 +179,10 @@ static void stabilizer_fn(void *a, void *b, void *c)
         float roll_sp_deg  = sp.angular.x * CF21_MAX_ANGLE_DEG;
         float pitch_sp_deg = sp.angular.y * CF21_MAX_ANGLE_DEG;
 
-        roll_rate_sp  = (roll_sp_deg  - att.roll_deg)  * CF21_ANGLE_KP;
-        pitch_rate_sp = (pitch_sp_deg - att.pitch_deg) * CF21_ANGLE_KP;
-
-        if (roll_rate_sp  >  CF21_MAX_ANGLE_RATE_RPS) roll_rate_sp  =  CF21_MAX_ANGLE_RATE_RPS;
-        if (roll_rate_sp  < -CF21_MAX_ANGLE_RATE_RPS) roll_rate_sp  = -CF21_MAX_ANGLE_RATE_RPS;
-        if (pitch_rate_sp >  CF21_MAX_ANGLE_RATE_RPS) pitch_rate_sp =  CF21_MAX_ANGLE_RATE_RPS;
-        if (pitch_rate_sp < -CF21_MAX_ANGLE_RATE_RPS) pitch_rate_sp = -CF21_MAX_ANGLE_RATE_RPS;
+        roll_rate_sp  = pid_update(&g_pid_roll_angle,
+                                   roll_sp_deg  - att.roll_deg,  CF21_LOOP_DT);
+        pitch_rate_sp = pid_update(&g_pid_pitch_angle,
+                                   pitch_sp_deg - att.pitch_deg, CF21_LOOP_DT);
 #else
         /* ── Rate mode: direct rate setpoint ─────────────────────────────── */
         roll_rate_sp  = sp.angular.x * CF21_MAX_RATE_RPS;
@@ -214,7 +221,7 @@ int cf21_stabilizer_start(void)
         return ret;
     }
 
-    cf21_imu_filter_init(0.98f);
+    cf21_imu_filter_init();
 
     pid_init(&g_pid_roll,  CF21_RP_KP,  CF21_RP_KI,  CF21_RP_KD,
              CF21_RP_ILIM,  CF21_RP_OLIM);
@@ -222,6 +229,13 @@ int cf21_stabilizer_start(void)
              CF21_RP_ILIM,  CF21_RP_OLIM);
     pid_init(&g_pid_yaw,   CF21_YAW_KP, CF21_YAW_KI, CF21_YAW_KD,
              CF21_YAW_ILIM, CF21_YAW_OLIM);
+
+#ifdef CONFIG_CF21_ANGLE_MODE
+    pid_init(&g_pid_roll_angle,  CF21_ANGLE_KP, CF21_ANGLE_KI, 0.0f,
+             CF21_ANGLE_ILIM, CF21_MAX_ANGLE_RATE_RPS);
+    pid_init(&g_pid_pitch_angle, CF21_ANGLE_KP, CF21_ANGLE_KI, 0.0f,
+             CF21_ANGLE_ILIM, CF21_MAX_ANGLE_RATE_RPS);
+#endif
 
     k_thread_create(&g_stab_thread, g_stab_stack,
                     K_THREAD_STACK_SIZEOF(g_stab_stack),

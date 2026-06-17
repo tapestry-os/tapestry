@@ -33,7 +33,7 @@ int main(void)
         return -1;
     }
 
-    cf21_imu_filter_init(0.98f);
+    cf21_imu_filter_init();
 
     int64_t last_report_ms = k_uptime_get();
     uint32_t last_drdy = cf21_imu_get_drdy_count();

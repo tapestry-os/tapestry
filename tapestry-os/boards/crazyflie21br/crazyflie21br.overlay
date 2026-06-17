@@ -103,8 +103,11 @@
  *
  * gyro-hz "1000_116" = BW 116 Hz / ODR 1000 Hz, matching stock firmware and
  * giving the ~1 kHz INT3 data-ready interrupt the stabilizer loop is slaved
- * to.  accel-hz "800" is the data-sync-recommended pairing for this gyro
- * ODR (see bmi08x_accel.c comment) even though data-sync isn't enabled here.
+ * to.  accel-hz "1600" and accel-fs <24> match CF21BL stock firmware
+ * (BMI088_ACCEL_ODR_1600_HZ, SENSORS_BMI088_ACCEL_CFG=24).  1600 Hz ODR
+ * ensures a fresh accel sample is available every 1 kHz loop iteration.
+ * 24 G range matches stock; 12 G gave better resolution but risked saturation
+ * during aggressive maneuvers.
  */
 &i2c3 {
 	pinctrl-0 = <&i2c3_scl_pa8 &i2c3_sda_pc9>;
@@ -115,8 +118,8 @@
 	bmi088_accel: bmi088-accel@18 {
 		compatible = "bosch,bmi08x-accel";
 		reg = <0x18>;
-		accel-hz = "800";
-		accel-fs = <12>;
+		accel-hz = "1600";
+		accel-fs = <24>;
 	};
 
 	bmi088_gyro: bmi088-gyro@69 {
