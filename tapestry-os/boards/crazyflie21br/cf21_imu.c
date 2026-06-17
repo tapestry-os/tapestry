@@ -92,8 +92,15 @@ int cf21_imu_read(cf21_imu_sample_t *out)
     sensor_channel_get(gyro_dev, SENSOR_CHAN_GYRO_XYZ, gyro);
     sensor_channel_get(accel_dev, SENSOR_CHAN_ACCEL_XYZ, accel);
 
+    /* BMI088 gyro Y axis: positive ω_y takes the nose toward −Z (nose DOWN) per
+     * right-hand rule on the body frame (X=fwd, Y=left, Z=up).  Negate so that
+     * gyro_rps[1] > 0 means nose-up, consistent with substrate.h pitch convention.
+     * X (roll) and Z (yaw) have correct signs natively. */
+    out->gyro_rps[0] =  sensor_value_to_float(&gyro[0]);
+    out->gyro_rps[1] = -sensor_value_to_float(&gyro[1]);
+    out->gyro_rps[2] =  sensor_value_to_float(&gyro[2]);
+
     for (int i = 0; i < 3; i++) {
-        out->gyro_rps[i] = sensor_value_to_float(&gyro[i]);
         out->accel_g[i] = sensor_value_to_float(&accel[i]) / 9.80665f;
     }
 
@@ -126,9 +133,10 @@ void cf21_imu_filter_init(float alpha)
  * roll  ~ rotation about the X axis (gyro_rps[0], accel Y/Z plane);
  *         positive = right-side-down, matches atan2(accel_y, accel_z).
  * pitch ~ rotation about the Y axis (gyro_rps[1], accel X vs. Y/Z plane);
- *         positive = nose-up, matches atan2(accel_x, |accel_yz|) (note:
- *         NOT atan2(-accel_x, ...) — that sign gave nose-down -> +90deg,
- *         contradicting substrate's pitch-positive-is-nose-up convention).
+ *         positive = nose-up, matches atan2(accel_x, |accel_yz|).
+ *         NOTE: raw BMI088 ωy is positive-nose-DOWN (right-hand rule on body
+ *         frame gives ω_y × X̂ = −Ẑ).  cf21_imu_read() negates it so that
+ *         gyro_rps[1] > 0 means nose-up throughout the system.
  */
 void cf21_imu_filter_update(const cf21_imu_sample_t *sample, float dt_s,
                              cf21_imu_attitude_t *out)

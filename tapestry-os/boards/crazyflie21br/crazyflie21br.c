@@ -2,8 +2,8 @@
  * crazyflie21br.c — Crazyflie 2.1 brushless motor driver (Zephyr PWM)
  *
  * Motor layout (view from above):
- *   M4(CW)  M1(CCW)   ← front
- *   M3(CW)  M2(CCW)   ← back
+ *   M4(CW)   M1(CCW)   ← front
+ *   M3(CCW)  M2(CW)    ← back
  *
  * ESC PWM signal (400 Hz, standard RC):
  *   Period    = CF21_PWM_PERIOD_NS   (2 500 000 ns = 2.5 ms = 400 Hz)
@@ -15,6 +15,9 @@
  */
 
 #include "crazyflie21br.h"
+#ifdef CONFIG_CF21_STABILIZER
+#include "cf21_stabilizer.h"
+#endif
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -46,8 +49,8 @@ static const struct gpio_dt_spec cf21_led =
 
 static const struct pwm_dt_spec motors[4] = {
     PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 0),   /* M1 front-right CCW */
-    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 1),   /* M2 back-right  CCW */
-    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 2),   /* M3 back-left   CW  */
+    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 1),   /* M2 back-right  CW  */
+    PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 2),   /* M3 back-left   CCW */
     PWM_DT_SPEC_GET_BY_IDX(CF21_MOTORS_NODE, 3),   /* M4 front-left  CW  */
 };
 
@@ -60,9 +63,11 @@ static bool  g_armed  = false;
 
 static uint32_t motor_to_ns(float v)
 {
-    /* v in [0.0, 1.0]; map to [CF21_PWM_MIN_NS, CF21_PWM_FULL_NS] */
-    uint32_t range = CF21_PWM_FULL_NS - CF21_PWM_MIN_NS;
-    return CF21_PWM_MIN_NS + (uint32_t)(v * (float)range);
+    /* v in [0.0, 1.0]; map to [CF21_PWM_IDLE_NS, CF21_PWM_FULL_NS].
+     * v=0.0 → 1000 µs (idle, not spinning); v=0.18 → 1180 µs (CF21_PWM_MIN_NS,
+     * empirical spin threshold); v=1.0 → 2000 µs (full throttle). */
+    uint32_t range = CF21_PWM_FULL_NS - CF21_PWM_IDLE_NS;
+    return CF21_PWM_IDLE_NS + (uint32_t)(v * (float)range);
 }
 
 static void write_motor(int idx, float value)
@@ -129,6 +134,14 @@ int cf21_init(void)
     g_ready = true;
     g_armed = false;
     LOG_INF("Crazyflie 2.1 ESCs armed (idle)");
+
+#ifdef CONFIG_CF21_STABILIZER
+    int stab_ret = cf21_stabilizer_start();
+    if (stab_ret) {
+        LOG_WRN("Stabilizer start failed: %d — direct motor control only", stab_ret);
+    }
+#endif
+
     return 0;
 }
 

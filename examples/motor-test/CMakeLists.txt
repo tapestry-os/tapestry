@@ -28,16 +28,25 @@ if("${BOARD}" STREQUAL "crazyflie21br")
     target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_crtp_log.c)
 endif()
 
-# Substrate selection: Cutebot (I2C), CF21br (PWM), null stub everywhere else.
-if(CONFIG_I2C)
-    target_sources(app PRIVATE
-        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot.c
-        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot.c
-    )
-elseif(CONFIG_PWM)
+# Substrate selection: CF21br (PWM), Cutebot (I2C), null stub everywhere else.
+# PWM must be checked before I2C: the CF21 stabilizer uses both (PWM for motors,
+# I2C for the BMI088 IMU), so checking I2C first would wrongly select the Cutebot path.
+if(CONFIG_PWM)
     target_sources(app PRIVATE
         ${TAPESTRY_OS_BOARDS}/crazyflie21br/substrate_crazyflie21br.c
         ${TAPESTRY_OS_BOARDS}/crazyflie21br/crazyflie21br.c
+    )
+    if(CONFIG_CF21_STABILIZER)
+        target_sources(app PRIVATE
+            ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_stabilizer.c
+            ${TAPESTRY_OS_BOARDS}/crazyflie21br/cf21_imu.c
+        )
+        target_link_libraries(app PRIVATE m)
+    endif()
+elseif(CONFIG_I2C)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot.c
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot.c
     )
 else()
     target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/substrate_null.c)

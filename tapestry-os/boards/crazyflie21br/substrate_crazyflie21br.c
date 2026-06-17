@@ -35,6 +35,9 @@
 #include <tapestry/substrate.h>
 #include "crazyflie21br.h"
 #include "crazyflie21br_mix.h"
+#ifdef CONFIG_CF21_STABILIZER
+#include "cf21_stabilizer.h"
+#endif
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
@@ -45,9 +48,13 @@ int substrate_init(void)
 
 void substrate_move(const substrate_twist_t *twist)
 {
+#ifdef CONFIG_CF21_STABILIZER
+    cf21_stabilizer_set_setpoint(twist);
+#else
     cf21_motors_t motors;
     cf21_mix(twist, &motors);
     cf21_set_motors(&motors);
+#endif
 }
 
 void substrate_set_signal(substrate_signal_t signal)

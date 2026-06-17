@@ -7,7 +7,7 @@
  *
  * Motor layout reminder (view from above):
  *   M4(CW)   M1(CCW)   ← front
- *   M3(CW)   M2(CCW)   ← back
+ *   M3(CCW)  M2(CW)    ← back
  *
  * Mixing equations:
  *   T = (linear.z + 1.0) / 2.0
@@ -16,8 +16,8 @@
  *   Y = angular.z
  *
  *   M1 (FR, CCW) = T − R + P − Y
- *   M2 (BR, CCW) = T − R − P − Y
- *   M3 (BL, CW)  = T + R − P + Y
+ *   M2 (BR, CW)  = T − R − P + Y
+ *   M3 (BL, CCW) = T + R − P − Y
  *   M4 (FL, CW)  = T + R + P + Y
  *
  * Build:  west build -b native_sim tapestry-cf21-sim/tests
@@ -104,41 +104,41 @@ ZTEST(cf21_mix, test_idle_throttle)
  * test_yaw_ccw
  *
  * angular.z = +0.25 (CCW, turn left), linear.z = 0 → T = 0.5.
- * CW props (M3, M4) must increase; CCW props (M1, M2) must decrease.
+ * CW props (M2, M4) must increase; CCW props (M1, M3) must decrease.
  * Expected:
  *   Y = 0.25, R = P = 0
- *   M1 = 0.5 − 0.25 = 0.25   M2 = 0.5 − 0.25 = 0.25
- *   M3 = 0.5 + 0.25 = 0.75   M4 = 0.5 + 0.25 = 0.75
+ *   M1 = 0.5 − 0.25 = 0.25   M2 = 0.5 + 0.25 = 0.75
+ *   M3 = 0.5 − 0.25 = 0.25   M4 = 0.5 + 0.25 = 0.75
  */
 ZTEST(cf21_mix, test_yaw_ccw)
 {
     cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 0.25f);
 
     ASSERT_NEAR(m.m1, 0.25f, "M1 yaw-CCW");
-    ASSERT_NEAR(m.m2, 0.25f, "M2 yaw-CCW");
-    ASSERT_NEAR(m.m3, 0.75f, "M3 yaw-CCW");
+    ASSERT_NEAR(m.m2, 0.75f, "M2 yaw-CCW");
+    ASSERT_NEAR(m.m3, 0.25f, "M3 yaw-CCW");
     ASSERT_NEAR(m.m4, 0.75f, "M4 yaw-CCW");
 
     /* CW prop pair must always be higher than CCW pair during CCW yaw */
-    zassert_true(m.m3 > m.m1, "M3 (CW) > M1 (CCW) for CCW yaw");
-    zassert_true(m.m4 > m.m2, "M4 (CW) > M2 (CCW) for CCW yaw");
+    zassert_true(m.m2 > m.m1, "M2 (CW) > M1 (CCW) for CCW yaw");
+    zassert_true(m.m4 > m.m3, "M4 (CW) > M3 (CCW) for CCW yaw");
 }
 
 /*
  * test_yaw_cw
  *
  * angular.z = -0.25 (CW, turn right).
- * CCW props (M1, M2) must increase; CW props (M3, M4) must decrease.
+ * CCW props (M1, M3) must increase; CW props (M2, M4) must decrease.
  * Expected (signs flip vs. CCW case):
- *   M1 = 0.75   M2 = 0.75   M3 = 0.25   M4 = 0.25
+ *   M1 = 0.75   M2 = 0.25   M3 = 0.75   M4 = 0.25
  */
 ZTEST(cf21_mix, test_yaw_cw)
 {
     cf21_motors_t m = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -0.25f);
 
     ASSERT_NEAR(m.m1, 0.75f, "M1 yaw-CW");
-    ASSERT_NEAR(m.m2, 0.75f, "M2 yaw-CW");
-    ASSERT_NEAR(m.m3, 0.25f, "M3 yaw-CW");
+    ASSERT_NEAR(m.m2, 0.25f, "M2 yaw-CW");
+    ASSERT_NEAR(m.m3, 0.75f, "M3 yaw-CW");
     ASSERT_NEAR(m.m4, 0.25f, "M4 yaw-CW");
 }
 
@@ -253,37 +253,37 @@ ZTEST(cf21_mix, test_lateral_left)
 /*
  * test_clamp_high
  *
- * Full throttle + full yaw: unclamped M3/M4 would exceed 1.0.
+ * Full throttle + full CCW yaw: unclamped M2/M4 would exceed 1.0.
  * Clamped outputs must be exactly 1.0; the lower pair must be in range.
  *
  * linear.z = 1.0 → T = 1.0; angular.z = 0.5 → Y = 0.5
- *   M3 (unclamped) = 1.0 + 0.5 = 1.5 → clamped to 1.0
+ *   M2 (unclamped) = 1.0 + 0.5 = 1.5 → clamped to 1.0
  *   M4 (unclamped) = 1.0 + 0.5 = 1.5 → clamped to 1.0
  *   M1 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
- *   M2 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
+ *   M3 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
  */
 ZTEST(cf21_mix, test_clamp_high)
 {
     cf21_motors_t m = mix(0.0f, 0.0f, 1.0f,  0.0f, 0.0f, 0.5f);
 
-    zassert_true(m.m3 <= 1.0f, "M3 must not exceed 1.0");
+    zassert_true(m.m2 <= 1.0f, "M2 must not exceed 1.0");
     zassert_true(m.m4 <= 1.0f, "M4 must not exceed 1.0");
-    ASSERT_NEAR(m.m3, 1.0f, "M3 clamped to 1.0");
+    ASSERT_NEAR(m.m2, 1.0f, "M2 clamped to 1.0");
     ASSERT_NEAR(m.m4, 1.0f, "M4 clamped to 1.0");
     ASSERT_NEAR(m.m1, 0.5f, "M1 within range");
-    ASSERT_NEAR(m.m2, 0.5f, "M2 within range");
+    ASSERT_NEAR(m.m3, 0.5f, "M3 within range");
 }
 
 /*
  * test_clamp_low
  *
- * Idle throttle + CCW yaw: unclamped M1/M2 would go negative.
+ * Idle throttle + CCW yaw: unclamped M1/M3 would go negative.
  * Clamped outputs must be exactly 0.0; the higher pair must be in range.
  *
  * linear.z = -1.0 → T = 0.0; angular.z = 0.5 → Y = 0.5
  *   M1 (unclamped) = 0.0 − 0.5 = −0.5 → clamped to 0.0
- *   M2 (unclamped) = 0.0 − 0.5 = −0.5 → clamped to 0.0
- *   M3 (unclamped) = 0.0 + 0.5 =  0.5 → not clamped
+ *   M3 (unclamped) = 0.0 − 0.5 = −0.5 → clamped to 0.0
+ *   M2 (unclamped) = 0.0 + 0.5 =  0.5 → not clamped
  *   M4 (unclamped) = 0.0 + 0.5 =  0.5 → not clamped
  */
 ZTEST(cf21_mix, test_clamp_low)
@@ -291,10 +291,10 @@ ZTEST(cf21_mix, test_clamp_low)
     cf21_motors_t m = mix(0.0f, 0.0f, -1.0f,  0.0f, 0.0f, 0.5f);
 
     zassert_true(m.m1 >= 0.0f, "M1 must not go below 0.0");
-    zassert_true(m.m2 >= 0.0f, "M2 must not go below 0.0");
+    zassert_true(m.m3 >= 0.0f, "M3 must not go below 0.0");
     ASSERT_NEAR(m.m1, 0.0f, "M1 clamped to 0.0");
-    ASSERT_NEAR(m.m2, 0.0f, "M2 clamped to 0.0");
-    ASSERT_NEAR(m.m3, 0.5f, "M3 within range");
+    ASSERT_NEAR(m.m3, 0.0f, "M3 clamped to 0.0");
+    ASSERT_NEAR(m.m2, 0.5f, "M2 within range");
     ASSERT_NEAR(m.m4, 0.5f, "M4 within range");
 }
 
@@ -302,21 +302,22 @@ ZTEST(cf21_mix, test_clamp_low)
  * test_symmetry_yaw
  *
  * Opposite yaw commands must produce mirror-image outputs.
+ * M1(CCW) and M2(CW) swap roles under yaw reversal; M3(CCW) and M4(CW) likewise.
  * With the same throttle and yaw magnitude ±0.2:
- *   m_ccw.m1 == m_cw.m3   (CCW decreases M1; CW increases M3)
- *   m_ccw.m3 == m_cw.m1
- *   m_ccw.m2 == m_cw.m4
- *   m_ccw.m4 == m_cw.m2
+ *   m_ccw.m1 == m_cw.m2   (CCW: M1(CCW)↓ mirrors CW: M2(CW)↓)
+ *   m_ccw.m2 == m_cw.m1
+ *   m_ccw.m3 == m_cw.m4
+ *   m_ccw.m4 == m_cw.m3
  */
 ZTEST(cf21_mix, test_symmetry_yaw)
 {
     cf21_motors_t ccw = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f,  0.2f);
     cf21_motors_t cw  = mix(0.0f, 0.0f, 0.0f,  0.0f, 0.0f, -0.2f);
 
-    ASSERT_NEAR(ccw.m1, cw.m3, "CCW.M1 == CW.M3");
-    ASSERT_NEAR(ccw.m3, cw.m1, "CCW.M3 == CW.M1");
-    ASSERT_NEAR(ccw.m2, cw.m4, "CCW.M2 == CW.M4");
-    ASSERT_NEAR(ccw.m4, cw.m2, "CCW.M4 == CW.M2");
+    ASSERT_NEAR(ccw.m1, cw.m2, "CCW.M1 == CW.M2");
+    ASSERT_NEAR(ccw.m2, cw.m1, "CCW.M2 == CW.M1");
+    ASSERT_NEAR(ccw.m3, cw.m4, "CCW.M3 == CW.M4");
+    ASSERT_NEAR(ccw.m4, cw.m3, "CCW.M4 == CW.M3");
 }
 
 /*
