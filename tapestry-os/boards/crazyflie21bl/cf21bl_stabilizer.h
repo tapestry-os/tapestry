@@ -36,8 +36,16 @@
  *   angular.y  desired pitch angle → scaled to ±CF21BL_MAX_ANGLE_DEG (degrees)
  *   angular.z  yaw   rate setpoint → scaled to ±CF21BL_MAX_YAW_RATE_RPS
  *
- * Both modes:
+ * Both modes (CONFIG_CF21BL_ALTITUDE_HOLD not set):
  *   linear.z   collective thrust passed through directly to cf21bl_mix()
+ *   linear.x/y zeroed (velocity feedforward not yet implemented)
+ *
+ * Altitude hold (CONFIG_CF21BL_ALTITUDE_HOLD=y):
+ *   linear.z < -0.9  → idle: motors at minimum, altitude PID inactive,
+ *                       integrators reset (safe to sit on ground)
+ *   linear.z ∈ [-1, +1] → altitude setpoint: -1→0 m, 0→1 m, +1→2 m above home.
+ *                       Home is averaged over the first 50 BMP388 readings (~1 s)
+ *                       at boot; CF21BL_HOVER_T (65%) is the collective baseline.
  *   linear.x/y zeroed (velocity feedforward not yet implemented)
  *
  * cf21bl_stabilizer_start() calls cf21bl_imu_init() and cf21bl_imu_filter_init()

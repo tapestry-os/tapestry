@@ -30,6 +30,9 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+#include <zephyr/drivers/sensor.h>
+#endif
 
 LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 
@@ -70,6 +73,21 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 #define CF21BL_ANGLE_KP   0.105f  /* rad/s per degree error */
 #define CF21BL_ANGLE_KI   0.052f  /* rad/s per degree·s — corrects steady trim offsets */
 #define CF21BL_ANGLE_ILIM 0.35f   /* ±20 deg/s equivalent (CF21BL integration limit) */
+
+/* Altitude hold (CONFIG_CF21BL_ALTITUDE_HOLD) */
+#define CF21BL_BARO_POLL_DIV   20      /* poll every 20 loop iters ≈ 50 Hz           */
+#define CF21BL_BARO_LP_ALPHA   0.15f   /* IIR low-pass α, τ ≈ 120 ms at 50 Hz       */
+#define CF21BL_PA_PER_M        11.77f  /* Pa per metre, standard atmosphere          */
+#define CF21BL_ALT_SP_OFFSET   1.0f    /* linear.z=0 → 1 m above home               */
+#define CF21BL_HOVER_T         0.65f   /* measured tethered hover throttle (65%)     */
+#define CF21BL_T_FLOOR         0.10f   /* minimum collective mid-flight              */
+/* Z-PID gains — conservative for first autonomous hover tests.
+ * At 0.5m error: pterm = 0.05×0.5 = 0.025 → T_cmd = 0.675 (gentle liftoff).
+ * Tune up incrementally once autonomous takeoff is confirmed stable. */
+#define CF21BL_Z_KP            0.05f
+#define CF21BL_Z_KI            0.01f
+#define CF21BL_Z_ILIM          0.10f   /* max I-term collective contribution [0..1]  */
+#define CF21BL_Z_OLIM          0.15f   /* ±15% collective correction range           */
 
 /* ── PID ────────────────────────────────────────────────────────────────────── */
 
@@ -142,6 +160,12 @@ static cf21bl_pid_t g_pid_roll_angle;
 static cf21bl_pid_t g_pid_pitch_angle;
 #endif
 
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+static const struct device *const baro_dev =
+    DEVICE_DT_GET(DT_NODELABEL(bmp388_baro));
+static cf21bl_pid_t g_pid_z;
+#endif
+
 /* ── Stabilizer thread ──────────────────────────────────────────────────────── */
 
 K_THREAD_STACK_DEFINE(g_stab_stack, CF21BL_STAB_STACK_SIZE);
@@ -155,6 +179,24 @@ static void stabilizer_fn(void *a, void *b, void *c)
      * the trigger was armed, which would produce a spurious derivative spike. */
     cf21bl_imu_sample_t sample;
     cf21bl_imu_read(&sample);
+
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+    /* Record home altitude: average 50 BMP388 readings (~1 s at 50 Hz).
+     * IMU interrupt fires normally during this period; semaphore accumulates
+     * and is drained on the first main-loop iteration. */
+    float p_home = 0.0f;
+    for (int n = 0; n < 50; n++) {
+        sensor_sample_fetch(baro_dev);
+        struct sensor_value sv;
+        sensor_channel_get(baro_dev, SENSOR_CHAN_PRESS, &sv);
+        p_home += sensor_value_to_float(&sv) * 1000.0f;  /* kPa → Pa */
+        k_msleep(20);
+    }
+    p_home /= 50.0f;
+    LOG_INF("Baro home: %.1f Pa", (double)p_home);
+    float alt_filt = 0.0f;   /* LP-filtered altitude above home (metres) */
+    int   baro_cnt = 0;
+#endif
 
     while (true) {
         if (cf21bl_imu_read(&sample) != 0) {
@@ -200,8 +242,51 @@ static void stabilizer_fn(void *a, void *b, void *c)
                                    yaw_rate_sp   - sample.gyro_rps[2],
                                    CF21BL_LOOP_DT);
 
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+        float linear_z_out;
+        if (sp.linear.z < -0.9f) {
+            /* Idle sentinel: disarm altitude PID and reset integrators so
+             * there is no windup while the drone sits on the ground. */
+            g_pid_z.integral = 0.0f;
+            g_pid_z.e_prev   = 0.0f;
+            linear_z_out = -1.0f;
+        } else {
+            /* Poll BMP388 every CF21BL_BARO_POLL_DIV iterations (~50 Hz).
+             * sensor_sample_fetch blocks ~100 µs for the I2C transaction;
+             * I2C3 bus is idle at this point (BMI088 RTIO completes before
+             * the drdy semaphore is posted, so no bus contention). */
+            if (++baro_cnt >= CF21BL_BARO_POLL_DIV) {
+                baro_cnt = 0;
+                sensor_sample_fetch(baro_dev);
+                struct sensor_value sv;
+                sensor_channel_get(baro_dev, SENSOR_CHAN_PRESS, &sv);
+                float p_Pa    = sensor_value_to_float(&sv) * 1000.0f;
+                float alt_raw = (p_home - p_Pa) / CF21BL_PA_PER_M;
+                alt_filt = (1.0f - CF21BL_BARO_LP_ALPHA) * alt_filt
+                         + CF21BL_BARO_LP_ALPHA * alt_raw;
+            }
+            float target_alt = sp.linear.z + CF21BL_ALT_SP_OFFSET;
+            float delta_T    = pid_update(&g_pid_z, target_alt - alt_filt,
+                                          CF21BL_LOOP_DT);
+            float T_cmd = CF21BL_HOVER_T + delta_T;
+            if (T_cmd < CF21BL_T_FLOOR) { T_cmd = CF21BL_T_FLOOR; }
+            if (T_cmd > 1.0f)           { T_cmd = 1.0f; }
+            linear_z_out = T_cmd * 2.0f - 1.0f;   /* [0,1] → [-1,+1] for mix */
+
+            /* Log at ~2 Hz so progress is visible on console. */
+            static int alt_log_div;
+            if (++alt_log_div >= 500) {
+                alt_log_div = 0;
+                LOG_INF("alt=%.3f m  target=%.3f m  T=%.2f",
+                        (double)alt_filt, (double)target_alt, (double)T_cmd);
+            }
+        }
+#else
+        float linear_z_out = sp.linear.z;
+#endif
+
         substrate_twist_t out = {
-            .linear  = { .x = 0.0f, .y = 0.0f, .z = sp.linear.z },
+            .linear  = { .x = 0.0f, .y = 0.0f, .z = linear_z_out },
             .angular = { .x = u_roll, .y = u_pitch, .z = u_yaw },
         };
 
@@ -235,6 +320,15 @@ int cf21bl_stabilizer_start(void)
              CF21BL_ANGLE_ILIM, CF21BL_MAX_ANGLE_RATE_RPS);
     pid_init(&g_pid_pitch_angle, CF21BL_ANGLE_KP, CF21BL_ANGLE_KI, 0.0f,
              CF21BL_ANGLE_ILIM, CF21BL_MAX_ANGLE_RATE_RPS);
+#endif
+
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+    if (!device_is_ready(baro_dev)) {
+        LOG_ERR("BMP388 not ready");
+        return -ENODEV;
+    }
+    pid_init(&g_pid_z, CF21BL_Z_KP, CF21BL_Z_KI, 0.0f,
+             CF21BL_Z_ILIM, CF21BL_Z_OLIM);
 #endif
 
     k_thread_create(&g_stab_thread, g_stab_stack,

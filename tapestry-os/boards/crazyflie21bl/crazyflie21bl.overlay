@@ -132,4 +132,23 @@
 		gyro-fs = <2000>;
 		gyro-hz = "1000_116";
 	};
+
+	/*
+	 * BMP390 barometric pressure sensor — I2C address 0x77 (SDO=VCC on this board).
+	 * Shares I2C3 bus with BMI088.  Polled from the stabilizer thread at ~50 Hz
+	 * (every 20 iterations of the 1 kHz IMU loop); no interrupt wired.
+	 * Chip confirmed as BMP390 (ID=0x60), not BMP388 (ID=0x50); same register
+	 * map, handled by the same Zephyr driver (bosch,bmp390 compatible string).
+	 *
+	 * osr-press=8 gives 19-bit effective resolution (~0.33 Pa ≈ 2.8 cm).
+	 * iir-filter=3 attenuates prop-wash pressure transients.
+	 */
+	bmp388_baro: bmp390@77 {
+		compatible = "bosch,bmp390";
+		reg = <0x77>;
+		odr = "50";
+		osr-press = <8>;
+		osr-temp = <1>;
+		iir-filter = <3>;
+	};
 };

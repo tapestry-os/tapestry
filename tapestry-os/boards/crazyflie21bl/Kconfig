@@ -31,4 +31,17 @@ config CF21BL_ANGLE_MODE
 	  (scaled to ±30 degrees) rather than rate setpoints.
 	  angular.z remains a yaw rate setpoint in both modes.
 
+config CF21BL_ALTITUDE_HOLD
+	bool "Barometric altitude hold via BMP388"
+	depends on BMP388
+	default n
+	help
+	  Adds a Z-axis PID to the stabilizer thread driven by the BMP388
+	  barometer (~50 Hz poll rate).  When enabled, linear.z in
+	  substrate_move() is reinterpreted as an altitude setpoint:
+	    linear.z < -0.9  → idle  (motors at minimum, PID inactive)
+	    linear.z = -1..+1 → 0..2 m above the home altitude recorded at boot
+	  Home altitude is the average of the first 50 BMP388 readings (~1 s).
+	  Requires CONFIG_BMP388=y and bmp390@77 in crazyflie21bl.overlay.
+
 endif # CF21BL_STABILIZER
