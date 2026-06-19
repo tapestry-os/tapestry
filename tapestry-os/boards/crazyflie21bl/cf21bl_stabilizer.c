@@ -218,8 +218,15 @@ static void stabilizer_fn(void *a, void *b, void *c)
         cf21bl_imu_attitude_t att;
         cf21bl_imu_filter_update(&sample, CF21BL_LOOP_DT, &att);
 
-        float roll_sp_deg  = sp.angular.x * CF21BL_MAX_ANGLE_DEG;
-        float pitch_sp_deg = sp.angular.y * CF21BL_MAX_ANGLE_DEG;
+        /* Velocity feedforward: linear.x/y commands horizontal motion by
+         * biasing the pitch/roll setpoint.  Sign convention from mix.h:
+         *   P = angular.y - linear.x → forward (linear.x>0) → pitch negative
+         *   R = angular.x - linear.y → left    (linear.y>0) → roll  negative */
+#define CF21BL_MAX_FWD_TILT_DEG  10.0f
+        float roll_sp_deg  = sp.angular.x * CF21BL_MAX_ANGLE_DEG
+                           - sp.linear.y  * CF21BL_MAX_FWD_TILT_DEG;
+        float pitch_sp_deg = sp.angular.y * CF21BL_MAX_ANGLE_DEG
+                           - sp.linear.x  * CF21BL_MAX_FWD_TILT_DEG;
 
         roll_rate_sp  = pid_update(&g_pid_roll_angle,
                                    roll_sp_deg  - att.roll_deg,  CF21BL_LOOP_DT);

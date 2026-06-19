@@ -64,6 +64,9 @@ endif()
 if(CONFIG_TAPESTRY_TRANSCEIVER_CHEMICAL)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_chemical.c)
 endif()
+if(CONFIG_TAPESTRY_TRANSCEIVER_SYSLINK)
+    target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_syslink_p2p.c)
+endif()
 
 # CF2.1 early IWDG kick — must be compiled unconditionally so it runs even in
 # minimal blink-test builds (CONFIG_PWM=n).  The Bitcraze bootloader arms the
