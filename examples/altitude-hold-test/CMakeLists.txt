@@ -4,13 +4,19 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-scr-hw)
 list(APPEND DTS_ROOT   ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os)
 
 set(DTC_OVERLAY_FILE
-    "${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os/boards/crazyflie21bl/crazyflie21bl.overlay")
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os/boards/crazyflie21bl/crazyflie21bl.overlay"
+    "${CMAKE_CURRENT_SOURCE_DIR}/boards/crazyflie21bl_lh.overlay")
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(tapestry_altitude_hold_test)
 
 set(TAPESTRY_OS_ROOT   ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os)
 set(TAPESTRY_OS_BOARDS ${TAPESTRY_OS_ROOT}/boards)
+
+if(CONFIG_CF21BL_LIGHTHOUSE)
+  target_sources(app PRIVATE
+    ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_lighthouse.c)
+endif()
 
 target_sources(app PRIVATE
     src/main.c

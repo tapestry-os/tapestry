@@ -45,3 +45,74 @@ config CF21BL_ALTITUDE_HOLD
 	  Requires CONFIG_BMP388=y and bmp390@77 in crazyflie21bl.overlay.
 
 endif # CF21BL_STABILIZER
+
+config CF21BL_LIGHTHOUSE
+	bool "Lighthouse v2 positioning (SteamVR 2.0)"
+	depends on BOARD_CRAZYFLIE21BL && UART_INTERRUPT_DRIVEN
+	default n
+	help
+	  Enables cf21bl_lighthouse.c: reads 12-byte UART frames from the
+	  Lighthouse v2 deck FPGA and triangulates 3D position from two
+	  SteamVR 2.0 base stations.
+
+	  Hardware: deck FPGA streams frames over USART3 (PC10=TX, PC11=RX)
+	  at 230400 baud.  Verified against Bitcraze crazyflie-firmware
+	  src/drivers/interface/uart1.h and lighthouse_core.c.
+
+	  CONSOLE CONFLICT: USART3 PC10/PC11 is also the Zephyr wired debug
+	  console.  When the lighthouse deck is attached, the wired console
+	  is unavailable.  Use the CRTP radio console (read_console.py via
+	  crazyradio2) or USB CDC ACM instead.
+
+	  Requires in application conf:
+	    CONFIG_UART_INTERRUPT_DRIVEN=y
+
+	  Add to CMakeLists.txt inside the if(CONFIG_PWM) block:
+	    if(CONFIG_CF21BL_LIGHTHOUSE)
+	      target_sources(app PRIVATE
+	        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_lighthouse.c)
+	    endif()
+
+	  The per-example boards/crazyflie21bl.overlay must set USART3 to
+	  230400 baud and redirect the Zephyr console elsewhere:
+	    &usart3 { current-speed = <230400>; };
+	    / { chosen { zephyr,console = &usart2; }; };
+
+	  Call cf21bl_lighthouse_set_bs_pose() for both base stations and
+	  cf21bl_lighthouse_set_bs_channel() if your SteamVR room uses
+	  non-default channel assignments before calling cf21bl_init().
+
+	  Add to CMakeLists.txt inside the if(CONFIG_PWM) block:
+	    if(CONFIG_CF21BL_LIGHTHOUSE)
+	      target_sources(app PRIVATE
+	        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_lighthouse.c)
+	    endif()
+
+	  Call cf21bl_lighthouse_set_bs_pose() for both base stations
+	  (ID 0 and 1) before enabling position hold.
+
+if CF21BL_LIGHTHOUSE
+
+config CF21BL_LIGHTHOUSE_POS_HOLD
+	bool "XY position hold via Lighthouse (requires CF21BL_ANGLE_MODE)"
+	depends on CF21BL_STABILIZER && CF21BL_ANGLE_MODE
+	default n
+	help
+	  When the lighthouse has a valid fix, the stabilizer adds a
+	  position PID loop: linear.x/y in substrate_move() become X/Y
+	  position setpoints in metres relative to the lighthouse origin
+	  (range ±CF21BL_POS_MAX_M, default ±5 m, mapped from [-1, +1]).
+
+	  When the fix is lost, the stabilizer falls back to the standard
+	  angle-mode behaviour (linear.x/y = velocity feedforward).
+
+config CF21BL_POS_MAX_M
+	int "Maximum XY position setpoint range in metres (half-range)"
+	depends on CF21BL_LIGHTHOUSE_POS_HOLD
+	default 5
+	range 1 20
+	help
+	  linear.x/y = ±1.0 maps to ±CF21BL_POS_MAX_M metres from the
+	  lighthouse origin.  Default 5 m gives a 10 m × 10 m arena.
+
+endif # CF21BL_LIGHTHOUSE

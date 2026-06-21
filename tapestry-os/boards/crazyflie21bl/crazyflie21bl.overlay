@@ -81,6 +81,23 @@
 };
 
 /*
+ * Lighthouse v2 deck — USART3 PC10/PC11 at 230400 baud.
+ *
+ * The lighthouse deck FPGA streams 12-byte frames continuously over the
+ * deck expansion UART.  Confirmed in the Bitcraze crazyflie-firmware source:
+ *   src/drivers/interface/uart1.h: UART1_TYPE = USART3, PC10 TX, PC11 RX
+ *   src/modules/src/lighthouse/lighthouse_core.c: uart1Init(230400)
+ *
+ * CONFLICT: USART3 PC10/PC11 is also our Zephyr wired debug console.
+ * When the lighthouse deck is attached, the wired console is unavailable.
+ * Use the CRTP radio console (read_console.py via crazyradio2) or USB CDC ACM.
+ *
+ * The 230400 baud override is applied per-example via an extra boards overlay
+ * (e.g. examples/lighthouse-test/boards/crazyflie21bl.overlay) so that
+ * non-lighthouse builds keep USART3 at 115200 for the wired console.
+ */
+
+/*
  * BMI088 IMU (gyro + accel) on I2C3 — pin assignments confirmed against this
  * brushless board's actual schematic (2026-06-11), which differs from the
  * stock CF2.1 SPI wiring originally assumed (that schematic's PB13/14/15

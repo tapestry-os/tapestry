@@ -53,6 +53,9 @@ typedef struct {
 static lpf2p_t g_gyro_lpf[3];
 static lpf2p_t g_accel_lpf[3];
 
+/* Static gyro bias (rad/s), measured at startup with motors off */
+static float g_gyro_bias[3];
+
 static void lpf2p_init(lpf2p_t *f, float sample_hz, float cutoff_hz)
 {
     const float fr  = sample_hz / cutoff_hz;
@@ -74,6 +77,130 @@ static float lpf2p_apply(lpf2p_t *f, float x)
     f->d2 = f->d1;
     f->d1 = d0;
     return out;
+}
+
+/* ── Gyro bias + accel scale calibration ────────────────────────────────── */
+
+/*
+ * Variance threshold for accepting a gyro bias measurement.
+ * Matched to stock sensors_bmi088_bmp3xx.c GYRO_VARIANCE_BASE = 100 (raw
+ * LSB²), scaled to (rad/s)²:
+ *   BMI088 @ 2000 dps: 1 LSB = 0.0610 deg/s = 0.001064 rad/s
+ *   100 LSB² × (0.001064 rad/s/LSB)² ≈ 1.13 × 10⁻⁴ (rad/s)²
+ * In practice the LPF attenuates noise below this, so the threshold is loose
+ * enough to accept any stationary drone and reject any moving one.
+ */
+#define GYRO_VAR_THRESHOLD  1.13e-4f   /* (rad/s)² per axis */
+#define GYRO_BIAS_SAMPLES   512        /* circular buffer depth — matches stock */
+#define GYRO_WARMUP_SAMPLES 100        /* discarded to let LPF settle */
+#define GYRO_MAX_RETRIES    10         /* attempts before giving up */
+
+/* Static accel scale factor (set by cf21bl_imu_calibrate_gyro, used in read) */
+static float g_accel_scale = 1.0f;
+
+/*
+ * cf21bl_imu_calibrate_gyro — variance-gated gyro bias + accel scale.
+ *
+ * Matches the stock CF firmware approach (sensors_bmi088_bmp3xx.c):
+ *
+ *   Gyro bias (processGyroBias / processGyroBiasNoBuffer):
+ *     Collect GYRO_BIAS_SAMPLES into a circular buffer, compute per-axis
+ *     variance.  Only accept the mean as bias when variance < GYRO_VAR_THRESHOLD
+ *     on all three axes — ensures the drone was stationary.  Retries up to
+ *     GYRO_MAX_RETRIES times (one buffer per retry).  Logs a warning if
+ *     the variance never passes (e.g. drone was not placed down in time).
+ *
+ *   Accel scale (processAccScale):
+ *     Average |a_vec| over 200 samples to measure the absolute scale factor.
+ *     Divides subsequent accel readings by this value so 1 g → 1.0 exactly.
+ *     (The Mahony filter normalises the accel vector, so this only matters
+ *     for altitude-from-accel which we don't currently use — but it matches
+ *     stock and costs nothing.)
+ *
+ * Must be called from cf21bl_stabilizer_start() AFTER cf21bl_imu_init()
+ * and BEFORE the main stabilizer loop.  Drone must be stationary on ground.
+ * Motors are silent at this point: idle PWM (1000 µs) < spin threshold (1180 µs).
+ */
+void cf21bl_imu_calibrate_gyro(int n_samples)
+{
+    cf21bl_imu_sample_t s;
+
+    /* Warm-up: discard initial samples so LPF has fully settled */
+    g_gyro_bias[0] = g_gyro_bias[1] = g_gyro_bias[2] = 0.0f;
+    for (int i = 0; i < GYRO_WARMUP_SAMPLES; i++) {
+        cf21bl_imu_read(&s);
+    }
+
+    /* ── Variance-gated gyro bias ─────────────────────────────────────── */
+    bool bias_found = false;
+
+    for (int attempt = 0; attempt < GYRO_MAX_RETRIES && !bias_found; attempt++) {
+        float buf[GYRO_BIAS_SAMPLES][3];
+        float sum[3]   = {0};
+        float sumsq[3] = {0};
+
+        /* Collect one buffer of GYRO_BIAS_SAMPLES samples */
+        for (int i = 0; i < GYRO_BIAS_SAMPLES; i++) {
+            cf21bl_imu_read(&s);
+            for (int ax = 0; ax < 3; ax++) {
+                buf[i][ax] = s.gyro_rps[ax];
+                sum[ax]   += s.gyro_rps[ax];
+                sumsq[ax] += s.gyro_rps[ax] * s.gyro_rps[ax];
+            }
+        }
+
+        /* Compute mean and variance for each axis */
+        float mean[3], var[3];
+        bool all_stable = true;
+        for (int ax = 0; ax < 3; ax++) {
+            mean[ax] = sum[ax] / GYRO_BIAS_SAMPLES;
+            var[ax]  = sumsq[ax] / GYRO_BIAS_SAMPLES - mean[ax] * mean[ax];
+            if (var[ax] >= GYRO_VAR_THRESHOLD) {
+                all_stable = false;
+            }
+        }
+
+        if (all_stable) {
+            g_gyro_bias[0] = mean[0];
+            g_gyro_bias[1] = mean[1];
+            g_gyro_bias[2] = mean[2];
+            bias_found = true;
+            LOG_INF("Gyro bias (attempt %d): "
+                    "gx=%+.5f  gy=%+.5f  gz=%+.5f  rad/s  "
+                    "var=%.2e/%.2e/%.2e",
+                    attempt + 1,
+                    (double)g_gyro_bias[0],
+                    (double)g_gyro_bias[1],
+                    (double)g_gyro_bias[2],
+                    (double)var[0], (double)var[1], (double)var[2]);
+        } else {
+            LOG_WRN("Gyro variance too high (attempt %d) — "
+                    "var=%.2e/%.2e/%.2e (threshold %.2e) — "
+                    "keep drone still",
+                    attempt + 1,
+                    (double)var[0], (double)var[1], (double)var[2],
+                    (double)GYRO_VAR_THRESHOLD);
+        }
+    }
+
+    if (!bias_found) {
+        LOG_ERR("Gyro bias calibration failed after %d attempts — "
+                "using zero bias (drift expected)", GYRO_MAX_RETRIES);
+    }
+
+    /* ── Accel scale (stock: processAccScale, 200 samples) ───────────── */
+    /* g_gyro_bias is now set; subsequent cf21bl_imu_read() calls subtract it */
+    float scale_sum = 0.0f;
+    int   scale_n   = 200;
+    for (int i = 0; i < scale_n; i++) {
+        cf21bl_imu_read(&s);
+        float mag = sqrtf(s.accel_g[0] * s.accel_g[0] +
+                          s.accel_g[1] * s.accel_g[1] +
+                          s.accel_g[2] * s.accel_g[2]);
+        scale_sum += mag;
+    }
+    g_accel_scale = scale_sum / (float)scale_n;
+    LOG_INF("Accel scale: %.5f g  (ideal=1.0)", (double)g_accel_scale);
 }
 
 /* ── Mahony quaternion filter state ────────────────────────────────────── */
@@ -159,8 +286,8 @@ int cf21bl_imu_read(cf21bl_imu_sample_t *out)
     }
 
     for (int i = 0; i < 3; i++) {
-        out->gyro_rps[i] = lpf2p_apply(&g_gyro_lpf[i],  raw_gyro[i]);
-        out->accel_g[i]  = lpf2p_apply(&g_accel_lpf[i], raw_accel[i]);
+        out->gyro_rps[i] = lpf2p_apply(&g_gyro_lpf[i],  raw_gyro[i]) - g_gyro_bias[i];
+        out->accel_g[i]  = lpf2p_apply(&g_accel_lpf[i], raw_accel[i]) / g_accel_scale;
     }
 
     return 0;

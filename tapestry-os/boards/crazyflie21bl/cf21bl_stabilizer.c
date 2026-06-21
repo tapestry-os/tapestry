@@ -27,7 +27,11 @@
 #include "cf21bl_imu.h"
 #include "crazyflie21bl.h"      /* cf21bl_set_motors() */
 #include "crazyflie21bl_mix.h"  /* cf21bl_mix(), cf21bl_motors_t */
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+#include "cf21bl_lighthouse.h"
+#endif
 
+#include <math.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
@@ -73,6 +77,17 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 #define CF21BL_ANGLE_KP   0.105f  /* rad/s per degree error */
 #define CF21BL_ANGLE_KI   0.052f  /* rad/s per degree·s — corrects steady trim offsets */
 #define CF21BL_ANGLE_ILIM 0.35f   /* ±20 deg/s equivalent (CF21BL integration limit) */
+
+/* Position hold (CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD) */
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+/* linear.x/y ∈ [-1,+1] → setpoint in [−POS_MAX, +POS_MAX] metres from origin */
+#define CF21BL_POS_MAX_M       ((float)CONFIG_CF21BL_POS_MAX_M)
+/* Position P gain: metres error → angle correction in degrees.
+ * 0.05 → at 1 m error the correction is 2.9° (within the 10° safe limit). */
+#define CF21BL_POS_KP          0.05f   /* rad/m  — converts metres error to rad */
+#define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
+#define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
+#endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
 /* Altitude hold (CONFIG_CF21BL_ALTITUDE_HOLD) */
 #define CF21BL_BARO_POLL_DIV   20      /* poll every 20 loop iters ≈ 50 Hz           */
@@ -160,6 +175,14 @@ static cf21bl_pid_t g_pid_roll_angle;
 static cf21bl_pid_t g_pid_pitch_angle;
 #endif
 
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+/* Home position captured at first valid lighthouse fix (metres, world frame).
+ * Position setpoints are offsets from this origin. */
+static float    g_pos_home_x;
+static float    g_pos_home_y;
+static bool     g_pos_home_set;
+#endif
+
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
 static const struct device *const baro_dev =
     DEVICE_DT_GET(DT_NODELABEL(bmp388_baro));
@@ -213,20 +236,102 @@ static void stabilizer_fn(void *a, void *b, void *c)
         float roll_rate_sp, pitch_rate_sp;
         float yaw_rate_sp = sp.angular.z * CF21BL_MAX_YAW_RATE_RPS;
 
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+        /*
+         * ── Position hold (outermost loop) ────────────────────────────────
+         *
+         * When a lighthouse fix is available, replace linear.x/y (which the
+         * caller treats as velocity feedforward in angle mode) with an angle
+         * correction derived from position error in the world frame.
+         *
+         * linear.x/y ∈ [-1,+1] → XY position setpoint ∈ ±CF21BL_POS_MAX_M
+         * relative to the home position captured at first valid fix.
+         *
+         * The position loop is a P controller: position error [m] → angle
+         * correction [rad].  The correction is added to the angular setpoint
+         * so the angle loop drives the error to zero.
+         *
+         * Axis sign convention (matching mix.h):
+         *   forward motion (+X world) requires negative pitch → subtract from
+         *   pitch_sp_deg below.
+         *   left motion    (+Y world) requires negative roll  → subtract from
+         *   roll_sp_deg below.
+         * So we negate the position correction before adding to the angle sp.
+         *
+         * No I or D term here: the angle/rate loops below already integrate
+         * the position error implicitly (cascaded loops).  Adding integral at
+         * the position level causes windup during the initial transient.
+         */
+        float pos_pitch_correction_deg = 0.0f;
+        float pos_roll_correction_deg  = 0.0f;
+
+        if (cf21bl_lighthouse_is_valid() && sp.linear.z > -0.9f) {
+            lh2_position_t lhpos;
+            cf21bl_lighthouse_get_position(&lhpos);
+
+            if (!g_pos_home_set) {
+                g_pos_home_x   = lhpos.x;
+                g_pos_home_y   = lhpos.y;
+                g_pos_home_set = true;
+            }
+
+            float sp_x = sp.linear.x * CF21BL_POS_MAX_M;
+            float sp_y = sp.linear.y * CF21BL_POS_MAX_M;
+
+            float ex = (g_pos_home_x + sp_x) - lhpos.x;
+            float ey = (g_pos_home_y + sp_y) - lhpos.y;
+
+            /* P correction in radians, converted to degrees for the angle loop */
+            float cx_rad = CF21BL_POS_KP * ex;
+            float cy_rad = CF21BL_POS_KP * ey;
+
+            if (cx_rad >  CF21BL_POS_OLIM_RAD) { cx_rad =  CF21BL_POS_OLIM_RAD; }
+            if (cx_rad < -CF21BL_POS_OLIM_RAD) { cx_rad = -CF21BL_POS_OLIM_RAD; }
+            if (cy_rad >  CF21BL_POS_OLIM_RAD) { cy_rad =  CF21BL_POS_OLIM_RAD; }
+            if (cy_rad < -CF21BL_POS_OLIM_RAD) { cy_rad = -CF21BL_POS_OLIM_RAD; }
+
+            pos_pitch_correction_deg = cx_rad * (180.0f / (float)M_PI);
+            pos_roll_correction_deg  = cy_rad * (180.0f / (float)M_PI);
+
+            static int pos_log_div;
+            if (++pos_log_div >= 500) {
+                pos_log_div = 0;
+                LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f",
+                        (double)lhpos.x, (double)lhpos.y, (double)lhpos.z,
+                        (double)ex, (double)ey);
+            }
+        } else if (g_pos_home_set && !cf21bl_lighthouse_is_valid()) {
+            /* Fix lost mid-flight: log once and allow angle-mode fallback */
+            LOG_WRN("LH2 fix lost, falling back to angle mode feedforward");
+            g_pos_home_set = false;
+        }
+#endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
+
 #ifdef CONFIG_CF21BL_ANGLE_MODE
         /* ── Outer angle loop ─────────────────────────────────────────────── */
         cf21bl_imu_attitude_t att;
         cf21bl_imu_filter_update(&sample, CF21BL_LOOP_DT, &att);
 
-        /* Velocity feedforward: linear.x/y commands horizontal motion by
-         * biasing the pitch/roll setpoint.  Sign convention from mix.h:
+        /* Velocity feedforward or position correction (see position hold above).
+         * Sign convention from mix.h:
          *   P = angular.y - linear.x → forward (linear.x>0) → pitch negative
-         *   R = angular.x - linear.y → left    (linear.y>0) → roll  negative */
+         *   R = angular.x - linear.y → left    (linear.y>0) → roll  negative
+         *
+         * When position hold is active, pos_*_correction_deg supersedes the
+         * feedforward tilt so we do not double-count linear.x/y. */
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+#define CF21BL_MAX_FWD_TILT_DEG  0.0f   /* position loop handles lateral motion */
+        float roll_sp_deg  = sp.angular.x * CF21BL_MAX_ANGLE_DEG
+                           + pos_roll_correction_deg;
+        float pitch_sp_deg = sp.angular.y * CF21BL_MAX_ANGLE_DEG
+                           + pos_pitch_correction_deg;
+#else
 #define CF21BL_MAX_FWD_TILT_DEG  10.0f
         float roll_sp_deg  = sp.angular.x * CF21BL_MAX_ANGLE_DEG
                            - sp.linear.y  * CF21BL_MAX_FWD_TILT_DEG;
         float pitch_sp_deg = sp.angular.y * CF21BL_MAX_ANGLE_DEG
                            - sp.linear.x  * CF21BL_MAX_FWD_TILT_DEG;
+#endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
         roll_rate_sp  = pid_update(&g_pid_roll_angle,
                                    roll_sp_deg  - att.roll_deg,  CF21BL_LOOP_DT);
@@ -312,6 +417,13 @@ int cf21bl_stabilizer_start(void)
         LOG_ERR("cf21bl_imu_init failed: %d", ret);
         return ret;
     }
+
+    /* Measure static gyro bias (~1.1 s, motors at idle below spin threshold).
+     * This must be done before filter init so the bias is zeroed for the
+     * Mahony integral feedback, which then only needs to correct residual
+     * temperature drift rather than the full static offset. */
+    LOG_INF("Calibrating gyro bias — keep drone stationary on ground ...");
+    cf21bl_imu_calibrate_gyro(1000);
 
     cf21bl_imu_filter_init();
 

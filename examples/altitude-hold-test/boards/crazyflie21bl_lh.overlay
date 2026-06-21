@@ -1,0 +1,10 @@
+/*
+ * Lighthouse deck overlay for altitude-hold-test.
+ * Reconfigures USART3 to 230400 baud for the lighthouse deck FPGA data stream.
+ * The wired serial console is unavailable while the deck is attached;
+ * use read_console.py (CRTP radio via crazyradio2) instead.
+ */
+&usart3 {
+	current-speed = <230400>;
+	status = "okay";
+};

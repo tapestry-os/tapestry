@@ -59,6 +59,15 @@ int cf21bl_imu_read(cf21bl_imu_sample_t *out);
 uint32_t cf21bl_imu_get_drdy_count(void);
 
 /*
+ * cf21bl_imu_calibrate_gyro — average n_samples gyro readings with motors off
+ * to measure and subtract the static bias.  Call once from
+ * cf21bl_stabilizer_start() after cf21bl_imu_init(), before the main loop.
+ * Drone must be stationary on the ground.  Discards 100 warm-up samples first.
+ * Typical duration: ~1.1 s for n_samples=1000 at 1 kHz.
+ */
+void cf21bl_imu_calibrate_gyro(int n_samples);
+
+/*
  * cf21bl_imu_filter_init — (re)initialize the Mahony quaternion filter.
  * Gains: twoKp=0.8, twoKi=0.002 (CF21BL stock values).
  */

@@ -38,7 +38,7 @@
  *
  * Both modes (CONFIG_CF21BL_ALTITUDE_HOLD not set):
  *   linear.z   collective thrust passed through directly to cf21bl_mix()
- *   linear.x/y zeroed (velocity feedforward not yet implemented)
+ *   linear.x/y velocity feedforward (angle mode) or ignored (rate mode)
  *
  * Altitude hold (CONFIG_CF21BL_ALTITUDE_HOLD=y):
  *   linear.z < -0.9  → idle: motors at minimum, altitude PID inactive,
@@ -46,7 +46,17 @@
  *   linear.z ∈ [-1, +1] → altitude setpoint: -1→0 m, 0→1 m, +1→2 m above home.
  *                       Home is averaged over the first 50 BMP388 readings (~1 s)
  *                       at boot; CF21BL_HOVER_T (65%) is the collective baseline.
- *   linear.x/y zeroed (velocity feedforward not yet implemented)
+ *   linear.x/y see position hold below (or velocity feedforward without LH)
+ *
+ * Position hold (CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD=y, requires ANGLE_MODE):
+ *   When the lighthouse has a valid fix and linear.z > -0.9 (flying):
+ *     linear.x ∈ [-1, +1] → X position setpoint ±CONFIG_CF21BL_POS_MAX_M metres
+ *     linear.y ∈ [-1, +1] → Y position setpoint ±CONFIG_CF21BL_POS_MAX_M metres
+ *     Both relative to the home position captured at first valid LH fix.
+ *     Implemented as a P controller (position error → angle correction) feeding
+ *     into the existing angle loop; no separate I/D to avoid cascade windup.
+ *   When the fix is invalid: falls back to standard angle-mode feedforward.
+ *   cf21bl_lighthouse_init() must be called before the stabilizer starts.
  *
  * cf21bl_stabilizer_start() calls cf21bl_imu_init() and cf21bl_imu_filter_init()
  * internally; the caller does not need to initialize the IMU separately.

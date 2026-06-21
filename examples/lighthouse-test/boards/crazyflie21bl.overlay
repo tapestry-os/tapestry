@@ -1,0 +1,24 @@
+/*
+ * lighthouse-test board overlay for crazyflie21bl.
+ *
+ * The lighthouse deck streams 12-byte UART frames on USART3 PC10/PC11 at
+ * 230400 baud (verified from Bitcraze crazyflie-firmware uart1.h).
+ * This overlay overrides the default 115200 baud console setting.
+ *
+ * WIRED CONSOLE IS UNAVAILABLE while the lighthouse deck is attached.
+ * Use: python3 ~/code/tapestry/read_console.py  (CRTP radio via crazyradio2)
+ */
+
+/* Reconfigure USART3 to 230400 baud for lighthouse data */
+&usart3 {
+	current-speed = <230400>;
+	status = "okay";
+};
+
+/*
+ * I2C1 removed: the lighthouse deck FPGA appears to auto-boot from its SPI
+ * flash (confirmed by green LED at power-on without any BOOT_TO_FW command).
+ * If a deck is encountered that does NOT auto-boot, re-add the i2c1 node and
+ * CONFIG_I2C=y — but note that the STM32 I2C1 driver's SYS_INIT bus-recovery
+ * on PB6/PB7 wedges USART6 logging; investigate before re-enabling.
+ */
