@@ -96,6 +96,14 @@ static const uint32_t LH2_CYCLE_PERIODS[16] = {
 /* A sweep block is fresh if seen within this many ms */
 #define LH2_BLOCK_FRESH_MS  200u
 
+/*
+ * 5-sample sliding median filter on the triangulated position.
+ * Rejects single-sample outliers (bad rotor pairing, brief frame errors)
+ * before the position reaches any control loop.  At ~30 Hz fix rate the
+ * window covers ~170 ms — enough to catch spikes without smearing steps.
+ */
+#define LH2_MEDIAN_N  5
+
 /* Stack size and priority of the UART reader thread */
 #define LH2_STACK_SIZE     1536
 #define LH2_THREAD_PRIO    K_PRIO_PREEMPT(1)
@@ -188,6 +196,11 @@ static uint8_t       g_bs_channel[LH2_BS_COUNT] = { 0, 1 }; /* default mapping *
 static struct k_spinlock g_pos_lock;
 static lh2_position_t g_pos;
 static bool           g_pos_valid;
+
+/* Median filter state — circular buffer of raw triangulation results */
+static float g_med_buf[3][LH2_MEDIAN_N];
+static int   g_med_head;
+static int   g_med_count;
 
 /*
  * RX byte queue: the UART ISR drains the hardware FIFO into this queue so that
@@ -316,6 +329,22 @@ static bool lh2_triangulate(const float pa[3], const float da[3],
     return true;
 }
 
+/* ── Median filter ──────────────────────────────────────────────────────────── */
+
+/* Return the median of LH2_MEDIAN_N values (insertion-sorts a local copy). */
+static float lh2_median(const float src[LH2_MEDIAN_N])
+{
+    float s[LH2_MEDIAN_N];
+    for (int i = 0; i < LH2_MEDIAN_N; i++) { s[i] = src[i]; }
+    for (int i = 1; i < LH2_MEDIAN_N; i++) {
+        float key = s[i];
+        int j = i - 1;
+        while (j >= 0 && s[j] > key) { s[j + 1] = s[j]; j--; }
+        s[j + 1] = key;
+    }
+    return s[LH2_MEDIAN_N / 2];
+}
+
 /* ── Frame processing ───────────────────────────────────────────────────────── */
 
 /*
@@ -437,10 +466,22 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
         return;
     }
 
+    /* Push raw result into the median buffer */
+    g_med_buf[0][g_med_head] = result[0];
+    g_med_buf[1][g_med_head] = result[1];
+    g_med_buf[2][g_med_head] = result[2];
+    g_med_head = (g_med_head + 1) % LH2_MEDIAN_N;
+    if (g_med_count < LH2_MEDIAN_N) { g_med_count++; }
+
+    /* Only publish once the window is full (avoids cold-start outliers) */
+    if (g_med_count < LH2_MEDIAN_N) {
+        return;
+    }
+
     k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
-    g_pos.x     = result[0];
-    g_pos.y     = result[1];
-    g_pos.z     = result[2];
+    g_pos.x     = lh2_median(g_med_buf[0]);
+    g_pos.y     = lh2_median(g_med_buf[1]);
+    g_pos.z     = lh2_median(g_med_buf[2]);
     g_pos_valid = true;
     k_spin_unlock(&g_pos_lock, key);
 }

@@ -254,13 +254,18 @@ ZTEST(cf21bl_mix, test_lateral_left)
  * test_clamp_high
  *
  * Full throttle + full CCW yaw: unclamped M2/M4 would exceed 1.0.
- * Clamped outputs must be exactly 1.0; the lower pair must be in range.
+ * Saturation reduces ALL FOUR motors by the same amount the highest one
+ * overshoots 1.0, rather than clamping each motor independently — this
+ * preserves the commanded yaw differential (M2/M4 vs M1/M3 stay exactly
+ * 1.0 apart) instead of flattening it the way independent clamping would.
  *
  * linear.z = 1.0 → T = 1.0; angular.z = 0.5 → Y = 0.5
- *   M2 (unclamped) = 1.0 + 0.5 = 1.5 → clamped to 1.0
- *   M4 (unclamped) = 1.0 + 0.5 = 1.5 → clamped to 1.0
- *   M1 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
- *   M3 (unclamped) = 1.0 − 0.5 = 0.5 → not clamped
+ *   M2 (unclamped) = 1.0 + 0.5 = 1.5
+ *   M4 (unclamped) = 1.0 + 0.5 = 1.5
+ *   M1 (unclamped) = 1.0 − 0.5 = 0.5
+ *   M3 (unclamped) = 1.0 − 0.5 = 0.5
+ *   highest = 1.5 → reduction = 0.5, subtracted from all four:
+ *   M2 = M4 = 1.0   M1 = M3 = 0.0
  */
 ZTEST(cf21bl_mix, test_clamp_high)
 {
@@ -268,10 +273,15 @@ ZTEST(cf21bl_mix, test_clamp_high)
 
     zassert_true(m.m2 <= 1.0f, "M2 must not exceed 1.0");
     zassert_true(m.m4 <= 1.0f, "M4 must not exceed 1.0");
-    ASSERT_NEAR(m.m2, 1.0f, "M2 clamped to 1.0");
-    ASSERT_NEAR(m.m4, 1.0f, "M4 clamped to 1.0");
-    ASSERT_NEAR(m.m1, 0.5f, "M1 within range");
-    ASSERT_NEAR(m.m3, 0.5f, "M3 within range");
+    ASSERT_NEAR(m.m2, 1.0f, "M2 reduced to 1.0");
+    ASSERT_NEAR(m.m4, 1.0f, "M4 reduced to 1.0");
+    ASSERT_NEAR(m.m1, 0.0f, "M1 uniformly reduced along with M2/M4");
+    ASSERT_NEAR(m.m3, 0.0f, "M3 uniformly reduced along with M2/M4");
+
+    /* The 1.0 differential between the CW pair (M2/M4) and the CCW pair
+     * (M1/M3) commanded by the yaw loop must survive saturation intact. */
+    ASSERT_NEAR(m.m2 - m.m1, 1.0f, "yaw differential preserved under saturation");
+    ASSERT_NEAR(m.m4 - m.m3, 1.0f, "yaw differential preserved under saturation");
 }
 
 /*

@@ -32,6 +32,9 @@
 #endif
 
 #include <math.h>
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
@@ -104,6 +107,22 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 #define CF21BL_Z_ILIM          0.10f   /* max I-term collective contribution [0..1]  */
 #define CF21BL_Z_OLIM          0.15f   /* ±15% collective correction range           */
 
+/* ── WS2: Tumble supervisor ─────────────────────────────────────────────────── */
+
+/* Threshold: body-frame Z-accel below this value (in g) signals a tumble.
+ * At ±30° max tilt the minimum in-flight accel_z is cos(30°)≈0.87 g, so
+ * 0.5 g gives comfortable margin against normal maneuver dynamics. */
+#define CF21BL_TUMBLE_ACCEL_Z_G    0.5f
+
+/* How many consecutive 1 kHz samples must be below the threshold before we
+ * commit to a tumble call (~50 ms of continuous tilt beyond 60°). */
+#define CF21BL_TUMBLE_COUNT        50
+
+/* ── WS2: Setpoint staleness watchdog ──────────────────────────────────────── */
+
+/* Compile-time constant from Kconfig (0 = feature disabled). */
+#define CF21BL_SP_STALE_MS         ((int64_t)CONFIG_CF21BL_SP_STALE_MS)
+
 /* ── PID ────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -163,6 +182,15 @@ static struct k_spinlock g_sp_lock;
 /* Default: linear.z=-1 → T=0 (idle throttle), all angular zero.
  * Keeps motors at minimum until the application explicitly commands thrust. */
 static substrate_twist_t g_setpoint = { .linear = { .z = -1.0f } };
+
+/* Timestamp of the last cf21bl_stabilizer_set_setpoint() call (ms since boot).
+ * Protected by g_sp_lock.  Initialized in cf21bl_stabilizer_start() so the
+ * watchdog does not fire before the first real setpoint has been sent. */
+static int64_t g_sp_last_ms;
+
+/* Tumble supervisor state — written only by the stabilizer thread. */
+static bool g_tumbled;       /* latched on crash; cleared only by power-cycle */
+static int  g_tumble_count;  /* consecutive below-threshold samples            */
 
 /* ── PID instances ──────────────────────────────────────────────────────────── */
 
@@ -227,11 +255,35 @@ static void stabilizer_fn(void *a, void *b, void *c)
         }
 
         substrate_twist_t sp;
+#if CONFIG_CF21BL_SP_STALE_MS > 0
+        int64_t sp_age_ms;
+#endif
         {
             k_spinlock_key_t key = k_spin_lock(&g_sp_lock);
             sp = g_setpoint;
+#if CONFIG_CF21BL_SP_STALE_MS > 0
+            sp_age_ms = k_uptime_get() - g_sp_last_ms;
+#endif
             k_spin_unlock(&g_sp_lock, key);
         }
+
+        /* ── WS2: Setpoint staleness watchdog ─────────────────────────────── */
+#if CONFIG_CF21BL_SP_STALE_MS > 0
+        if (sp_age_ms > CF21BL_SP_STALE_MS && sp.linear.z > -0.9f) {
+            static int stale_log_div;
+            if (++stale_log_div >= 200) {   /* log at ~5 Hz, not 1 kHz */
+                stale_log_div = 0;
+                LOG_WRN("setpoint stale (%lld ms) — forcing idle",
+                        (long long)sp_age_ms);
+            }
+            sp.linear.z = -1.0f;
+        }
+#endif
+
+        /* ── WS2: Tumble lockout ───────────────────────────────────────────── */
+        /* Force idle for the rest of this loop iteration and all subsequent
+         * ones — the is_idle block below then resets integrators automatically. */
+        if (g_tumbled) { sp.linear.z = -1.0f; }
 
         float roll_rate_sp, pitch_rate_sp;
         float yaw_rate_sp = sp.angular.z * CF21BL_MAX_YAW_RATE_RPS;
@@ -281,24 +333,30 @@ static void stabilizer_fn(void *a, void *b, void *c)
             float ex = (g_pos_home_x + sp_x) - lhpos.x;
             float ey = (g_pos_home_y + sp_y) - lhpos.y;
 
-            /* P correction in radians, converted to degrees for the angle loop */
-            float cx_rad = CF21BL_POS_KP * ex;
-            float cy_rad = CF21BL_POS_KP * ey;
+            /* Sanity gate: lighthouse estimates can jump tens of metres when
+             * tracking fails at height.  Errors > 2 m indicate a bad reading
+             * rather than real drift — skip the correction rather than command
+             * a full ±10° pitch/roll from a ghost position. */
+            if (fabsf(ex) <= 2.0f && fabsf(ey) <= 2.0f) {
+                /* P correction in radians, converted to degrees for the angle loop */
+                float cx_rad = CF21BL_POS_KP * ex;
+                float cy_rad = CF21BL_POS_KP * ey;
 
-            if (cx_rad >  CF21BL_POS_OLIM_RAD) { cx_rad =  CF21BL_POS_OLIM_RAD; }
-            if (cx_rad < -CF21BL_POS_OLIM_RAD) { cx_rad = -CF21BL_POS_OLIM_RAD; }
-            if (cy_rad >  CF21BL_POS_OLIM_RAD) { cy_rad =  CF21BL_POS_OLIM_RAD; }
-            if (cy_rad < -CF21BL_POS_OLIM_RAD) { cy_rad = -CF21BL_POS_OLIM_RAD; }
+                if (cx_rad >  CF21BL_POS_OLIM_RAD) { cx_rad =  CF21BL_POS_OLIM_RAD; }
+                if (cx_rad < -CF21BL_POS_OLIM_RAD) { cx_rad = -CF21BL_POS_OLIM_RAD; }
+                if (cy_rad >  CF21BL_POS_OLIM_RAD) { cy_rad =  CF21BL_POS_OLIM_RAD; }
+                if (cy_rad < -CF21BL_POS_OLIM_RAD) { cy_rad = -CF21BL_POS_OLIM_RAD; }
 
-            pos_pitch_correction_deg = cx_rad * (180.0f / (float)M_PI);
-            pos_roll_correction_deg  = cy_rad * (180.0f / (float)M_PI);
+                pos_pitch_correction_deg = cx_rad * (180.0f / (float)M_PI);
+                pos_roll_correction_deg  = cy_rad * (180.0f / (float)M_PI);
 
-            static int pos_log_div;
-            if (++pos_log_div >= 500) {
-                pos_log_div = 0;
-                LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f",
-                        (double)lhpos.x, (double)lhpos.y, (double)lhpos.z,
-                        (double)ex, (double)ey);
+                static int pos_log_div;
+                if (++pos_log_div >= 500) {
+                    pos_log_div = 0;
+                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f",
+                            (double)lhpos.x, (double)lhpos.y, (double)lhpos.z,
+                            (double)ex, (double)ey);
+                }
             }
         } else if (g_pos_home_set && !cf21bl_lighthouse_is_valid()) {
             /* Fix lost mid-flight: log once and allow angle-mode fallback */
@@ -354,9 +412,48 @@ static void stabilizer_fn(void *a, void *b, void *c)
                                    yaw_rate_sp   - sample.gyro_rps[2],
                                    CF21BL_LOOP_DT);
 
+        bool is_idle = (sp.linear.z < -0.9f);
+        if (is_idle) {
+            /* Idle: motors must sit at pure minimum, not react to tilt/noise
+             * while armed-but-grounded. Zero the commanded correction and
+             * reset every rate/angle integrator so no windup carries into
+             * the next takeoff — mirrors CF stock controllerPid()'s
+             * thrust==0 branch (controller_pid.c), which zeros roll/pitch/
+             * yaw and resets all attitude PIDs whenever thrust is zero. */
+            u_roll = 0.0f;
+            u_pitch = 0.0f;
+            u_yaw = 0.0f;
+            g_pid_roll.integral  = 0.0f; g_pid_roll.e_prev  = 0.0f;
+            g_pid_pitch.integral = 0.0f; g_pid_pitch.e_prev = 0.0f;
+            g_pid_yaw.integral   = 0.0f; g_pid_yaw.e_prev   = 0.0f;
+#ifdef CONFIG_CF21BL_ANGLE_MODE
+            g_pid_roll_angle.integral  = 0.0f; g_pid_roll_angle.e_prev  = 0.0f;
+            g_pid_pitch_angle.integral = 0.0f; g_pid_pitch_angle.e_prev = 0.0f;
+#endif
+        }
+
+        /* ── WS2: Tumble detection ─────────────────────────────────────────── */
+        /* Count consecutive samples where body-Z accel is too low to be level
+         * flight.  Clear the counter when idle (on ground, tilt doesn't matter).
+         * Once the count exceeds the threshold, latch g_tumbled and log once.
+         * The lockout at the top of this loop then forces idle indefinitely. */
+        if (is_idle) {
+            g_tumble_count = 0;
+        } else if (!g_tumbled) {
+            if (sample.accel_g[2] < CF21BL_TUMBLE_ACCEL_Z_G) {
+                if (++g_tumble_count >= CF21BL_TUMBLE_COUNT) {
+                    LOG_ERR("tumble: accel_z=%.2f g — cutting motors (power-cycle to reset)",
+                            (double)sample.accel_g[2]);
+                    g_tumbled = true;
+                }
+            } else {
+                g_tumble_count = 0;
+            }
+        }
+
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
         float linear_z_out;
-        if (sp.linear.z < -0.9f) {
+        if (is_idle) {
             /* Idle sentinel: disarm altitude PID and reset integrators so
              * there is no windup while the drone sits on the ground. */
             g_pid_z.integral = 0.0f;
@@ -450,6 +547,12 @@ int cf21bl_stabilizer_start(void)
              CF21BL_Z_ILIM, CF21BL_Z_OLIM);
 #endif
 
+#if CONFIG_CF21BL_SP_STALE_MS > 0
+    /* Arm the watchdog clock immediately before the thread starts so the
+     * gyro-calibration window (~1 s above) does not count as stale time. */
+    g_sp_last_ms = k_uptime_get();
+#endif
+
     k_thread_create(&g_stab_thread, g_stab_stack,
                     K_THREAD_STACK_SIZEOF(g_stab_stack),
                     stabilizer_fn, NULL, NULL, NULL,
@@ -465,5 +568,8 @@ void cf21bl_stabilizer_set_setpoint(const substrate_twist_t *sp)
 {
     k_spinlock_key_t key = k_spin_lock(&g_sp_lock);
     g_setpoint = *sp;
+#if CONFIG_CF21BL_SP_STALE_MS > 0
+    g_sp_last_ms = k_uptime_get();
+#endif
     k_spin_unlock(&g_sp_lock, key);
 }

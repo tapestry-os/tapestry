@@ -44,6 +44,16 @@ config CF21BL_ALTITUDE_HOLD
 	  Home altitude is the average of the first 50 BMP388 readings (~1 s).
 	  Requires CONFIG_BMP388=y and bmp390@77 in crazyflie21bl.overlay.
 
+config CF21BL_SP_STALE_MS
+	int "Setpoint staleness timeout in milliseconds (0 = disabled)"
+	default 500
+	help
+	  If no new setpoint is received for this many milliseconds while the
+	  drone is airborne (linear.z > -0.9), the stabilizer forces collective
+	  to idle and resets all attitude PID integrators — protecting against a
+	  radio link drop or upper-layer hang while in flight.  Set to 0 to
+	  disable the watchdog entirely.
+
 endif # CF21BL_STABILIZER
 
 config CF21BL_LIGHTHOUSE

@@ -50,7 +50,13 @@
  *   Pitch nose-up (P > 0): M1↑ M4↑ (front) M2↓ M3↓ (back) → nose-up ✓
  *   Yaw CCW (Y > 0): M2↑ M4↑ (diagonal CW props → CCW torque) M1↓ M3↓ → net CCW ✓
  *
- * All outputs clamped to [0.0, 1.0] before returning.
+ * Saturation: if the highest motor exceeds 1.0, ALL FOUR motors are reduced
+ * by the same amount before the final per-motor [0.0, 1.0] floor clamp.
+ * Independently clamping each motor would distort the commanded roll/pitch/
+ * yaw differential the instant any one motor saturates (the CF stock
+ * firmware avoids this the same way — see powerDistributionCap() in
+ * power_distribution_quadrotor.c, which finds the highest motor and
+ * subtracts the overage uniformly before capping).
  */
 
 #ifndef TAPESTRY_CRAZYFLIE21BL_MIX_H
@@ -85,10 +91,29 @@ static inline void cf21bl_mix(const substrate_twist_t *twist, cf21bl_motors_t *o
     float P = twist->angular.y - twist->linear.x; /* pitch cmd          */
     float Y = twist->angular.z;                   /* yaw   cmd          */
 
-    out->m1 = cf21bl_clampf(T - R + P - Y);   /* front-right, CCW */
-    out->m2 = cf21bl_clampf(T - R - P + Y);   /* back-right,  CW  */
-    out->m3 = cf21bl_clampf(T + R - P - Y);   /* back-left,   CCW */
-    out->m4 = cf21bl_clampf(T + R + P + Y);   /* front-left,  CW  */
+    float m1 = T - R + P - Y;   /* front-right, CCW */
+    float m2 = T - R - P + Y;   /* back-right,  CW  */
+    float m3 = T + R - P - Y;   /* back-left,   CCW */
+    float m4 = T + R + P + Y;   /* front-left,  CW  */
+
+    /* Uniform-reduction saturation — see header comment above. */
+    float highest = m1;
+    if (m2 > highest) { highest = m2; }
+    if (m3 > highest) { highest = m3; }
+    if (m4 > highest) { highest = m4; }
+
+    if (highest > 1.0f) {
+        float reduction = highest - 1.0f;
+        m1 -= reduction;
+        m2 -= reduction;
+        m3 -= reduction;
+        m4 -= reduction;
+    }
+
+    out->m1 = cf21bl_clampf(m1);
+    out->m2 = cf21bl_clampf(m2);
+    out->m3 = cf21bl_clampf(m3);
+    out->m4 = cf21bl_clampf(m4);
 }
 
 #endif /* TAPESTRY_CRAZYFLIE21BL_MIX_H */
