@@ -6,16 +6,24 @@
  *
  * PID gain derivation
  * -------------------
- * Starting values are converted from the Crazyflie stock firmware (crazyflie-
- * firmware config.h), which expresses rate-loop gains as:
+ * Starting values are converted from the Crazyflie stock firmware cf21bl
+ * platform defaults (platform_defaults_cf21bl.h), which expresses rate-loop
+ * gains as:
  *
  *   Kp/Ki/Kd targeting:  error in deg/s  →  output in ~INT16 motor units
- *   CF stock roll/pitch:  Kp=250, Ki=500,   Kd=2.5
- *   CF stock yaw:         Kp=120, Ki=16.67, Kd=0
+ *   CF21BL stock roll/pitch rate:  Kp=200, Ki=400,  Kd=2.5
+ *   CF21BL stock yaw rate:         Kp=120, Ki=16.7, Kd=0
+ *   (stock also runs a yaw *attitude* PID Kp=6/Ki=1/Kd=0.35 above the yaw
+ *   rate loop — see CONFIG_CF21BL_YAW_HOLD)
  *
  * Our system:  error in rad/s  →  output normalized [-1, +1]
  *   Conversion: K_ours = K_cf * (180/π) / INT16_MAX
  *   where (180/π) converts rad/s error to deg/s, INT16_MAX=32767 normalizes.
+ *
+ * One output unit spans the ESC's live range [1180, 2000] µs (motor_to_ns()
+ * deadband-free mapping), i.e. 820 µs.  Gains tuned before that remap (when
+ * one unit spanned 1000 µs) carry a ×(1000/820) ≈ ×1.22 rescale so the
+ * physical loop gain is unchanged.
  *
  * Outer angle loop: CF stock Kp_angle=6.0 (deg/s per deg) converted to
  *   (rad/s per deg): Kp_angle_ours = 6.0 * (π/180) ≈ 0.105.
@@ -29,6 +37,9 @@
 #include "crazyflie21bl_mix.h"  /* cf21bl_mix(), cf21bl_motors_t */
 #ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
 #include "cf21bl_lighthouse.h"
+#endif
+#ifdef CONFIG_CF21BL_PM
+#include "cf21bl_pm.h"
 #endif
 
 #include <math.h>
@@ -61,20 +72,31 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 
 /* Rate PID gains — roll and pitch (symmetric)
  * CF21BL stock converted: Kp=200×(180/π)/32767=0.350, Ki=0.699, Kd=0.00437.
- * PWM actuator latency (~5-10ms) + LPF phase delay (~2ms gyro, ~5ms accel)
- * requires lower gains than DSHOT-based CF firmware; start at 0.11 and tune up. */
-#define CF21BL_RP_KP      0.11f
-#define CF21BL_RP_KI      0.22f
-#define CF21BL_RP_KD      0.0011f
-#define CF21BL_RP_ILIM    0.3f    /* max ki·integral contribution, output units */
-#define CF21BL_RP_OLIM    0.5f    /* output clamp, [-0.5, +0.5] */
+ * PWM actuator latency (~5-10ms at 400 Hz RC PWM) + LPF phase delay (~2ms
+ * gyro, ~5ms accel) requires lower gains than DSHOT-based CF firmware.
+ * Values below are the hardware-tuned 400 Hz-PWM set (0.11 pre-remap)
+ * rescaled ×1.22 for the deadband-free motor mapping (see header). */
+#ifdef CONFIG_CF21BL_ESC_ONESHOT125
+/* OneShot125 halves-to-fifths the actuator latency (2 kHz frame rate);
+ * start halfway between the PWM400 set and the stock-converted values,
+ * then tune upward toward Kp≈0.42 (0.350 × 1.22) on hardware. */
+#define CF21BL_RP_KP      0.20f
+#define CF21BL_RP_KI      0.40f
+#define CF21BL_RP_KD      0.0020f
+#else
+#define CF21BL_RP_KP      0.134f
+#define CF21BL_RP_KI      0.268f
+#define CF21BL_RP_KD      0.00134f
+#endif
+#define CF21BL_RP_ILIM    0.37f   /* max ki·integral contribution, output units */
+#define CF21BL_RP_OLIM    0.61f   /* output clamp (≈ ±500 µs at the ESC) */
 
-/* Rate PID gains — yaw */
-#define CF21BL_YAW_KP     0.21f
-#define CF21BL_YAW_KI     0.029f
+/* Rate PID gains — yaw (pre-remap 0.21/0.029, rescaled ×1.22) */
+#define CF21BL_YAW_KP     0.256f
+#define CF21BL_YAW_KI     0.035f
 #define CF21BL_YAW_KD     0.0f
-#define CF21BL_YAW_ILIM   0.1f
-#define CF21BL_YAW_OLIM   0.3f
+#define CF21BL_YAW_ILIM   0.122f
+#define CF21BL_YAW_OLIM   0.366f
 
 /* Outer angle loop (PD_ROLL_KP=6.0, KI=3.0, deg/s per deg → rad/s per deg via × π/180) */
 #define CF21BL_ANGLE_KP   0.105f  /* rad/s per degree error */
@@ -88,24 +110,88 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 /* Position P gain: metres error → angle correction in degrees.
  * 0.05 → at 1 m error the correction is 2.9° (within the 10° safe limit). */
 #define CF21BL_POS_KP          0.05f   /* rad/m  — converts metres error to rad */
+/* Velocity damping: tilt θ produces accel ≈ g·θ, so the closed loop is
+ * s² + g·Kd·s + g·Kp; with Kp=0.05, ωn=√(g·Kp)≈0.70 rad/s and ζ≈0.7 needs
+ * Kd = 2·ζ·ωn/g ≈ 0.10.  Without this term the P-only loop has no damping
+ * at all and orbits/limit-cycles around the setpoint. */
+#define CF21BL_POS_KD          0.10f   /* rad per m/s */
 #define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
 #define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
+/* Yaw heading hold (CONFIG_CF21BL_YAW_HOLD) — stock runs a yaw attitude PID
+ * (Kp=6, Ki=1, Kd=0.35, deg/s per deg) above the yaw rate loop, integrating
+ * rate commands into a heading target so heading is locked between commands
+ * instead of random-walking with gyro noise.  Converted ×(π/180) to
+ * rad/s per deg.  The D term acts on the measured yaw rate (deg/s). */
+#ifdef CONFIG_CF21BL_YAW_HOLD
+#define CF21BL_YAWH_KP           0.105f   /* rad/s per deg   (stock 6.0)    */
+#define CF21BL_YAWH_KI           0.0175f  /* rad/s per deg·s (stock 1.0)    */
+#define CF21BL_YAWH_KD           0.0061f  /* rad/s per deg/s (stock 0.35)   */
+#define CF21BL_YAWH_ILIM         0.35f    /* max ki·integral, rad/s          */
+#define CF21BL_YAWH_MAX_DELTA_DEG 30.0f   /* clamp target near current yaw
+                                           * (stock yawMaxDelta semantics)   */
+#endif /* CONFIG_CF21BL_YAW_HOLD */
+
 /* Altitude hold (CONFIG_CF21BL_ALTITUDE_HOLD) */
 #define CF21BL_BARO_POLL_DIV   20      /* poll every 20 loop iters ≈ 50 Hz           */
-#define CF21BL_BARO_LP_ALPHA   0.15f   /* IIR low-pass α, τ ≈ 120 ms at 50 Hz       */
-#define CF21BL_PA_PER_M        11.77f  /* Pa per metre, standard atmosphere          */
+#define CF21BL_PA_PER_M        12.01f  /* Pa per metre = ρ·g at 15 °C sea level      */
+/* Hover collective, referenced to CF21BL_PM_VREF (3.7 V).  Tether flight
+ * 2026-07-03 (fresh pack, ~4.0 V loaded) sustained hover at T≈0.41–0.42;
+ * converting that through the ESC throttle fraction to 3.7 V gives ≈0.46.
+ * (The earlier 1650 µs / 0.65-of-old-mapping measurement was taken on a
+ * sagged pack — using it on a fresh pack made the drone climb hard and
+ * saturate the ±CF21BL_ALT_VEL_OLIM correction.)  With CONFIG_CF21BL_PM
+ * compensation active this value is battery-independent; without it,
+ * expect ~±0.05 of residual depending on charge state. */
 #define CF21BL_ALT_SP_OFFSET   1.0f    /* linear.z=0 → 1 m above home               */
-#define CF21BL_HOVER_T         0.65f   /* measured tethered hover throttle (65%)     */
-#define CF21BL_T_FLOOR         0.10f   /* minimum collective mid-flight              */
-/* Z-PID gains — conservative for first autonomous hover tests.
- * At 0.5m error: pterm = 0.05×0.5 = 0.025 → T_cmd = 0.675 (gentle liftoff).
- * Tune up incrementally once autonomous takeoff is confirmed stable. */
-#define CF21BL_Z_KP            0.05f
-#define CF21BL_Z_KI            0.01f
-#define CF21BL_Z_ILIM          0.10f   /* max I-term collective contribution [0..1]  */
-#define CF21BL_Z_OLIM          0.15f   /* ±15% collective correction range           */
+#define CF21BL_HOVER_T         0.46f
+#define CF21BL_T_FLOOR         0.10f   /* min collective mid-flight (≈1262 µs — now a
+                                        * real spinning floor; pre-remap 0.10 mapped
+                                        * to 1100 µs, inside the ESC dead zone) */
+#define CF21BL_G_MPS2          9.80665f
+
+/* Two-state complementary filter: accel-integrated velocity supplies fast
+ * dynamics between barometer samples, the barometer supplies a slow but
+ * drift-free absolute reference. Every ~50 Hz baro sample nudges both
+ * alt_est and vel_est toward the measurement by these fractions of the
+ * innovation (the position error between the baro reading and the current
+ * estimate) — correcting vel_est too keeps accel-bias drift from growing
+ * unbounded between corrections. KP=1 would snap fully to the raw baro
+ * reading each sample (no filtering at all).
+ *
+ * CF21BL_VEL_BARO_KP couples every raw baro sample straight into vel_est,
+ * which is then re-integrated into alt_est at 1 kHz — so noise on this path
+ * pollutes position too, unlike a plain position-only IIR. Keep it well
+ * below CF21BL_ALT_BARO_KP; bench testing (2026-07-02, drone stationary)
+ * showed alt/vel_est swinging ~±0.15 m / ±0.15 m/s at KP=0.20 with no motion
+ * at all — reduced here pending confirmation of how noisy the raw BMP390
+ * reading actually is (see the alt_baro field added to the log line). */
+#define CF21BL_ALT_BARO_KP     0.06f
+#define CF21BL_VEL_BARO_KP     0.02f
+
+/* Reject a single baro sample that implies an alt_baro jump too large to be
+ * real for one ~20 ms tick — almost certainly a torn/corrupted I2C read
+ * racing the shared bus with BMI088 gyro traffic, not real motion. Same
+ * guard and threshold as read_alt_filtered() in
+ * examples/altitude-hold-test/src/main.c, which hit this exact failure mode. */
+#define CF21BL_ALT_OUTLIER_M   0.40f
+
+/* Outer loop: altitude error [m] → climb-rate setpoint [m/s]. */
+#define CF21BL_ALT_POS_KP      0.8f
+#define CF21BL_ALT_POS_KI      0.1f
+#define CF21BL_ALT_POS_ILIM    0.2f    /* max ki·integral contribution, m/s          */
+#define CF21BL_ALT_VEL_SP_MAX  0.5f    /* climb/descend rate clamp, m/s              */
+
+/* Inner loop: climb-rate error [m/s] → collective correction [fraction].
+ * This is the velocity-damping stage the single-stage baro-only P+I lacked —
+ * it reacts to the fast accel-derived velocity estimate rather than only the
+ * ~50 Hz-sampled position, which is what let closed-loop altitude hold
+ * porpoise. Conservative starting gains; tune up on hardware. */
+#define CF21BL_ALT_VEL_KP      0.195f  /* pre-remap 0.16, rescaled ×1.22             */
+#define CF21BL_ALT_VEL_KI      0.061f
+#define CF21BL_ALT_VEL_ILIM    0.061f  /* max ki·integral contribution, thrust fraction */
+#define CF21BL_ALT_VEL_OLIM    0.183f  /* collective correction range (≈ ±150 µs)    */
 
 /* ── WS2: Tumble supervisor ─────────────────────────────────────────────────── */
 
@@ -120,15 +206,42 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 
 /* ── WS2: Setpoint staleness watchdog ──────────────────────────────────────── */
 
-/* Compile-time constant from Kconfig (0 = feature disabled). */
+/* Compile-time constants from Kconfig (STALE_MS = 0 disables the feature). */
 #define CF21BL_SP_STALE_MS         ((int64_t)CONFIG_CF21BL_SP_STALE_MS)
+#define CF21BL_SP_CUTOFF_MS        ((int64_t)CONFIG_CF21BL_SP_CUTOFF_MS)
+
+/* ── Forced landing (critical battery / stale setpoints) ───────────────────── */
+
+/* With CONFIG_CF21BL_ALTITUDE_HOLD, a forced landing walks the altitude
+ * target down from the measured alt_est at CF21BL_LAND_RATE_MPS, holds it at
+ * ground level for CF21BL_LAND_SETTLE_MS so the drone is actually down
+ * (the target ramp always outruns the airframe a little), and only then cuts
+ * the motors.  Cutting on a fixed clock — the first implementation — killed
+ * the motors while still airborne, because the setpoint reached the idle
+ * sentinel long before the drone reached the ground. */
+#define CF21BL_LAND_RATE_MPS       0.3f
+#define CF21BL_LAND_SETTLE_MS      2000
+
+/* Without altitude hold there is no altitude estimate, so fall back to
+ * ramping the collective to idle over this window (crude, but the only
+ * option open-loop). */
+#define CF21BL_PM_LAND_MS          3000
+
+/* ── In-flight motor floor ─────────────────────────────────────────────────── */
+
+/* Lowest per-motor command while airborne.  motor_to_ns() maps any v > 0 into
+ * the ESC's live range, so this floor only needs margin against signal jitter
+ * (0.03 → ≈1205 µs).  Prevents a hard roll/pitch/yaw correction from stopping
+ * a prop mid-flight (BLHeli_S re-spin-up costs tens of ms) — the stock
+ * firmware's powerDistributionCap()/idleThrust serves the same purpose. */
+#define CF21BL_MOTOR_FLOOR         0.03f
 
 /* ── PID ────────────────────────────────────────────────────────────────────── */
 
 typedef struct {
     float kp, ki, kd;
     float integral;
-    float e_prev;
+    float m_prev;      /* previous measurement (derivative-on-measurement) */
     float i_limit;
     float out_limit;
 } cf21bl_pid_t;
@@ -138,13 +251,26 @@ static void pid_init(cf21bl_pid_t *p, float kp, float ki, float kd,
 {
     p->kp = kp;  p->ki = ki;  p->kd = kd;
     p->integral  = 0.0f;
-    p->e_prev    = 0.0f;
+    p->m_prev    = 0.0f;
     p->i_limit   = i_limit;
     p->out_limit = out_limit;
 }
 
+/* Zero the integrator and re-seed the derivative history at the current
+ * measurement so the first post-reset update produces no D spike. */
+static void pid_reset(cf21bl_pid_t *p, float measurement)
+{
+    p->integral = 0.0f;
+    p->m_prev   = measurement;
+}
+
 /*
- * Discrete PID:  u = Kp·e + Ki·∫e·dt + Kd·(Δe/dt)
+ * Discrete PID:  u = Kp·e + Ki·∫e·dt − Kd·(Δmeasurement/dt)
+ *
+ * The derivative acts on the measurement, not the error, so setpoint steps
+ * (e.g. the angle loop handing the rate loop a new target every 1 ms) do not
+ * kick the D term — same approach as stock pid.c ("derivative of the measured
+ * process variable instead of the error").
  *
  * Anti-windup: the integral is clamped so that ki·integral stays within
  * ±i_limit (same units as the output).  This prevents the integral from
@@ -152,8 +278,10 @@ static void pid_init(cf21bl_pid_t *p, float kp, float ki, float kd,
  * tethered hover) and ensures the I-term contribution remains bounded
  * even when Kd is zero and rate errors persist.
  */
-static float pid_update(cf21bl_pid_t *p, float error, float dt)
+static float pid_update(cf21bl_pid_t *p, float setpoint, float measurement,
+                        float dt)
 {
+    float error = setpoint - measurement;
     float pterm = p->kp * error;
 
     p->integral += error * dt;
@@ -166,8 +294,8 @@ static float pid_update(cf21bl_pid_t *p, float error, float dt)
     }
     float iterm = p->ki * p->integral;
 
-    float dterm = p->kd * (error - p->e_prev) / dt;
-    p->e_prev = error;
+    float dterm = -p->kd * (measurement - p->m_prev) / dt;
+    p->m_prev = measurement;
 
     float out = pterm + iterm + dterm;
     if      (out >  p->out_limit) out =  p->out_limit;
@@ -192,6 +320,19 @@ static int64_t g_sp_last_ms;
 static bool g_tumbled;       /* latched on crash; cleared only by power-cycle */
 static int  g_tumble_count;  /* consecutive below-threshold samples            */
 
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+/* Forced-landing touchdown latch: set once a forced landing has settled on
+ * the ground; keeps the drone idle while the trigger (critical battery /
+ * stale setpoints) persists.  Cleared when a stale-setpoint trigger goes
+ * away (link recovered → the application's commands apply again); a
+ * critical-battery trigger never clears, so the drone stays down. */
+static bool    g_landed;
+/* Descent state — g_land_t0_ms == 0 means "no landing in progress". */
+static int64_t g_land_t0_ms;
+static float   g_land_alt0;
+static int64_t g_land_ground_ms;
+#endif
+
 /* ── PID instances ──────────────────────────────────────────────────────────── */
 
 static cf21bl_pid_t g_pid_roll;
@@ -201,6 +342,18 @@ static cf21bl_pid_t g_pid_yaw;
 #ifdef CONFIG_CF21BL_ANGLE_MODE
 static cf21bl_pid_t g_pid_roll_angle;
 static cf21bl_pid_t g_pid_pitch_angle;
+#endif
+
+#ifdef CONFIG_CF21BL_YAW_HOLD
+static float g_yaw_target_deg;   /* heading target, wrapped to ±180° */
+static float g_yawh_integral;    /* heading-error integral, deg·s    */
+
+static float wrap180f(float a)
+{
+    while (a >  180.0f) { a -= 360.0f; }
+    while (a < -180.0f) { a += 360.0f; }
+    return a;
+}
 #endif
 
 #ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
@@ -214,7 +367,8 @@ static bool     g_pos_home_set;
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
 static const struct device *const baro_dev =
     DEVICE_DT_GET(DT_NODELABEL(bmp388_baro));
-static cf21bl_pid_t g_pid_z;
+static cf21bl_pid_t g_pid_alt_pos;   /* outer: altitude error → climb-rate setpoint */
+static cf21bl_pid_t g_pid_alt_vel;   /* inner: climb-rate error → thrust correction */
 #endif
 
 /* ── Stabilizer thread ──────────────────────────────────────────────────────── */
@@ -245,8 +399,10 @@ static void stabilizer_fn(void *a, void *b, void *c)
     }
     p_home /= 50.0f;
     LOG_INF("Baro home: %.1f Pa", (double)p_home);
-    float alt_filt = 0.0f;   /* LP-filtered altitude above home (metres) */
-    int   baro_cnt = 0;
+    float alt_est   = 0.0f;   /* world-frame altitude above home, m (complementary filter) */
+    float vel_est   = 0.0f;   /* world-frame vertical velocity, m/s (complementary filter) */
+    float alt_baro  = 0.0f;   /* last raw (unfiltered) baro reading, m — logged for diagnosis */
+    int   baro_cnt  = 0;
 #endif
 
     while (true) {
@@ -267,16 +423,89 @@ static void stabilizer_fn(void *a, void *b, void *c)
             k_spin_unlock(&g_sp_lock, key);
         }
 
-        /* ── WS2: Setpoint staleness watchdog ─────────────────────────────── */
+        /* ── Forced-landing triggers ──────────────────────────────────────── */
+        /* Stale setpoints and critical battery both: level out (zero angular
+         * setpoints + lateral feedforward), then bring the drone down.
+         * With CONFIG_CF21BL_ALTITUDE_HOLD the descent is closed-loop: the
+         * force_land flag makes the altitude section walk its target down
+         * from the measured alt_est and cut only after ground settle.
+         * Without it, fall back to an open-loop timed collective ramp. */
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+        bool force_land = false;
+#endif
+
 #if CONFIG_CF21BL_SP_STALE_MS > 0
         if (sp_age_ms > CF21BL_SP_STALE_MS && sp.linear.z > -0.9f) {
             static int stale_log_div;
             if (++stale_log_div >= 200) {   /* log at ~5 Hz, not 1 kHz */
                 stale_log_div = 0;
-                LOG_WRN("setpoint stale (%lld ms) — forcing idle",
+                LOG_WRN("setpoint stale (%lld ms) — leveling + descending",
                         (long long)sp_age_ms);
             }
-            sp.linear.z = -1.0f;
+            sp.angular.x = 0.0f; sp.angular.y = 0.0f; sp.angular.z = 0.0f;
+            sp.linear.x  = 0.0f; sp.linear.y  = 0.0f;
+
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+            force_land = true;
+#else
+            /* Open-loop: ramp collective to idle across STALE→CUTOFF
+             * (mirrors stock COMMANDER_WDT stabilize/shutdown windows). */
+            int64_t window = CF21BL_SP_CUTOFF_MS - CF21BL_SP_STALE_MS;
+            float ramp = 0.0f;
+            if (window > 0 && sp_age_ms < CF21BL_SP_CUTOFF_MS) {
+                ramp = 1.0f - (float)(sp_age_ms - CF21BL_SP_STALE_MS)
+                            / (float)window;
+            }
+            sp.linear.z = -1.0f + (sp.linear.z + 1.0f) * ramp;
+#endif
+        }
+#endif
+
+#ifdef CONFIG_CF21BL_PM
+        if (cf21bl_pm_battery_critical() && sp.linear.z > -0.9f) {
+            static bool crit_logged;
+            if (!crit_logged) {
+                crit_logged = true;
+                LOG_ERR("battery critical (%.2f V) — forced landing",
+                        (double)cf21bl_pm_vbat());
+            }
+            sp.angular.x = 0.0f; sp.angular.y = 0.0f; sp.angular.z = 0.0f;
+            sp.linear.x  = 0.0f; sp.linear.y  = 0.0f;
+
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+            force_land = true;
+#else
+            static int64_t crit_t0_ms;
+            if (crit_t0_ms == 0) {
+                crit_t0_ms = k_uptime_get();
+            }
+            int64_t el = k_uptime_get() - crit_t0_ms;
+            float ramp = 0.0f;
+            if (el < CF21BL_PM_LAND_MS) {
+                ramp = 1.0f - (float)el / (float)CF21BL_PM_LAND_MS;
+            }
+            sp.linear.z = -1.0f + (sp.linear.z + 1.0f) * ramp;
+#endif
+        } else if (cf21bl_pm_battery_low()) {
+            static int low_log_div;
+            if (++low_log_div >= 5000) {   /* ~0.2 Hz */
+                low_log_div = 0;
+                LOG_WRN("battery low: %.2f V", (double)cf21bl_pm_vbat());
+            }
+        }
+#endif
+
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+        /* Touchdown latch: hold idle while the landing trigger persists.
+         * A recovered link (trigger gone) releases the latch — the
+         * application's commands apply again, same as the pre-landing
+         * watchdog semantics.  Critical battery never releases. */
+        if (g_landed) {
+            if (force_land) {
+                sp.linear.z = -1.0f;
+            } else {
+                g_landed = false;
+            }
         }
 #endif
 
@@ -338,9 +567,14 @@ static void stabilizer_fn(void *a, void *b, void *c)
              * rather than real drift — skip the correction rather than command
              * a full ±10° pitch/roll from a ghost position. */
             if (fabsf(ex) <= 2.0f && fabsf(ey) <= 2.0f) {
-                /* P correction in radians, converted to degrees for the angle loop */
-                float cx_rad = CF21BL_POS_KP * ex;
-                float cy_rad = CF21BL_POS_KP * ey;
+                /* PD correction in radians, converted to degrees for the
+                 * angle loop.  The velocity term (see CF21BL_POS_KD) damps
+                 * the otherwise-undamped P loop. */
+                lh2_position_t lhvel = { 0 };
+                (void)cf21bl_lighthouse_get_velocity(&lhvel);
+
+                float cx_rad = CF21BL_POS_KP * ex - CF21BL_POS_KD * lhvel.x;
+                float cy_rad = CF21BL_POS_KP * ey - CF21BL_POS_KD * lhvel.y;
 
                 if (cx_rad >  CF21BL_POS_OLIM_RAD) { cx_rad =  CF21BL_POS_OLIM_RAD; }
                 if (cx_rad < -CF21BL_POS_OLIM_RAD) { cx_rad = -CF21BL_POS_OLIM_RAD; }
@@ -353,9 +587,10 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 static int pos_log_div;
                 if (++pos_log_div >= 500) {
                     pos_log_div = 0;
-                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f",
+                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f vx=%.3f vy=%.3f",
                             (double)lhpos.x, (double)lhpos.y, (double)lhpos.z,
-                            (double)ex, (double)ey);
+                            (double)ex, (double)ey,
+                            (double)lhvel.x, (double)lhvel.y);
                 }
             }
         } else if (g_pos_home_set && !cf21bl_lighthouse_is_valid()) {
@@ -365,11 +600,16 @@ static void stabilizer_fn(void *a, void *b, void *c)
         }
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
-#ifdef CONFIG_CF21BL_ANGLE_MODE
-        /* ── Outer angle loop ─────────────────────────────────────────────── */
+#if defined(CONFIG_CF21BL_ANGLE_MODE) || defined(CONFIG_CF21BL_ALTITUDE_HOLD)
+        /* Needed for the angle loop (roll_deg/pitch_deg) below and/or for the
+         * altitude-hold velocity estimator (accel_up_g), so run it whenever
+         * either feature is enabled — not just in angle mode. */
         cf21bl_imu_attitude_t att;
         cf21bl_imu_filter_update(&sample, CF21BL_LOOP_DT, &att);
+#endif
 
+#ifdef CONFIG_CF21BL_ANGLE_MODE
+        /* ── Outer angle loop ─────────────────────────────────────────────── */
         /* Velocity feedforward or position correction (see position hold above).
          * Sign convention from mix.h:
          *   P = angular.y - linear.x → forward (linear.x>0) → pitch negative
@@ -392,9 +632,41 @@ static void stabilizer_fn(void *a, void *b, void *c)
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
         roll_rate_sp  = pid_update(&g_pid_roll_angle,
-                                   roll_sp_deg  - att.roll_deg,  CF21BL_LOOP_DT);
+                                   roll_sp_deg,  att.roll_deg,  CF21BL_LOOP_DT);
         pitch_rate_sp = pid_update(&g_pid_pitch_angle,
-                                   pitch_sp_deg - att.pitch_deg, CF21BL_LOOP_DT);
+                                   pitch_sp_deg, att.pitch_deg, CF21BL_LOOP_DT);
+
+#ifdef CONFIG_CF21BL_YAW_HOLD
+        /* ── Yaw heading hold ─────────────────────────────────────────────
+         * Integrate the commanded yaw rate into a heading target and close a
+         * PID around the Mahony yaw estimate (stock controller_pid.c does the
+         * same for modeVelocity yaw setpoints).  The target is kept within
+         * ±CF21BL_YAWH_MAX_DELTA_DEG of the current heading so it cannot run
+         * far ahead if the drone is physically prevented from turning. */
+        g_yaw_target_deg = wrap180f(g_yaw_target_deg
+                                    + sp.angular.z * CF21BL_MAX_YAW_RATE_RPS
+                                      * (180.0f / (float)M_PI) * CF21BL_LOOP_DT);
+        float yaw_err_deg = wrap180f(g_yaw_target_deg - att.yaw_deg);
+        if (yaw_err_deg > CF21BL_YAWH_MAX_DELTA_DEG) {
+            yaw_err_deg = CF21BL_YAWH_MAX_DELTA_DEG;
+            g_yaw_target_deg = wrap180f(att.yaw_deg + yaw_err_deg);
+        } else if (yaw_err_deg < -CF21BL_YAWH_MAX_DELTA_DEG) {
+            yaw_err_deg = -CF21BL_YAWH_MAX_DELTA_DEG;
+            g_yaw_target_deg = wrap180f(att.yaw_deg + yaw_err_deg);
+        }
+
+        g_yawh_integral += yaw_err_deg * CF21BL_LOOP_DT;
+        float yawh_i_max = CF21BL_YAWH_ILIM / CF21BL_YAWH_KI;
+        if      (g_yawh_integral >  yawh_i_max) { g_yawh_integral =  yawh_i_max; }
+        else if (g_yawh_integral < -yawh_i_max) { g_yawh_integral = -yawh_i_max; }
+
+        /* D on the measured yaw rate (deg/s), not the error — no target kick */
+        yaw_rate_sp = CF21BL_YAWH_KP * yaw_err_deg
+                    + CF21BL_YAWH_KI * g_yawh_integral
+                    - CF21BL_YAWH_KD * sample.gyro_rps[2] * (180.0f / (float)M_PI);
+        if      (yaw_rate_sp >  CF21BL_MAX_YAW_RATE_RPS) { yaw_rate_sp =  CF21BL_MAX_YAW_RATE_RPS; }
+        else if (yaw_rate_sp < -CF21BL_MAX_YAW_RATE_RPS) { yaw_rate_sp = -CF21BL_MAX_YAW_RATE_RPS; }
+#endif /* CONFIG_CF21BL_YAW_HOLD */
 #else
         /* ── Rate mode: direct rate setpoint ─────────────────────────────── */
         roll_rate_sp  = sp.angular.x * CF21BL_MAX_RATE_RPS;
@@ -403,13 +675,13 @@ static void stabilizer_fn(void *a, void *b, void *c)
 
         /* ── Inner rate loop ──────────────────────────────────────────────── */
         float u_roll  = pid_update(&g_pid_roll,
-                                   roll_rate_sp  - sample.gyro_rps[0],
+                                   roll_rate_sp,  sample.gyro_rps[0],
                                    CF21BL_LOOP_DT);
         float u_pitch = pid_update(&g_pid_pitch,
-                                   pitch_rate_sp - sample.gyro_rps[1],
+                                   pitch_rate_sp, sample.gyro_rps[1],
                                    CF21BL_LOOP_DT);
         float u_yaw   = pid_update(&g_pid_yaw,
-                                   yaw_rate_sp   - sample.gyro_rps[2],
+                                   yaw_rate_sp,   sample.gyro_rps[2],
                                    CF21BL_LOOP_DT);
 
         bool is_idle = (sp.linear.z < -0.9f);
@@ -423,12 +695,18 @@ static void stabilizer_fn(void *a, void *b, void *c)
             u_roll = 0.0f;
             u_pitch = 0.0f;
             u_yaw = 0.0f;
-            g_pid_roll.integral  = 0.0f; g_pid_roll.e_prev  = 0.0f;
-            g_pid_pitch.integral = 0.0f; g_pid_pitch.e_prev = 0.0f;
-            g_pid_yaw.integral   = 0.0f; g_pid_yaw.e_prev   = 0.0f;
+            pid_reset(&g_pid_roll,  sample.gyro_rps[0]);
+            pid_reset(&g_pid_pitch, sample.gyro_rps[1]);
+            pid_reset(&g_pid_yaw,   sample.gyro_rps[2]);
 #ifdef CONFIG_CF21BL_ANGLE_MODE
-            g_pid_roll_angle.integral  = 0.0f; g_pid_roll_angle.e_prev  = 0.0f;
-            g_pid_pitch_angle.integral = 0.0f; g_pid_pitch_angle.e_prev = 0.0f;
+            pid_reset(&g_pid_roll_angle,  att.roll_deg);
+            pid_reset(&g_pid_pitch_angle, att.pitch_deg);
+#endif
+#ifdef CONFIG_CF21BL_YAW_HOLD
+            /* Re-seed the heading target at the current yaw so takeoff never
+             * starts with a stale heading error. */
+            g_yaw_target_deg = att.yaw_deg;
+            g_yawh_integral  = 0.0f;
 #endif
         }
 
@@ -454,29 +732,94 @@ static void stabilizer_fn(void *a, void *b, void *c)
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
         float linear_z_out;
         if (is_idle) {
-            /* Idle sentinel: disarm altitude PID and reset integrators so
-             * there is no windup while the drone sits on the ground. */
-            g_pid_z.integral = 0.0f;
-            g_pid_z.e_prev   = 0.0f;
+            /* Idle sentinel: disarm both altitude PID stages and the
+             * complementary-filter estimator so nothing winds up or drifts
+             * while the drone sits on the ground. */
+            pid_reset(&g_pid_alt_pos, 0.0f);
+            pid_reset(&g_pid_alt_vel, 0.0f);
+            alt_est   = 0.0f;
+            vel_est   = 0.0f;
+            alt_baro  = 0.0f;
+            baro_cnt  = 0;
+            g_land_t0_ms = 0;   /* abandon any in-progress descent state */
             linear_z_out = -1.0f;
         } else {
-            /* Poll BMP388 every CF21BL_BARO_POLL_DIV iterations (~50 Hz).
-             * sensor_sample_fetch blocks ~100 µs for the I2C transaction;
-             * I2C3 bus is idle at this point (BMI088 RTIO completes before
-             * the drdy semaphore is posted, so no bus contention). */
+            /* Integrate world-frame vertical acceleration every 1 kHz tick so
+             * the velocity/altitude estimate tracks fast dynamics between the
+             * much slower barometer samples. att.accel_up_g reads +1 g when
+             * level and stationary at any tilt, so subtracting 1 g and
+             * scaling by g isolates net vertical acceleration. */
+            float net_az_ms2 = (att.accel_up_g - 1.0f) * CF21BL_G_MPS2;
+            vel_est += net_az_ms2 * CF21BL_LOOP_DT;
+            alt_est += vel_est * CF21BL_LOOP_DT;
+
+            /* Poll BMP388 every CF21BL_BARO_POLL_DIV iterations (~50 Hz) and
+             * correct both filter states from the resulting position
+             * innovation. sensor_sample_fetch blocks ~100 µs for the I2C
+             * transaction; I2C3 bus is idle at this point (BMI088 RTIO
+             * completes before the drdy semaphore is posted, so no bus
+             * contention). */
             if (++baro_cnt >= CF21BL_BARO_POLL_DIV) {
                 baro_cnt = 0;
                 sensor_sample_fetch(baro_dev);
                 struct sensor_value sv;
                 sensor_channel_get(baro_dev, SENSOR_CHAN_PRESS, &sv);
-                float p_Pa    = sensor_value_to_float(&sv) * 1000.0f;
-                float alt_raw = (p_home - p_Pa) / CF21BL_PA_PER_M;
-                alt_filt = (1.0f - CF21BL_BARO_LP_ALPHA) * alt_filt
-                         + CF21BL_BARO_LP_ALPHA * alt_raw;
+                float p_Pa = sensor_value_to_float(&sv) * 1000.0f;
+                alt_baro   = (p_home - p_Pa) / CF21BL_PA_PER_M;
+                float baro_err = alt_baro - alt_est;
+                /* Drop a single-sample reading that implies an implausible
+                 * jump for one ~20 ms tick instead of feeding a probably
+                 * torn/corrupted I2C read into both filter states. */
+                if (fabsf(baro_err) <= CF21BL_ALT_OUTLIER_M) {
+                    alt_est += CF21BL_ALT_BARO_KP * baro_err;
+                    vel_est += CF21BL_VEL_BARO_KP * baro_err;
+                }
             }
+
+            /* ── Cascaded position → velocity → thrust ────────────────────
+             * Outer PID turns altitude error into a climb-rate setpoint;
+             * inner PID turns climb-rate error (against the fast accel-
+             * fused vel_est) into the collective correction. The inner
+             * stage is the velocity damping the old single-stage
+             * baro-only controller lacked. */
             float target_alt = sp.linear.z + CF21BL_ALT_SP_OFFSET;
-            float delta_T    = pid_update(&g_pid_z, target_alt - alt_filt,
-                                          CF21BL_LOOP_DT);
+
+            /* ── Forced landing: closed-loop descent to touchdown ─────────
+             * Walk the target down from the altitude measured at trigger
+             * time, hold it at ground level for CF21BL_LAND_SETTLE_MS so
+             * the airframe (which lags the target) is actually down, then
+             * latch g_landed — the loop top forces idle from the next
+             * iteration on. */
+            if (force_land && !g_landed) {
+                int64_t now_ms = k_uptime_get();
+                if (g_land_t0_ms == 0) {
+                    g_land_t0_ms     = now_ms;
+                    g_land_alt0      = (alt_est > 0.0f) ? alt_est : 0.0f;
+                    g_land_ground_ms = 0;
+                    LOG_WRN("forced landing: descending from %.2f m",
+                            (double)g_land_alt0);
+                }
+                float down = CF21BL_LAND_RATE_MPS
+                             * (float)(now_ms - g_land_t0_ms) / 1000.0f;
+                target_alt = g_land_alt0 - down;
+                if (target_alt <= 0.0f) {
+                    target_alt = 0.0f;
+                    if (g_land_ground_ms == 0) {
+                        g_land_ground_ms = now_ms;
+                    } else if (now_ms - g_land_ground_ms > CF21BL_LAND_SETTLE_MS) {
+                        g_landed = true;
+                        LOG_WRN("forced landing: touchdown — motors off");
+                    }
+                }
+            } else if (!force_land) {
+                g_land_t0_ms = 0;   /* trigger cleared before touchdown */
+            }
+
+            float target_vz  = pid_update(&g_pid_alt_pos,
+                                          target_alt, alt_est, CF21BL_LOOP_DT);
+            float delta_T    = pid_update(&g_pid_alt_vel,
+                                          target_vz, vel_est, CF21BL_LOOP_DT);
+
             float T_cmd = CF21BL_HOVER_T + delta_T;
             if (T_cmd < CF21BL_T_FLOOR) { T_cmd = CF21BL_T_FLOOR; }
             if (T_cmd > 1.0f)           { T_cmd = 1.0f; }
@@ -486,8 +829,16 @@ static void stabilizer_fn(void *a, void *b, void *c)
             static int alt_log_div;
             if (++alt_log_div >= 500) {
                 alt_log_div = 0;
-                LOG_INF("alt=%.3f m  target=%.3f m  T=%.2f",
-                        (double)alt_filt, (double)target_alt, (double)T_cmd);
+#ifdef CONFIG_CF21BL_PM
+                LOG_INF("alt=%.3f m  raw=%.3f m  vz=%.3f m/s  target=%.3f m  vz_sp=%.3f  T=%.2f  vbat=%.2f",
+                        (double)alt_est, (double)alt_baro, (double)vel_est,
+                        (double)target_alt, (double)target_vz, (double)T_cmd,
+                        (double)cf21bl_pm_vbat());
+#else
+                LOG_INF("alt=%.3f m  raw=%.3f m  vz=%.3f m/s  target=%.3f m  vz_sp=%.3f  T=%.2f",
+                        (double)alt_est, (double)alt_baro, (double)vel_est,
+                        (double)target_alt, (double)target_vz, (double)T_cmd);
+#endif
             }
         }
 #else
@@ -501,6 +852,29 @@ static void stabilizer_fn(void *a, void *b, void *c)
 
         cf21bl_motors_t motors;
         cf21bl_mix(&out, &motors);
+
+#ifdef CONFIG_CF21BL_PM_COMPENSATE
+        if (!is_idle) {
+            /* Battery compensation: scale all four commands by VREF/vbat so
+             * delivered motor voltage (duty × pack voltage) — and thus thrust
+             * and loop gain — stays constant as the pack sags.  First-order
+             * equivalent of stock motorsCompensateBatteryVoltage(). */
+            float bscale = cf21bl_pm_thrust_scale();
+            motors.m1 *= bscale;  if (motors.m1 > 1.0f) { motors.m1 = 1.0f; }
+            motors.m2 *= bscale;  if (motors.m2 > 1.0f) { motors.m2 = 1.0f; }
+            motors.m3 *= bscale;  if (motors.m3 > 1.0f) { motors.m3 = 1.0f; }
+            motors.m4 *= bscale;  if (motors.m4 > 1.0f) { motors.m4 = 1.0f; }
+        }
+#endif
+
+        if (!is_idle) {
+            /* Airborne: never let a prop stop (see CF21BL_MOTOR_FLOOR). */
+            if (motors.m1 < CF21BL_MOTOR_FLOOR) { motors.m1 = CF21BL_MOTOR_FLOOR; }
+            if (motors.m2 < CF21BL_MOTOR_FLOOR) { motors.m2 = CF21BL_MOTOR_FLOOR; }
+            if (motors.m3 < CF21BL_MOTOR_FLOOR) { motors.m3 = CF21BL_MOTOR_FLOOR; }
+            if (motors.m4 < CF21BL_MOTOR_FLOOR) { motors.m4 = CF21BL_MOTOR_FLOOR; }
+        }
+
         cf21bl_set_motors(&motors);
     }
 }
@@ -543,8 +917,10 @@ int cf21bl_stabilizer_start(void)
         LOG_ERR("BMP388 not ready");
         return -ENODEV;
     }
-    pid_init(&g_pid_z, CF21BL_Z_KP, CF21BL_Z_KI, 0.0f,
-             CF21BL_Z_ILIM, CF21BL_Z_OLIM);
+    pid_init(&g_pid_alt_pos, CF21BL_ALT_POS_KP, CF21BL_ALT_POS_KI, 0.0f,
+             CF21BL_ALT_POS_ILIM, CF21BL_ALT_VEL_SP_MAX);
+    pid_init(&g_pid_alt_vel, CF21BL_ALT_VEL_KP, CF21BL_ALT_VEL_KI, 0.0f,
+             CF21BL_ALT_VEL_ILIM, CF21BL_ALT_VEL_OLIM);
 #endif
 
 #if CONFIG_CF21BL_SP_STALE_MS > 0

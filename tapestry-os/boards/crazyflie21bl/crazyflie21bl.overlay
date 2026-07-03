@@ -8,17 +8,18 @@
  *   1000 µs = armed / idle
  *   2000 µs = full throttle
  *
- * Motor layout (from above):
- *   M4(CW)  M1(CCW)   ← front
- *   M3(CW)  M2(CCW)   ← back
+ * Motor layout (from above; spin directions match crazyflie21bl_mix.h —
+ * diagonal motors spin the same way, adjacent ones opposite):
+ *   M4(CW)   M1(CCW)   ← front
+ *   M3(CCW)  M2(CW)    ← back
  *
  * Pin assignments verified against CF2.1 brushless schematic Rev.G (2024-08-12):
  *   https://www.bitcraze.io/documentation/hardware/crazyflie_2_1_brushless/
  *
  * Motor → GPIO → TIM2 channel (from Bitcraze motorMapCF21Brushless in motors_def.c):
  *   M1 (front-right CCW) → PA1  → TIM2_CH2
- *   M2 (back-right  CCW) → PB11 → TIM2_CH4
- *   M3 (back-left   CW)  → PA15 → TIM2_CH1  (PA15 via JTAG-disable remap)
+ *   M2 (back-right  CW)  → PB11 → TIM2_CH4
+ *   M3 (back-left   CCW) → PA15 → TIM2_CH1  (PA15 via JTAG-disable remap)
  *   M4 (front-left  CW)  → PB10 → TIM2_CH3
  *
  * ESC protocol: factory firmware uses DSHOT; RC PWM works if ESCs are
@@ -45,8 +46,8 @@
 		 * Channel numbers are 1-based (Zephyr STM32 PWM driver convention).
 		 */
 		pwms = <&pwm2 2 2500000 PWM_POLARITY_NORMAL>,  /* M1 front-right CCW  TIM2_CH2 PA1  */
-		       <&pwm2 4 2500000 PWM_POLARITY_NORMAL>,  /* M2 back-right  CCW  TIM2_CH4 PB11 */
-		       <&pwm2 1 2500000 PWM_POLARITY_NORMAL>,  /* M3 back-left   CW   TIM2_CH1 PA15 */
+		       <&pwm2 4 2500000 PWM_POLARITY_NORMAL>,  /* M2 back-right  CW   TIM2_CH4 PB11 */
+		       <&pwm2 1 2500000 PWM_POLARITY_NORMAL>,  /* M3 back-left   CCW  TIM2_CH1 PA15 */
 		       <&pwm2 3 2500000 PWM_POLARITY_NORMAL>;  /* M4 front-left  CW   TIM2_CH3 PB10 */
 	};
 };

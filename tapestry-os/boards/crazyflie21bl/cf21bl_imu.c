@@ -91,7 +91,7 @@ static float lpf2p_apply(lpf2p_t *f, float x)
  * enough to accept any stationary drone and reject any moving one.
  */
 #define GYRO_VAR_THRESHOLD  1.13e-4f   /* (rad/s)² per axis */
-#define GYRO_BIAS_SAMPLES   512        /* circular buffer depth — matches stock */
+#define GYRO_BIAS_SAMPLES   512        /* samples per attempt — matches stock */
 #define GYRO_WARMUP_SAMPLES 100        /* discarded to let LPF settle */
 #define GYRO_MAX_RETRIES    10         /* attempts before giving up */
 
@@ -135,15 +135,15 @@ void cf21bl_imu_calibrate_gyro(int n_samples)
     bool bias_found = false;
 
     for (int attempt = 0; attempt < GYRO_MAX_RETRIES && !bias_found; attempt++) {
-        float buf[GYRO_BIAS_SAMPLES][3];
+        /* Mean/variance from streaming sums — no sample buffer.  (A previous
+         * revision also kept a 512×3 float buffer here: 6 KB on the caller's
+         * stack, never read back, and larger than the default main stack.) */
         float sum[3]   = {0};
         float sumsq[3] = {0};
 
-        /* Collect one buffer of GYRO_BIAS_SAMPLES samples */
         for (int i = 0; i < GYRO_BIAS_SAMPLES; i++) {
             cf21bl_imu_read(&s);
             for (int ax = 0; ax < 3; ax++) {
-                buf[i][ax] = s.gyro_rps[ax];
                 sum[ax]   += s.gyro_rps[ax];
                 sumsq[ax] += s.gyro_rps[ax] * s.gyro_rps[ax];
             }
@@ -389,4 +389,14 @@ void cf21bl_imu_filter_update(const cf21bl_imu_sample_t *sample, float dt_s,
     out->roll_deg  = atan2f(grav_y, grav_z) * RAD_TO_DEG;
     out->yaw_deg   = atan2f(2.0f*(mq1*mq2 + mq0*mq3),
                             mq0*mq0 + mq1*mq1 - mq2*mq2 - mq3*mq3) * RAD_TO_DEG;
+
+    /* World-up direction in body frame is (grav_x, grav_y, grav_z) (see above —
+     * it is what the accelerometer should read at rest, i.e. "up", not the
+     * physical gravity vector). Dotting it with the actual (unnormalized)
+     * filtered accel isolates the specific force along world-up, magnitude
+     * preserved, independent of tilt. Use sample->accel_g directly rather
+     * than the local ax/ay/az, which were renormalized to unit length above. */
+    out->accel_up_g = sample->accel_g[0] * grav_x
+                     + sample->accel_g[1] * grav_y
+                     + sample->accel_g[2] * grav_z;
 }

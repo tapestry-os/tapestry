@@ -42,6 +42,16 @@
 static const struct device *uart6;
 
 /*
+ * Serializes all syslink TX on USART6.  Multiple writers share this UART
+ * (this log backend, cf21bl_pm.c's battery-autoupdate request): if one
+ * writer's frame is inserted mid-frame of another, the nRF51 parser eats
+ * the inner frame as payload of the outer one and both are lost to the
+ * checksum.  Every board-level USART6 writer must hold this mutex around
+ * a complete frame (thread context only — skip when in ISR/panic).
+ */
+K_MUTEX_DEFINE(cf21bl_syslink_tx_mutex);
+
+/*
  * send_crtp — transmit one syslink-framed CRTP console packet.
  *
  * Blocking: uart_poll_out() spins until the USART TXE bit clears.
@@ -49,6 +59,15 @@ static const struct device *uart6;
  */
 static void send_crtp(const uint8_t *text, uint8_t len)
 {
+    /* Log processing runs in thread context (deferred logging); the panic
+     * path may arrive from an exception, where blocking is not allowed —
+     * send unserialized there (output is best-effort during panic anyway). */
+    bool locked = false;
+    if (!k_is_in_isr()) {
+        k_mutex_lock(&cf21bl_syslink_tx_mutex, K_FOREVER);
+        locked = true;
+    }
+
     uint8_t payload_len = 1U + len;   /* CRTP header byte + text */
 
     /* Fletcher-8 checksum over [type][payload_len][CRTP_hdr][text...] */
@@ -71,6 +90,10 @@ static void send_crtp(const uint8_t *text, uint8_t len)
     }
     uart_poll_out(uart6, ca);
     uart_poll_out(uart6, cb);
+
+    if (locked) {
+        k_mutex_unlock(&cf21bl_syslink_tx_mutex);
+    }
 }
 
 /*

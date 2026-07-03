@@ -192,10 +192,15 @@ static lh2_bs_pose_t g_bs_pose[LH2_BS_COUNT];
 static bool          g_bs_pose_set[LH2_BS_COUNT];
 static uint8_t       g_bs_channel[LH2_BS_COUNT] = { 0, 1 }; /* default mapping */
 
-/* Output position under spinlock */
+/* Output position + velocity under spinlock */
 static struct k_spinlock g_pos_lock;
 static lh2_position_t g_pos;
+static lh2_position_t g_vel;    /* m/s, world frame, from position derivative */
 static bool           g_pos_valid;
+
+/* LPF coefficient for the position-derivative velocity estimate (applied per
+ * accepted fix, ~50 Hz → time constant ≈ 60 ms). */
+#define LH2_VEL_LPF_ALPHA  0.3f
 
 /* Median filter state — circular buffer of raw triangulation results */
 static float g_med_buf[3][LH2_MEDIAN_N];
@@ -478,10 +483,40 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
         return;
     }
 
+    float mx = lh2_median(g_med_buf[0]);
+    float my = lh2_median(g_med_buf[1]);
+    float mz = lh2_median(g_med_buf[2]);
+
+    /* Velocity from the filtered-position derivative, low-passed.  Feeds the
+     * stabilizer's position-hold damping term — a P-only position loop has no
+     * damping and limit-cycles (stock runs a full velocity PID between its
+     * position and attitude loops for the same reason). */
+    static int64_t g_vel_t_ms;
+    static float   g_prev[3];
+    int64_t t_ms  = k_uptime_get();
+    int64_t dt_ms = t_ms - g_vel_t_ms;
+    float vx = g_vel.x, vy = g_vel.y, vz = g_vel.z;
+
+    if (g_vel_t_ms != 0 && dt_ms >= 5 && dt_ms <= 500) {
+        float inv_dt = 1000.0f / (float)dt_ms;
+        float a = LH2_VEL_LPF_ALPHA;
+        vx += a * ((mx - g_prev[0]) * inv_dt - vx);
+        vy += a * ((my - g_prev[1]) * inv_dt - vy);
+        vz += a * ((mz - g_prev[2]) * inv_dt - vz);
+    } else {
+        /* First fix, or a gap long enough that the derivative is meaningless */
+        vx = 0.0f; vy = 0.0f; vz = 0.0f;
+    }
+    g_prev[0] = mx; g_prev[1] = my; g_prev[2] = mz;
+    g_vel_t_ms = t_ms;
+
     k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
-    g_pos.x     = lh2_median(g_med_buf[0]);
-    g_pos.y     = lh2_median(g_med_buf[1]);
-    g_pos.z     = lh2_median(g_med_buf[2]);
+    g_pos.x     = mx;
+    g_pos.y     = my;
+    g_pos.z     = mz;
+    g_vel.x     = vx;
+    g_vel.y     = vy;
+    g_vel.z     = vz;
     g_pos_valid = true;
     k_spin_unlock(&g_pos_lock, key);
 }
@@ -730,6 +765,17 @@ int cf21bl_lighthouse_get_position(lh2_position_t *pos)
     bool valid = g_pos_valid;
     if (valid) {
         *pos = g_pos;
+    }
+    k_spin_unlock(&g_pos_lock, key);
+    return valid ? 0 : -EAGAIN;
+}
+
+int cf21bl_lighthouse_get_velocity(lh2_position_t *vel)
+{
+    k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
+    bool valid = g_pos_valid;
+    if (valid) {
+        *vel = g_vel;
     }
     k_spin_unlock(&g_pos_lock, key);
     return valid ? 0 : -EAGAIN;

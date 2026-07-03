@@ -3,6 +3,31 @@
 # Source from your application Kconfig (after "source Kconfig.zephyr"):
 #   rsource "../tapestry-os/boards/crazyflie21bl/Kconfig"
 
+choice CF21BL_ESC_PROTOCOL
+	prompt "ESC signal protocol"
+	depends on BOARD_CRAZYFLIE21BL
+	default CF21BL_ESC_PWM400
+
+config CF21BL_ESC_PWM400
+	bool "RC PWM 400 Hz (1000-2000 us pulses)"
+	help
+	  Standard RC PWM.  Highest-latency option: up to 2.5 ms transport
+	  delay against the 1 kHz control loop, which forces rate-loop gains
+	  ~3x below the stock DSHOT-based firmware equivalents.
+
+config CF21BL_ESC_ONESHOT125
+	bool "OneShot125 (125-250 us pulses, 2 kHz frame rate)"
+	help
+	  OneShot125 through the same timer PWM path: 500 us frame period,
+	  125 us = idle, 250 us = full.  ~5x lower transport delay than RC
+	  PWM 400 Hz; cf21bl_stabilizer.c selects a higher rate-gain set to
+	  match.  BLHeli_S auto-detects the input protocol at ESC power-on —
+	  verify OneShot125 detection is not disabled in your BLHeli Suite
+	  configuration (listen for the normal arming melody, then bench-test
+	  throttle response with props off before flying).
+
+endchoice
+
 config CF21BL_STABILIZER
 	bool "Cascaded attitude controller (rate loop + optional angle loop)"
 	depends on BOARD_CRAZYFLIE21BL && FPU
@@ -31,6 +56,18 @@ config CF21BL_ANGLE_MODE
 	  (scaled to ±30 degrees) rather than rate setpoints.
 	  angular.z remains a yaw rate setpoint in both modes.
 
+config CF21BL_YAW_HOLD
+	bool "Yaw heading hold (yaw attitude loop above the yaw rate loop)"
+	depends on CF21BL_ANGLE_MODE
+	default n
+	help
+	  Integrates angular.z yaw-rate commands into a heading target and
+	  closes a PID around the Mahony yaw estimate, locking the heading
+	  between commands instead of letting it random-walk with gyro noise
+	  and residual bias.  Mirrors the stock firmware's yaw attitude PID
+	  (Kp=6, Ki=1, Kd=0.35) above its yaw rate loop.  angular.z remains a
+	  yaw-rate command; zero commanded rate now means "hold this heading".
+
 config CF21BL_ALTITUDE_HOLD
 	bool "Barometric altitude hold via BMP388"
 	depends on BMP388
@@ -49,12 +86,71 @@ config CF21BL_SP_STALE_MS
 	default 500
 	help
 	  If no new setpoint is received for this many milliseconds while the
-	  drone is airborne (linear.z > -0.9), the stabilizer forces collective
-	  to idle and resets all attitude PID integrators — protecting against a
-	  radio link drop or upper-layer hang while in flight.  Set to 0 to
-	  disable the watchdog entirely.
+	  drone is airborne (linear.z > -0.9), the stabilizer levels out (zero
+	  angular setpoints and lateral feedforward) and begins ramping the
+	  collective (or altitude target) down, reaching idle at
+	  CF21BL_SP_CUTOFF_MS — protecting against a radio link drop or
+	  upper-layer hang while in flight.  Set to 0 to disable the watchdog
+	  entirely.
+
+config CF21BL_SP_CUTOFF_MS
+	int "Setpoint staleness hard-cutoff in milliseconds"
+	default 2000
+	help
+	  End of the stale-setpoint descent ramp: at this setpoint age the
+	  collective reaches idle and the motors stop.  Between
+	  CF21BL_SP_STALE_MS and this value the drone descends under control
+	  (mirrors stock supervisor: 500 ms stabilize, 2 s shutdown).  Must be
+	  greater than CF21BL_SP_STALE_MS; if not, the cut is immediate at
+	  CF21BL_SP_STALE_MS.
 
 endif # CF21BL_STABILIZER
+
+config CF21BL_PM
+	bool "Battery monitoring via nRF51 syslink"
+	depends on BOARD_CRAZYFLIE21BL
+	default n
+	help
+	  Enables cf21bl_pm.c: battery voltage telemetry from the nRF51 PM MCU
+	  over the syslink UART (USART6), with low (3.35 V) and critical
+	  (3.0 V) thresholds matching the stock firmware.  When the critical
+	  threshold is sustained the stabilizer performs a controlled landing.
+
+	  When CONFIG_TAPESTRY_TRANSCEIVER_SYSLINK is enabled, battery packets
+	  are consumed from the transport subsystem's RX parser; otherwise this
+	  module drives USART6 itself (requires CONFIG_UART_INTERRUPT_DRIVEN=y
+	  plus CONFIG_SERIAL=y in the application conf).
+
+	  Add to the application CMakeLists.txt:
+	    if(CONFIG_CF21BL_PM)
+	      target_sources(app PRIVATE
+	        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_pm.c)
+	    endif()
+
+if CF21BL_PM
+
+config CF21BL_PM_COMPENSATE
+	bool "Scale motor commands by VREF/vbat (thrust compensation)"
+	depends on CF21BL_STABILIZER
+	default y
+	help
+	  Multiplies the final per-motor commands by VREF/vbat (clamped to
+	  [0.8, 1.3]) so delivered motor voltage — and thus thrust and loop
+	  gain — stays approximately constant as the pack discharges.
+	  First-order equivalent of the stock firmware's
+	  CONFIG_ENABLE_THRUST_BAT_COMPENSATED.
+
+config CF21BL_PM_VREF_MV
+	int "Thrust-compensation reference voltage in millivolts"
+	default 3700
+	range 3000 4200
+	help
+	  The pack voltage at which CF21BL_HOVER_T and the PID gains were
+	  tuned.  Motor commands are scaled by VREF/vbat, so at vbat == VREF
+	  the compensation is exactly 1.0.  Set this to the loaded pack
+	  voltage observed during your hover-throttle measurement.
+
+endif # CF21BL_PM
 
 config CF21BL_LIGHTHOUSE
 	bool "Lighthouse v2 positioning (SteamVR 2.0)"

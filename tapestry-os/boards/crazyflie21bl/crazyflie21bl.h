@@ -4,10 +4,12 @@
  * Controls the four brushless ESCs and the status LED on the
  * STM32F405-based Crazyflie 2.1 via Zephyr PWM drivers.
  *
- * ESC PWM convention (standard 50/400 Hz RC signal):
- *   1 000 µs = armed / idle (motors spin at minimum)
- *   2 000 µs = full throttle
- *   Motor value [0.0, 1.0] maps linearly to [1000, 2000] µs.
+ * ESC signal convention (RC PWM 400 Hz default; OneShot125 via Kconfig
+ * choice CF21BL_ESC_PROTOCOL divides all widths by 8):
+ *   idle width (1 000 µs) = armed, prop stopped — only for motor value ≤ 0
+ *   motor value (0.0, 1.0] maps linearly onto the live range
+ *     [1180, 2000] µs (spin threshold → full throttle), so any positive
+ *     command keeps the prop spinning (see motor_to_ns() in crazyflie21bl.c)
  *
  * The driver requires a DTS node alias "cf21-motors" that exposes
  * four PWM channels (see crazyflie21bl.overlay).
@@ -27,7 +29,7 @@ extern "C" {
 /*
  * cf21bl_init — Verify PWM devices are ready and arm all four ESCs.
  *
- * Sends the idle pulse (1 000 µs) to each ESC for CF21BL_ARM_MS milliseconds
+ * Sends the idle pulse to each ESC for CF21BL_ARM_MS milliseconds
  * so the ESC arming sequence completes before the first thrust command.
  *
  * Returns 0 on success, negative errno if any PWM device is unreachable.
@@ -46,7 +48,7 @@ void cf21bl_set_motors(const cf21bl_motors_t *motors);
 /*
  * cf21bl_set_armed — Enable or disable motor outputs.
  *
- * When disarmed (armed=false), all motors are driven to idle (1 000 µs)
+ * When disarmed (armed=false), all motors are driven to the idle pulse
  * regardless of subsequent cf21bl_set_motors() calls until re-armed.
  * The substrate calls this from substrate_set_power().
  */

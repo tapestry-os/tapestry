@@ -35,6 +35,12 @@ typedef struct {
     float roll_deg;
     float pitch_deg;
     float yaw_deg;   /* available from Mahony quaternion; not used by stabilizer yet */
+    float accel_up_g;
+    /* Raw (filtered) body accel dotted with the Mahony-estimated world-up
+     * direction, in g. Reads +1 g when level and stationary regardless of
+     * tilt; subtract 1 g and convert to m/s^2 to get net vertical
+     * acceleration in the world frame, e.g. for altitude-hold velocity
+     * estimation. */
 } cf21bl_imu_attitude_t;
 
 /*

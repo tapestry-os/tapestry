@@ -1,0 +1,4 @@
+mainmenu "Tapestry altitude-hold-tether"
+
+source "Kconfig.zephyr"
+rsource "../../tapestry-os/boards/crazyflie21bl/Kconfig"

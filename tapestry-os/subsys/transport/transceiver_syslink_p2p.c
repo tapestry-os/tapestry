@@ -46,6 +46,14 @@ LOG_MODULE_REGISTER(syslink_p2p, LOG_LEVEL_INF);
 #define SYSLINK_MAGIC_1             0xCFu
 #define SYSLINK_RADIO_CHANNEL       0x01u
 #define SYSLINK_RADIO_P2P_BROADCAST 0x0Au
+#define SYSLINK_PM_BATTERY_STATE    0x13u
+
+#ifdef CONFIG_CF21BL_PM
+/* Board-level battery monitor (cf21bl_pm.c) consumes PM battery packets
+ * arriving on the same syslink stream.  Declared here rather than via the
+ * board header so the transport subsystem needs no board include path. */
+extern void cf21bl_pm_syslink_input(const uint8_t *payload, uint8_t len);
+#endif
 #define SYSLINK_MTU                 64u
 #define TAPESTRY_P2P_PORT           0x00u   /* custom Tapestry gossip port */
 
@@ -193,6 +201,12 @@ static void syslink_rx_byte(uint8_t c)
                     g_rx_frames++;
                 }
             }
+#ifdef CONFIG_CF21BL_PM
+            else if (g_type == SYSLINK_PM_BATTERY_STATE &&
+                     g_len <= SYSLINK_MTU) {
+                cf21bl_pm_syslink_input(g_buf, g_len);
+            }
+#endif
         }
         g_state = PARSE_MAGIC1;
         break;

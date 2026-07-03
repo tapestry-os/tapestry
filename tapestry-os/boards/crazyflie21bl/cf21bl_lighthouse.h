@@ -1,15 +1,18 @@
 /*
  * cf21bl_lighthouse.h — Lighthouse v2 positioning for the Crazyflie 2.1 Brushless
  *
- * Reads LH2 sweep timing frames from the deck FPGA via SPI2, converts timing
- * offsets to sweep angles using exact LH2 geometry, and triangulates a 3D
- * position from two SteamVR 2.0 base stations.
+ * Reads 12-byte LH2 sweep frames from the deck FPGA over USART3 (PC10/PC11,
+ * 230400 baud — see cf21bl_lighthouse.c for the frame format), converts
+ * timing offsets to sweep angles using exact LH2 geometry, and triangulates
+ * a 3D position from two SteamVR 2.0 base stations.
  *
  * Enabling
  * --------
- * Add to your application's boards/crazyflie21bl.conf:
+ * Add to your application's prj.conf:
  *   CONFIG_CF21BL_LIGHTHOUSE=y
- *   CONFIG_SPI=y
+ *   CONFIG_UART_INTERRUPT_DRIVEN=y
+ * plus the per-example overlay that sets USART3 to 230400 baud and moves the
+ * Zephyr console (see the CF21BL_LIGHTHOUSE Kconfig help).
  *
  * Add to CMakeLists.txt inside the if(CONFIG_PWM) block:
  *   if(CONFIG_CF21BL_LIGHTHOUSE)
@@ -37,20 +40,11 @@
  * calibration — typically the SteamVR chaperone origin (floor level, roughly
  * centred in the tracking volume).
  *
- * SPI frame format (verify against Bitcraze lhDriver.c / lighthouse2-fpga repo)
- * -------------------------------------------------------------------------------
- * The FPGA asserts irq-gpios when a frame is available.  The STM32 reads one
- * SPI frame per IRQ assertion.  Frame layout (all little-endian):
- *
- *   byte 0        count of events in this frame (0–LH2_MAX_EVENTS)
- *   per event (LH2_BYTES_PER_EVENT = 7 bytes each):
- *     byte 0      bits[7:6]=bs_id (0 or 1), bits[5:4]=sensor (0–3),
- *                 bit[3]=rotor (0 or 1), bit[2]=is_sync, bits[1:0]=reserved
- *     bytes 1–4   timestamp (uint32 LE, 24 MHz ticks, 41.67 ns/tick)
- *     bytes 5–6   pulse width (uint16 LE, 24 MHz ticks)
- *
- * Sync events (is_sync=1) mark the start of a rotor revolution.
- * Sweep events (is_sync=0) carry the measurement timing used for positioning.
+ * Frame transport
+ * ---------------
+ * The deck FPGA streams 12-byte frames continuously over the deck UART; see
+ * the frame-format table at the top of cf21bl_lighthouse.c (byte layout,
+ * sync frames, channel/slow-bit/sensor packing, offset and timestamp fields).
  *
  * LH2 geometry (exact, no small-angle approximation)
  * ---------------------------------------------------
@@ -132,6 +126,14 @@ void cf21bl_lighthouse_set_bs_channel(int bs_id, uint8_t channel);
  * Returns -EAGAIN when no fix.
  */
 int cf21bl_lighthouse_get_position(lh2_position_t *pos);
+
+/*
+ * cf21bl_lighthouse_get_velocity — Copy the latest velocity estimate (m/s,
+ * world frame; low-passed derivative of the median-filtered position) into
+ * *vel.  Same validity condition as get_position; returns -EAGAIN when no
+ * fix.  Used by the stabilizer's position-hold damping term.
+ */
+int cf21bl_lighthouse_get_velocity(lh2_position_t *vel);
 
 /*
  * cf21bl_lighthouse_is_valid — True when get_position() would succeed.

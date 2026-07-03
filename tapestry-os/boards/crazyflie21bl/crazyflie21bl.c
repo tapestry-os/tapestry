@@ -5,10 +5,10 @@
  *   M4(CW)   M1(CCW)   ← front
  *   M3(CCW)  M2(CW)    ← back
  *
- * ESC PWM signal (400 Hz, standard RC):
- *   Period    = CF21BL_PWM_PERIOD_NS   (2 500 000 ns = 2.5 ms = 400 Hz)
- *   Idle      = CF21BL_PWM_IDLE_NS     (1 000 000 ns = 1.0 ms)
- *   Full      = CF21BL_PWM_FULL_NS     (2 000 000 ns = 2.0 ms)
+ * ESC signal — Kconfig choice CF21BL_ESC_PROTOCOL:
+ *   RC PWM 400 Hz (default): period 2.5 ms, idle 1.0 ms, full 2.0 ms
+ *   OneShot125:              period 500 µs, idle 125 µs, full 250 µs
+ * Same timer PWM path either way; BLHeli_S auto-detects the protocol.
  *
  * DTS alias "cf21-motors" must expose four PWM channels in order M1..M4.
  * Pin assignments live in crazyflie21bl.overlay.
@@ -17,6 +17,9 @@
 #include "crazyflie21bl.h"
 #ifdef CONFIG_CF21BL_STABILIZER
 #include "cf21bl_stabilizer.h"
+#endif
+#ifdef CONFIG_CF21BL_PM
+#include "cf21bl_pm.h"
 #endif
 
 #include <zephyr/kernel.h>
@@ -29,16 +32,32 @@ LOG_MODULE_REGISTER(crazyflie21bl, LOG_LEVEL_INF);
 
 /* ── Timing constants ────────────────────────────────────────────────────── */
 
+#ifdef CONFIG_CF21BL_ESC_ONESHOT125
+/* OneShot125: exactly RC PWM ÷ 8, sent at a 2 kHz frame rate.  BLHeli_S
+ * auto-detects the protocol from the pulse width at power-on. */
+#define CF21BL_PWM_PERIOD_NS    500000U   /* 2 kHz frame period         */
+#define CF21BL_PWM_IDLE_NS      125000U   /* 125 µs = armed / idle      */
+#define CF21BL_PWM_FULL_NS      250000U   /* 250 µs = full throttle     */
+#else
 #define CF21BL_PWM_PERIOD_NS   2500000U   /* 400 Hz period              */
 #define CF21BL_PWM_IDLE_NS     1000000U   /* 1 ms = armed / idle        */
 #define CF21BL_PWM_FULL_NS     2000000U   /* 2 ms = full throttle       */
+#endif
 #define CF21BL_ARM_MS          3000U      /* ESC arm sequence hold time (≥ startup + arming) */
 
 /* Minimum PWM width at which all four ESCs spin.
  * Measured 2026-06-09 on hardware with BLHeli_S 16.7, RC PWM mode:
  *   18% → 1180 µs — all four motors spinning (first confirmed step).
- *   20% → 1200 µs — confirmed cleanly. */
-#define CF21BL_PWM_MIN_NS      1180000U   /* 1180 µs = 18% of [1000, 2000] range */
+ *   20% → 1200 µs — confirmed cleanly.
+ * motor_to_ns() maps all v > 0 onto [MIN, FULL], so commanded values are
+ * always in the live range; the idle width (prop stopped) is reserved for
+ * v ≤ 0.  The OneShot125 value is the measured RC PWM threshold ÷ 8 —
+ * throttle scaling is protocol-independent in BLHeli_S. */
+#ifdef CONFIG_CF21BL_ESC_ONESHOT125
+#define CF21BL_PWM_MIN_NS       147500U   /* 147.5 µs — ESC spin threshold */
+#else
+#define CF21BL_PWM_MIN_NS      1180000U   /* 1180 µs — ESC spin threshold */
+#endif
 
 /* ── DTS bindings ────────────────────────────────────────────────────────── */
 
@@ -63,11 +82,22 @@ static bool  g_armed  = false;
 
 static uint32_t motor_to_ns(float v)
 {
-    /* v in [0.0, 1.0]; map to [CF21BL_PWM_IDLE_NS, CF21BL_PWM_FULL_NS].
-     * v=0.0 → 1000 µs (idle, not spinning); v=0.18 → 1180 µs (CF21BL_PWM_MIN_NS,
-     * empirical spin threshold); v=1.0 → 2000 µs (full throttle). */
-    uint32_t range = CF21BL_PWM_FULL_NS - CF21BL_PWM_IDLE_NS;
-    return CF21BL_PWM_IDLE_NS + (uint32_t)(v * (float)range);
+    /* Deadband-free mapping: v ≤ 0 → 1000 µs (idle, prop stopped); any v > 0
+     * maps linearly onto the live ESC range [CF21BL_PWM_MIN_NS,
+     * CF21BL_PWM_FULL_NS] = [1180, 2000] µs, so the smallest nonzero command
+     * already spins the prop.  The previous mapping spent v ∈ (0, 0.18) inside
+     * the ESC's non-spinning dead zone, which let closed-loop corrections stop
+     * a motor mid-flight (BLHeli_S re-spin-up then costs tens of ms).
+     * Stock firmware avoids the same failure via its idleThrust floor in
+     * powerDistributionCap(). */
+    if (v <= 0.0f) {
+        return CF21BL_PWM_IDLE_NS;
+    }
+    if (v > 1.0f) {
+        v = 1.0f;
+    }
+    uint32_t range = CF21BL_PWM_FULL_NS - CF21BL_PWM_MIN_NS;
+    return CF21BL_PWM_MIN_NS + (uint32_t)(v * (float)range);
 }
 
 static void write_motor(int idx, float value)
@@ -134,6 +164,15 @@ int cf21bl_init(void)
     g_ready = true;
     g_armed = false;
     LOG_INF("Crazyflie 2.1 ESCs armed (idle)");
+
+#ifdef CONFIG_CF21BL_PM
+    /* Start battery telemetry before the stabilizer so a vbat reading is
+     * usually available by the time the first flight command arrives. */
+    int pm_ret = cf21bl_pm_init();
+    if (pm_ret) {
+        LOG_WRN("Battery monitor start failed: %d — flying uncompensated", pm_ret);
+    }
+#endif
 
 #ifdef CONFIG_CF21BL_STABILIZER
     int stab_ret = cf21bl_stabilizer_start();
