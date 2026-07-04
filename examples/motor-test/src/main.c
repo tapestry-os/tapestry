@@ -2,18 +2,22 @@
  * motor_test — Motor characterisation sweep / yaw-sign verification / hover test
  *
  * crazyflie21bl (default, no mode flag set):
- *   Collective thrust sweep to find minimum ESC spin threshold.
+ *   Collective thrust sweep — response check for the deadband-free motor
+ *   mapping and for trialing ESC signal protocols (CF21BL_ESC_PROTOCOL
+ *   Kconfig choice: RC PWM 400 Hz default, or OneShot125).
  *
  *   Procedure:
  *   1. REMOVE ALL PROPELLERS. Secure frame to bench (tape or clamps).
  *   2. west build -p always -b crazyflie21bl tapestry/examples/motor-test
+ *      (add -- -DCONFIG_CF21BL_ESC_ONESHOT125=y to trial OneShot125)
  *      cfloader flash build/zephyr/zephyr.bin stm32-dfu
  *   3. Connect serial: picocom /dev/ttyUSB0 -b 115200 (USART3 PC10/PC11)
- *   4. Power on — ESC arming runs automatically (2 s idle pulse).
- *   5. Watch serial: each step logs its PWM width and runs for 3 s.
- *   6. Note the first step where ALL FOUR motors audibly/tactilely spin.
- *   7. Compute: CF21BL_PWM_MIN_NS = 1000000 + threshold_pct * 10000
- *      Set CF21BL_PWM_MIN_NS in tapestry-os/boards/crazyflie21bl/crazyflie21bl.c.
+ *   4. Power on — listen for the normal BLHeli_S startup/arming melody
+ *      (protocol is auto-detected from the first signal the ESC sees; an
+ *      abnormal or missing melody means it did not lock on — abort).
+ *   5. Watch serial: each step logs its width and runs for 3 s.  With the
+ *      deadband-free mapping every step should spin all four motors, with
+ *      speed rising smoothly step to step.
  *
  * crazyflie21bl hover test (CONFIG_CF21BL_HOVER_TEST=y, CONFIG_CF21BL_ANGLE_MODE=y):
  *   Arms ESCs and holds a fixed collective indefinitely with angular setpoints = 0.
@@ -119,7 +123,13 @@ struct step {
 };
 
 /* Fine sweep from 5–50%.
- * PWM mapping: pct% → T = pct/100 → PWM = (1000 + pct*10) µs. */
+ * Deadband-free mapping (motor_to_ns in crazyflie21bl.c): pct% → T = pct/100
+ * → pulse = spin-threshold + T × live-range, i.e. (1180 + pct×8.2) µs under
+ * RC PWM 400 Hz, ÷8 under CONFIG_CF21BL_ESC_ONESHOT125.  Every step > 0%
+ * is in the live ESC range, so ALL steps should spin all four motors —
+ * this sweep now verifies smooth monotonic response (and, when trialing a
+ * new ESC protocol, that the ESCs detected it at all), not the location of
+ * the spin threshold like it did under the old [1000, 2000] µs mapping. */
 static const struct step steps[] = {
     {   5, 3000, 2000 },
     {   8, 3000, 2000 },
@@ -170,6 +180,19 @@ static const substrate_twist_t k_stop = {0};
 
 #endif /* board selection */
 
+/* Hold a twist for duration_ms, re-sending it at 20 Hz.  When the CF21BL
+ * stabilizer is compiled in (substrate_move() = setpoint setter), its
+ * staleness watchdog idles the motors 500 ms after the last setpoint —
+ * a single fire-and-forget move followed by a long sleep gets cut. */
+static void move_for(const substrate_twist_t *twist, int duration_ms)
+{
+    while (duration_ms > 0) {
+        substrate_move(twist);
+        k_msleep(MIN(50, duration_ms));
+        duration_ms -= 50;
+    }
+}
+
 int main(void)
 {
 #if defined(CONFIG_BOARD_CRAZYFLIE21BL) && defined(CONFIG_CF21BL_HOVER_TEST)
@@ -212,9 +235,8 @@ int main(void)
 
 #if defined(CONFIG_BOARD_CRAZYFLIE21BL) && defined(CONFIG_CF21BL_HOVER_TEST)
 
-    substrate_move(&k_hover);
     while (true) {
-        k_msleep(5000);
+        move_for(&k_hover, 5000);
         LOG_INF("Hover running at %d%% — tilt frame to test self-leveling",
                 CONFIG_CF21BL_HOVER_THROTTLE_PCT);
     }
@@ -224,15 +246,13 @@ int main(void)
     LOG_INF("--- M2+M4 (BR+FL, CW props) at 20%% ---");
     LOG_INF("    Expected: frame rotates CCW (yaw left, +Z).");
     LOG_INF("    If CW: negate Y in all 4 equations in cf21bl_mix() (crazyflie21bl_mix.h).");
-    substrate_move(&k_m24);
-    k_msleep(3000);
+    move_for(&k_m24, 3000);
     substrate_move(&k_stop);
     k_msleep(2000);
 
     LOG_INF("--- M1+M3 (FR+BL, CCW props) at 20%% ---");
     LOG_INF("    Expected: frame rotates CW (yaw right, -Z).");
-    substrate_move(&k_m13);
-    k_msleep(3000);
+    move_for(&k_m13, 3000);
     substrate_move(&k_stop);
     k_msleep(2000);
 
@@ -249,14 +269,13 @@ int main(void)
         make_twist(s->pct, &twist);
 
 #if defined(CONFIG_BOARD_CRAZYFLIE21BL)
-        LOG_INF("--- Step %2d: %3d%% (PWM %d us) --- MOTORS ON",
-                i + 1, s->pct, 1000 + s->pct * 10);
+        LOG_INF("--- Step %2d: %3d%% (RC-PWM-equiv %d us) --- MOTORS ON",
+                i + 1, s->pct, 1180 + (s->pct * 82) / 10);
 #else
         LOG_INF("--- Step %d: %d%% --- robot drives now", i + 1, s->pct);
 #endif
 
-        substrate_move(&twist);
-        k_msleep(s->drive_ms);
+        move_for(&twist, s->drive_ms);
         substrate_move(&k_stop);
 
 #if defined(CONFIG_BOARD_CRAZYFLIE21BL)
@@ -270,9 +289,9 @@ int main(void)
 #if defined(CONFIG_BOARD_CRAZYFLIE21BL)
     substrate_set_power(SUBSTRATE_POWER_SLEEP);   /* disarm ESCs */
     LOG_INF("=== Done — ESCs disarmed ===");
-    LOG_INF("Find lowest step with all 4 motors spinning.");
-    LOG_INF("CF21BL_PWM_MIN_NS = 1000000 + threshold_pct * 10000");
-    LOG_INF("Set in tapestry-os/boards/crazyflie21bl/crazyflie21bl.c");
+    LOG_INF("Expected: ALL steps spin all 4 motors (deadband-free mapping),");
+    LOG_INF("speed rising smoothly with each step. Any non-spinning step or");
+    LOG_INF("erratic response = ESC did not lock onto the signal protocol.");
 #else
     LOG_INF("=== Done ===");
     LOG_INF("SPEED_SCALE = speed_mm_per_s * 100 / arena_mm  (500 for 0.5 m)");
