@@ -80,6 +80,35 @@ static const lh2_bs_pose_t BS1 = {
         -0.5228930711746216,0.05907485634088516,0.8503487706184387}
 };
 
+/* OOTX sweep calibration — same YAML (office_shade_bookcase_July4_2026.yaml,
+ * "calibs:" section), sweep list order = sweep[0], sweep[1]. */
+static const lh2_bs_calib_t BS0_CALIB = {
+    .sweep = {
+        { .phase = 0.0f,                  .tilt = -0.0482177734375f,
+          .curve = -0.139892578125f,      .gibphase = 2.232421875f,
+          .gibmag = -0.001861572265625f,  .ogeephase = 1.1142578125f,
+          .ogeemag = -0.1802978515625f },
+        { .phase = -0.0070343017578125f,  .tilt = 0.038848876953125f,
+          .curve = -0.047149658203125f,   .gibphase = 1.4541015625f,
+          .gibmag = -0.0013513565063476562f, .ogeephase = 2.359375f,
+          .ogeemag = -0.25439453125f },
+    },
+    .uid = 3438823989u
+};
+static const lh2_bs_calib_t BS1_CALIB = {
+    .sweep = {
+        { .phase = 0.0f,                  .tilt = -0.047393798828125f,
+          .curve = -0.3046875f,           .gibphase = 1.1494140625f,
+          .gibmag = -0.004795074462890625f, .ogeephase = 0.0887451171875f,
+          .ogeemag = 0.09014892578125f },
+        { .phase = -0.0010623931884765625f, .tilt = 0.051727294921875f,
+          .curve = -0.1802978515625f,     .gibphase = 1.525390625f,
+          .gibmag = -0.007568359375f,     .ogeephase = 0.97998046875f,
+          .ogeemag = 0.24072265625f },
+    },
+    .uid = 3211055830u
+};
+
 /*
 static const lh2_bs_pose_t BS0 = {
     .origin = {-0.1968589723110199f, 2.560563087463379f, 1.2248899936676025f},
@@ -213,6 +242,8 @@ int main(void)
 
     cf21bl_lighthouse_set_bs_pose(0, &BS0);
     cf21bl_lighthouse_set_bs_pose(1, &BS1);
+    cf21bl_lighthouse_set_bs_calib(0, &BS0_CALIB);
+    cf21bl_lighthouse_set_bs_calib(1, &BS1_CALIB);
     cf21bl_lighthouse_set_bs_channel(0, BS0_CHANNEL);
     cf21bl_lighthouse_set_bs_channel(1, BS1_CHANNEL);
     cf21bl_lighthouse_init();
@@ -490,6 +521,7 @@ int main(void)
     float land_ff = g_ff_hover;
     float ff_step = RAMP_RATE * LOOP_DT;   /* same rate as takeoff ramp */
     bool  landed  = false;
+    int   td_n    = 0;   /* consecutive touchdown reads (debounce) */
 
     for (int i = 0; i < 2000; i++) {   /* max 40 s */
         /* Pull both ff and target toward ground together */
@@ -505,11 +537,18 @@ int main(void)
         sp.linear.z = z_pid(z_meas);
         substrate_move(&sp);
 
-        /* Touchdown: Z is back near ground AND collective is low */
+        /* Touchdown: Z is back near ground AND collective is low.
+         * Debounced over 5 consecutive reads (same convention as the climb
+         * ceiling in Stage 5) — flight 2026-07-05 declared touchdown on a
+         * single phantom fix reading z=-19.8 m while still airborne. */
         if (z_meas < g_z_home + LIFTOFF_M && land_ff <= SPIN_START + 0.02f) {
-            LOG_INF("Touchdown at z=%.3f m", (double)z_meas);
-            landed = true;
-            break;
+            if (++td_n >= 5) {
+                LOG_INF("Touchdown at z=%.3f m", (double)z_meas);
+                landed = true;
+                break;
+            }
+        } else {
+            td_n = 0;
         }
 
         if (i % 100 == 0) {

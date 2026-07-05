@@ -8,7 +8,7 @@
  * Read log output via CRTP radio:
  *   python3 ~/code/tapestry/read_console.py
  *
- * Build:  west build -p always -b crazyflie21bl tapestry/tapestry/examples/lighthouse-test
+ * Build:  west build -p always -b crazyflie21bl tapestry/examples/lighthouse-test
  * Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu  (activate .venv)
  *
  * Before running:
@@ -40,26 +40,47 @@ LOG_MODULE_REGISTER(lh2_test, LOG_LEVEL_INF);
  * identity / placeholder — position will be wrong but the log will show
  * whether frames are arriving (fix status changes from "no fix" to numbers).
  */
+/* office_shade_bookcase_July4_2026.yaml (same values as lh2-hover) */
 static const lh2_bs_pose_t BS0 = {
-    .origin = {-0.1968589723110199f, 2.560563087463379f, 
-                1.2248899936676025f}, /* meters, world frame */ 
-    .rot = {0.24485638737678528, 0.9695349335670471, 
-                -0.006882685702294111,
-            -0.9386824369430542, 0.23527540266513824,
-                -0.25203338265419006,
-            -0.2427358329296112, 0.0681726410984993,
-                0.9676940441131592}
+    .origin = {1.7085734605789185, -0.43685105443000793, 1.8661978244781494},
+    .rot    = {-0.8205968737602234, 0.055611010640859604, -0.568795382976532,
+               -0.08727049082517624, -0.9957755208015442, 0.02854771353304386,
+               -0.5648049712181091, 0.07306522130966187, 0.8219834566116333}
 };
 
 static const lh2_bs_pose_t BS1 = {
-    .origin = {1.066727876663208f, -1.6772024631500244f,
-                0.9965450167655945f}, /* meters, world frame */ 
-    .rot = {-0.25859639048576355, -0.9628901481628418,
-                -0.07726871222257614,
-            0.9137280583381653, -0.2697758674621582,
-                0.30384543538093567,
-            -0.3134150207042694, 0.007970745675265789,
-                0.9495828151702881}
+    .origin = {0.9165827035903931, 2.814929246902466, 1.7187764644622803},
+    .rot    = {0.09428899735212326, 0.9954821467399597, -0.011177653446793556,
+               -0.8471673130989075, 0.0743338093161583, -0.526100754737854,
+               -0.5228930711746216, 0.05907485634088516, 0.8503487706184387}
+};
+
+/* OOTX sweep calibration — same YAML, "calibs:" section */
+static const lh2_bs_calib_t BS0_CALIB = {
+    .sweep = {
+        { .phase = 0.0f,                  .tilt = -0.0482177734375f,
+          .curve = -0.139892578125f,      .gibphase = 2.232421875f,
+          .gibmag = -0.001861572265625f,  .ogeephase = 1.1142578125f,
+          .ogeemag = -0.1802978515625f },
+        { .phase = -0.0070343017578125f,  .tilt = 0.038848876953125f,
+          .curve = -0.047149658203125f,   .gibphase = 1.4541015625f,
+          .gibmag = -0.0013513565063476562f, .ogeephase = 2.359375f,
+          .ogeemag = -0.25439453125f },
+    },
+    .uid = 3438823989u
+};
+static const lh2_bs_calib_t BS1_CALIB = {
+    .sweep = {
+        { .phase = 0.0f,                  .tilt = -0.047393798828125f,
+          .curve = -0.3046875f,           .gibphase = 1.1494140625f,
+          .gibmag = -0.004795074462890625f, .ogeephase = 0.0887451171875f,
+          .ogeemag = 0.09014892578125f },
+        { .phase = -0.0010623931884765625f, .tilt = 0.051727294921875f,
+          .curve = -0.1802978515625f,     .gibphase = 1.525390625f,
+          .gibmag = -0.007568359375f,     .ogeephase = 0.97998046875f,
+          .ogeemag = 0.24072265625f },
+    },
+    .uid = 3211055830u
 };
 
 /*
@@ -80,6 +101,8 @@ int main(void)
     /* Load calibration */
     cf21bl_lighthouse_set_bs_pose(0, &BS0);
     cf21bl_lighthouse_set_bs_pose(1, &BS1);
+    cf21bl_lighthouse_set_bs_calib(0, &BS0_CALIB);
+    cf21bl_lighthouse_set_bs_calib(1, &BS1_CALIB);
     cf21bl_lighthouse_set_bs_channel(0, BS0_CHANNEL);
     cf21bl_lighthouse_set_bs_channel(1, BS1_CHANNEL);
 

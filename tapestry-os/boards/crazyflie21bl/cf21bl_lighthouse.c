@@ -194,6 +194,10 @@ static lh2_bs_pose_t g_bs_pose[LH2_BS_COUNT];
 static bool          g_bs_pose_set[LH2_BS_COUNT];
 static uint8_t       g_bs_channel[LH2_BS_COUNT] = { 0, 1 }; /* default mapping */
 
+/* OOTX sweep calibration (optional — angles used raw when not set) */
+static lh2_bs_calib_t g_bs_calib[LH2_BS_COUNT];
+static bool           g_bs_calib_set[LH2_BS_COUNT];
+
 /* Output position + velocity under spinlock */
 static struct k_spinlock g_pos_lock;
 static lh2_position_t g_pos;
@@ -203,6 +207,13 @@ static bool           g_pos_valid;
 /* LPF coefficient for the position-derivative velocity estimate (applied per
  * accepted fix, ~50 Hz → time constant ≈ 60 ms). */
 #define LH2_VEL_LPF_ALPHA  0.3f
+/* When the position derivative can't be trusted (jump-gate re-seed, long
+ * fix gap, or two publishes so close together the division blows up), the
+ * velocity estimate DECAYS with this half-life instead of snapping to
+ * zero.  Flight logs 2026-07-05 showed vx/vy=0.000 exactly at peak
+ * position errors — every hard-zero turned the position loop P-only right
+ * when damping mattered most. */
+#define LH2_VEL_DECAY_HALF_MS  100.0f
 
 /* Sweep pairing: two frames belong to the same revolution when their
  * rotor-zero times (timestamp − offset) agree within this many 24 MHz
@@ -224,11 +235,38 @@ static bool           g_pos_valid;
  * Nominal is < 0.1 m without OOTX sweep calibration applied. */
 #define LH2_MAX_MISS_M     0.3f
 
+/* Angle-plausibility gate: reject sweep pairs whose az/el cannot be a real
+ * drone position.  TWO repeatable phantom pairs observed (2026-07-05):
+ *   ch1 az≈+71° el≈−75° — three flights, incl. once while stationary on
+ *     the ground; won the jump gate's consecutive-N re-seed and ended one
+ *     flight on a phantom "Touchdown at z=-19.8 m".
+ *   ch0 az≈−36° el≈−44° — two flights; triangulates with a CLEAN miss
+ *     (0.004 m — a phantom ray still crosses the other BS's real ray, at
+ *     the wrong depth) producing fixes 0.3–0.4 m off that beat the miss
+ *     gate AND the old 0.5 m jump gate.
+ * Mechanism (specular reflection vs. driver pairing artifact) undetermined
+ * — the reject log below includes raw offsets to discriminate: a genuine
+ * plane pair has Δoff ≈ 160k ticks; a real+reflected optical pair shows a
+ * different but consistent same-revolution Δoff; a mis-pair that slipped
+ * the t0 guard shows anomalous offsets.  The gate works either way.
+ * Bounds: LH2 optical FOV is ~150°×110°, so el beyond ±55° is physically
+ * impossible regardless of room.  el floor −35° splits the gap between
+ * phantom #2 (−43.7°) and the legit extreme observed in this room
+ * (−26.8°; el is BS-face-relative and the BS tilts ~35° down, so even a
+ * drone on the floor near the origin stays above ~−27°). */
+#define LH2_AZ_LIMIT_RAD   (60.0f * (float)M_PI / 180.0f)
+#define LH2_EL_MIN_RAD     (-35.0f * (float)M_PI / 180.0f)
+#define LH2_EL_MAX_RAD     (30.0f * (float)M_PI / 180.0f)
+
 /* Jump gate (see comment at the publish site): max believable displacement
  * between consecutive accepted fixes, and how many consecutive far fixes
  * constitute a genuine re-acquisition rather than a wrong-geometry branch.
- * At ~50 Hz fix rate, 0.5 m/fix would be 25 m/s — far beyond real motion. */
-#define LH2_JUMP_M         0.5f
+ * At ~50 Hz fix rate, 0.2 m/fix would still be 10 m/s — far beyond real
+ * motion.  Tightened 0.5→0.2 (2026-07-05): phantom #2's clean-miss fixes
+ * landed only 0.3–0.4 m off and sailed under the 0.5 m threshold; the
+ * flip-flop counter already protects against interleaved phantoms
+ * stealing a re-seed. */
+#define LH2_JUMP_M         0.2f
 #define LH2_JUMP_REJECT_N  10
 
 /* Median filter state — circular buffer of raw triangulation results */
@@ -311,6 +349,85 @@ static void mat3_mul_vec(const float m[9], const float v[3], float out[3])
     out[2] = m[6]*v[0] + m[7]*v[1] + m[8]*v[2];
 }
 
+/* ── OOTX sweep calibration ─────────────────────────────────────────────────
+ * Port of stock lighthouse_calibration.c (lighthouseCalibrationApplyV2 and
+ * lighthouseCalibrationMeasurementModelLh2).  The base station broadcasts a
+ * distortion model of its own sweep planes; the measured beam angles are the
+ * DISTORTED ones, so we invert the ideal→distorted model by fixed-point
+ * iteration to recover the ideal angles the triangulation assumes.
+ * Stock uses only tilt/phase/gibphase/gibmag for LH2 (curve and ogee are an
+ * acknowledged TODO there), so this port has the same limitation.
+ */
+
+static inline float lh2_clip1(float v)
+{
+    if (v >  1.0f) { return  1.0f; }
+    if (v < -1.0f) { return -1.0f; }
+    return v;
+}
+
+/* Distorted (measured) beam angle a rotor with distortion `sweep` reports
+ * when its ideally-tilted plane (tilt t = ∓π/6) crosses direction (x,y,z).
+ * Stock: lighthouseCalibrationMeasurementModelLh2(). */
+static float lh2_calib_model(float x, float y, float z, float t,
+                             const lh2_bs_calib_sweep_t *sweep)
+{
+    float ax = atan2f(y, x);
+    float r  = sqrtf(x * x + y * y);
+
+    float base     = ax + asinf(lh2_clip1(z * tanf(t - sweep->tilt) / r));
+    float comp_gib = -sweep->gibmag * cosf(ax + sweep->gibphase);
+
+    return base - (sweep->phase + comp_gib);
+}
+
+/* Ideal beam-angle pair → the distorted pair the BS would measure.
+ * Stock: idealToDistortedV2(). */
+static void lh2_ideal_to_distorted(const lh2_bs_calib_t *calib,
+                                   const float ideal[2], float distorted[2])
+{
+    const float t30   = (float)M_PI / 6.0f;
+    const float a1    = ideal[0];
+    const float a2    = ideal[1];
+
+    /* Direction implied by the ideal pair (unnormalized; the model only
+     * uses ratios).  z denominator = tan30·(cos a1 + cos a2) folded into
+     * the same form stock uses. */
+    float x = 1.0f;
+    float y = tanf((a2 + a1) / 2.0f);
+    float z = sinf(a2 - a1) / (LH2_TANT * (cosf(a2) + cosf(a1)));
+
+    distorted[0] = lh2_calib_model(x, y, z, -t30, &calib->sweep[0]);
+    distorted[1] = lh2_calib_model(x, y, z,  t30, &calib->sweep[1]);
+}
+
+/* Invert the distortion: measured (raw) pair → ideal pair, by fixed-point
+ * iteration (the distortion is small, so convergence is fast — stock caps
+ * at 5 iterations / 0.0005 rad).  Stock: lighthouseCalibrationApply(). */
+static void lh2_calib_apply(const lh2_bs_calib_t *calib,
+                            const float raw[2], float corrected[2])
+{
+    const float max_delta = 0.0005f;
+
+    corrected[0] = raw[0];
+    corrected[1] = raw[1];
+
+    for (int i = 0; i < 5; i++) {
+        float distorted[2];
+        lh2_ideal_to_distorted(calib, corrected, distorted);
+
+        float delta0 = raw[0] - distorted[0];
+        float delta1 = raw[1] - distorted[1];
+
+        corrected[0] += delta0;
+        corrected[1] += delta1;
+
+        if (fabsf(delta0) < max_delta && fabsf(delta1) < max_delta) {
+            break;
+        }
+    }
+}
+
 /*
  * lh2_offsets_to_direction — convert two consecutive sweep offsets from one BS
  * into a unit direction vector in world frame.
@@ -326,9 +443,10 @@ static void mat3_mul_vec(const float m[9], const float v[3], float out[3])
  *   d_local    = (sin(az)·cos(el), sin(el), cos(az)·cos(el))
  *   d_world    = R_bs × d_local
  */
-static void lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
+static bool lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
                                      uint8_t channel,
-                                     const lh2_bs_pose_t *pose, float out[3])
+                                     const lh2_bs_pose_t *pose,
+                                     const lh2_bs_calib_t *calib, float out[3])
 {
     uint32_t period = LH2_CYCLE_PERIODS[channel & 0x0F];
     float    twopi_over_period = 2.0f * (float)M_PI / (float)period;
@@ -336,9 +454,40 @@ static void lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
     float first_beam  = (float)offset0 * twopi_over_period - (float)M_PI + (float)M_PI / 3.0f;
     float second_beam = (float)offset1 * twopi_over_period - (float)M_PI - (float)M_PI / 3.0f;
 
+    /* Undo the base station's broadcast sweep-plane distortion BEFORE the
+     * az/el conversion, in raw beam-angle space — same pipeline position as
+     * stock (pulseProcessorApplyCalibration runs on measurement->angles,
+     * then ConvertToV1Angles consumes correctedAngles). */
+    if (calib != NULL) {
+        float raw[2] = { first_beam, second_beam };
+        float cor[2];
+        lh2_calib_apply(calib, raw, cor);
+        first_beam  = cor[0];
+        second_beam = cor[1];
+    }
+
     float az = (first_beam + second_beam) * 0.5f;
     float el = atan2f(sinf(second_beam - first_beam),
                       LH2_TANT * (cosf(first_beam) + cosf(second_beam)));
+
+    /* Angle-plausibility gate (see LH2_AZ_LIMIT_RAD block comment): kill
+     * phantom pairs here, before they can reach the triangulator and win
+     * the jump gate's re-seed logic.  Raw offsets included so the phantom
+     * mechanism can be identified from the log (Δoff signature — see the
+     * block comment). */
+    if (az > LH2_AZ_LIMIT_RAD || az < -LH2_AZ_LIMIT_RAD ||
+        el > LH2_EL_MAX_RAD   || el < LH2_EL_MIN_RAD) {
+        static int rej_div;
+        if (++rej_div >= 8) {
+            rej_div = 0;
+            LOG_INF("reject implausible angles ch=%u az=%.1f el=%.1f "
+                    "off0=%u off1=%u",
+                    channel, (double)(az * 180.0f / (float)M_PI),
+                    (double)(el * 180.0f / (float)M_PI),
+                    offset0, offset1);
+        }
+        return false;
+    }
 
     /*
      * Base-station local frame MUST match the one the calibration rotation
@@ -377,6 +526,7 @@ static void lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
     }
 
     mat3_mul_vec(pose->rot, d_local, out);
+    return true;
 }
 
 /*
@@ -559,8 +709,13 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
 
     /* Compute direction vector for this BS */
     float dir[3];
-    lh2_offsets_to_direction(offset0, offset1,
-                             channel, &g_bs_pose[bs_idx], dir);
+    if (!lh2_offsets_to_direction(offset0, offset1,
+                                  channel, &g_bs_pose[bs_idx],
+                                  g_bs_calib_set[bs_idx] ? &g_bs_calib[bs_idx]
+                                                         : NULL,
+                                  dir)) {
+        return;    /* implausible angles — phantom reflection */
+    }
 
     /*
      * Store direction.  We keep one direction per BS index.
@@ -646,6 +801,7 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
      * onto the wrong branch. */
     static bool  g_jump_seeded;
     static int   g_jump_far_n;
+    bool derivative_valid = true;
     if (g_jump_seeded) {
         float jx = mx - g_prev[0];
         float jy = my - g_prev[1];
@@ -654,12 +810,17 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
             if (++g_jump_far_n < LH2_JUMP_REJECT_N) {
                 return;                      /* discard outlier fix */
             }
-            g_vel_t_ms = 0;                  /* re-seed: velocity from zero */
+            /* Re-seed: the position step is a teleport, not motion — the
+             * derivative would read tens of m/s.  Skip it, but keep the
+             * (decaying) previous velocity rather than zeroing: if this was
+             * a genuine re-acquisition after a gap, the drone's real
+             * velocity didn't reset just because tracking did. */
+            derivative_valid = false;
         }
         g_jump_far_n = 0;
     } else {
-        g_jump_seeded = true;
-        g_vel_t_ms    = 0;
+        g_jump_seeded    = true;
+        derivative_valid = false;
     }
 
     /* Velocity from the filtered-position derivative, low-passed.  Feeds the
@@ -670,15 +831,20 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     int64_t dt_ms = t_ms - g_vel_t_ms;
     float vx = g_vel.x, vy = g_vel.y, vz = g_vel.z;
 
-    if (g_vel_t_ms != 0 && dt_ms >= 5 && dt_ms <= 500) {
+    if (derivative_valid && g_vel_t_ms != 0 && dt_ms >= 5 && dt_ms <= 500) {
         float inv_dt = 1000.0f / (float)dt_ms;
         float a = LH2_VEL_LPF_ALPHA;
         vx += a * ((mx - g_prev[0]) * inv_dt - vx);
         vy += a * ((my - g_prev[1]) * inv_dt - vy);
         vz += a * ((mz - g_prev[2]) * inv_dt - vz);
     } else {
-        /* First fix, or a gap long enough that the derivative is meaningless */
-        vx = 0.0f; vy = 0.0f; vz = 0.0f;
+        /* Derivative unusable (first fix, re-seed, >500 ms gap, or two
+         * publishes <5 ms apart — both BS pairs completing near-
+         * simultaneously hits this constantly).  Decay the estimate by
+         * elapsed time instead of zeroing it: a hard zero here is what
+         * kept stripping the position loop's damping mid-flight. */
+        float k = exp2f(-(float)dt_ms / LH2_VEL_DECAY_HALF_MS);
+        vx *= k; vy *= k; vz *= k;
     }
     g_prev[0] = mx; g_prev[1] = my; g_prev[2] = mz;
     g_vel_t_ms = t_ms;
@@ -922,6 +1088,18 @@ void cf21bl_lighthouse_set_bs_pose(int id, const lh2_bs_pose_t *pose)
             (double)pose->origin[1],
             (double)pose->origin[2],
             g_bs_channel[id]);
+}
+
+void cf21bl_lighthouse_set_bs_calib(int id, const lh2_bs_calib_t *calib)
+{
+    if (id < 0 || id >= LH2_BS_COUNT) {
+        return;
+    }
+    g_bs_calib[id]     = *calib;
+    g_bs_calib_set[id] = true;
+    LOG_INF("LH2 BS%d OOTX calib set (uid=%u, tilt %+0.4f/%+0.4f rad)",
+            id, calib->uid,
+            (double)calib->sweep[0].tilt, (double)calib->sweep[1].tilt);
 }
 
 void cf21bl_lighthouse_set_bs_channel(int bs_id, uint8_t channel)

@@ -26,6 +26,14 @@
  * before expecting valid positions.  Poses come from the Bitcraze geometry
  * estimation tool (cfclient → Lighthouse → Manage geometry → Estimate).
  *
+ * Optionally call cf21bl_lighthouse_set_bs_calib() with the per-sweep OOTX
+ * calibration each base station broadcasts (cfclient saves it in the same
+ * YAML as the geometry, under "calibs:").  Without it the sweep planes are
+ * treated as geometrically ideal, which leaves a systematic ray error
+ * (observed as a 5–9 cm triangulation miss at the calibration origin,
+ * growing with distance from it).  With it, measured sweep angles are
+ * corrected through the stock measurement model before triangulation.
+ *
  * Base station pose convention (right-handed, Z-up world frame):
  *   origin[3]: position of the base station optical centre in metres
  *   rot[9]:    row-major 3×3 rotation matrix mapping BS-local to world frame
@@ -52,11 +60,12 @@
  *
  * LH2 geometry (exact, no small-angle approximation)
  * ---------------------------------------------------
- * Each base station emits two counter-tilted (±LH2_TILT_DEG = ±15°) sweep
- * planes per revolution.  For rotor angles θ₀, θ₁ (rad, sync-relative):
+ * Each base station emits two counter-tilted (±30°) sweep planes per
+ * revolution.  For beam angles θ₀, θ₁ (rad, sync-relative, ±π/3 offsets
+ * already applied — stock pulseProcessorV2ConvertToV1Angles):
  *
  *   azimuth   α = (θ₀ + θ₁) / 2
- *   elevation β = atan( sin((θ₀ − θ₁)/2) / tan(LH2_TILT_DEG × π/180) )
+ *   elevation β = atan2( sin(θ₁ − θ₀), tan(π/6) × (cos θ₀ + cos θ₁) )
  *
  * Direction in BS-local frame:  d = (sin(α)·cos(β), sin(β), cos(α)·cos(β))
  * Direction in world frame:     d_w = R_bs × d
@@ -92,6 +101,34 @@ typedef struct {
     float rot[9];      /* row-major R: rot[r*3+c] = R_world←BS[r][c]         */
 } lh2_bs_pose_t;
 
+/*
+ * lh2_bs_calib_sweep_t — OOTX factory calibration for ONE sweep plane
+ * (each base station broadcasts one set per plane).  Values come from the
+ * cfclient YAML "calibs:" section; units are radians (angles) and unitless
+ * distortion coefficients, exactly as broadcast.
+ *
+ * Only tilt, phase, gibphase and gibmag are used by the LH2 correction
+ * model (same as stock lighthouse_calibration.c, where curve/ogee handling
+ * is an open TODO).  curve/ogee* are stored so the data survives a future
+ * model upgrade without re-entering it.
+ */
+typedef struct {
+    float phase;
+    float tilt;
+    float curve;
+    float gibphase;
+    float gibmag;
+    float ogeephase;
+    float ogeemag;
+} lh2_bs_calib_sweep_t;
+
+/* Full per-base-station calibration: sweep[0] = first beam (t = −30°),
+ * sweep[1] = second beam (t = +30°) — same order as the YAML lists them. */
+typedef struct {
+    lh2_bs_calib_sweep_t sweep[2];
+    uint32_t             uid;      /* OOTX id from the YAML; informational */
+} lh2_bs_calib_t;
+
 /* 3D position estimate in the world frame, metres */
 typedef struct {
     float x, y, z;
@@ -115,6 +152,14 @@ int cf21bl_lighthouse_init(void);
  * called for both stations before cf21bl_lighthouse_is_valid() returns true.
  */
 void cf21bl_lighthouse_set_bs_pose(int id, const lh2_bs_pose_t *pose);
+
+/*
+ * cf21bl_lighthouse_set_bs_calib — Load OOTX sweep calibration for base
+ * station id (0 or 1, same index as set_bs_pose).  Optional: without it,
+ * raw sweep angles are used uncorrected.  Call any time; takes effect on
+ * the next processed sweep pair.
+ */
+void cf21bl_lighthouse_set_bs_calib(int id, const lh2_bs_calib_t *calib);
 
 /*
  * cf21bl_lighthouse_set_bs_channel — Map a SteamVR channel number to a BS pose

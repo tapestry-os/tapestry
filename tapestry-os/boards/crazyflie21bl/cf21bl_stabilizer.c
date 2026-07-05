@@ -115,10 +115,15 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
  * 0.08 × 0.75 ≈ 3.4°, well inside the 10° limit. */
 #define CF21BL_POS_KP          0.08f   /* rad/m  — converts metres error to rad */
 /* Velocity damping: tilt θ produces accel ≈ g·θ, so the closed loop is
- * s² + g·Kd·s + g·Kp; with Kp=0.05, ωn=√(g·Kp)≈0.70 rad/s and ζ≈0.7 needs
- * Kd = 2·ζ·ωn/g ≈ 0.10.  Without this term the P-only loop has no damping
- * at all and orbits/limit-cycles around the setpoint. */
-#define CF21BL_POS_KD          0.10f   /* rad per m/s */
+ * s² + g·Kd·s + g·Kp; at Kp=0.08, ωn=√(g·Kp)≈0.89 rad/s and ζ≈0.7 needs
+ * Kd = 2·ζ·ωn/g ≈ 0.13.  Set slightly above (ζ≈0.78 nominal) because the
+ * lighthouse velocity estimate lags (median-5 + LPF), which erodes
+ * effective damping near ωn.  The old 0.10 was derived for Kp=0.05 and
+ * left ζ≈0.55 after the Kp raise — tether flight 2026-07-05 showed a
+ * sustained ~±1 m oscillation at the matching ~7 s natural period.
+ * Without this term the P-only loop has no damping at all and
+ * orbits/limit-cycles around the setpoint. */
+#define CF21BL_POS_KD          0.14f   /* rad per m/s */
 #define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
 #define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
