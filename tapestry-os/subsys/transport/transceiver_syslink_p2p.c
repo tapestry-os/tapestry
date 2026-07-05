@@ -220,6 +220,13 @@ static void uart_rx_cb(const struct device *dev, void *user_data)
     if (!uart_irq_update(dev)) {
         return;
     }
+
+    /* Read-and-clear UART error flags — a latched error condition (e.g.
+     * overrun, or line glitches coupling into USART6) re-asserts the
+     * interrupt forever and starves the system until the IWDG resets it.
+     * See pm_uart_cb in cf21bl_pm.c for the observed failure mode. */
+    (void)uart_err_check(dev);
+
     if (!uart_irq_rx_ready(dev)) {
         return;
     }

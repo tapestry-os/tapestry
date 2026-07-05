@@ -223,6 +223,11 @@ static void gyro_drdy_handler(const struct device *dev, const struct sensor_trig
 
 int cf21bl_imu_init(void)
 {
+    /* Boot breadcrumbs: this function sits between the "battery monitor
+     * ready" log and "BMI088 accel+gyro ready" — a silent hang in this
+     * window is an I2C3 transaction that never completed (the stm32 v1
+     * RTIO driver has a history of wedging; see tapestry/patches/). */
+    LOG_INF("IMU init: checking devices");
     if (!device_is_ready(accel_dev)) {
         LOG_ERR("BMI088 accel device not ready");
         return -ENODEV;
@@ -237,6 +242,7 @@ int cf21bl_imu_init(void)
         lpf2p_init(&g_accel_lpf[i], SENSOR_SAMPLE_HZ, ACCEL_LPF_CUTOFF_HZ);
     }
 
+    LOG_INF("IMU init: arming INT3 trigger (I2C3 write)");
     const struct sensor_trigger trig = {
         .type = SENSOR_TRIG_DATA_READY,
         .chan = SENSOR_CHAN_GYRO_XYZ,

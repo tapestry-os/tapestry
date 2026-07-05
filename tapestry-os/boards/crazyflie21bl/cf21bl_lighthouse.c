@@ -18,7 +18,8 @@
  * Data frame:
  *   byte 0       bit[7]    = !channelFound (0 = channel valid)
  *                bits[6:3] = channel (0-indexed BS channel, 0-15)
- *                bit[2]    = slowBit (distinguishes the two sweep planes: 0 or 1)
+ *                bit[2]    = slowBit — one bit of the OOTX calibration data
+ *                            stream (NOT a sweep-plane id; see process_frame)
  *                bits[1:0] = sensor (photodiode 0-3 on the deck)
  *   bytes 1-2   width     (uint16 LE, pulse width — not used for positioning)
  *   bytes 3-5   offset    (24-bit LE, in 6 MHz ticks → ×4 → 24 MHz ticks)
@@ -44,8 +45,10 @@
  *   elevation = atan2f(sinf(secondBeam − firstBeam),
  *                      tan(π/6) × (cosf(firstBeam) + cosf(secondBeam)))
  *
- * Direction in BS-local frame (X=right, Y=up, Z=forward out of face):
- *   d_local = (sin(az)·cos(el),  sin(el),  cos(az)·cos(el))
+ * Direction in BS-local frame (X=forward out of face, Y=+azimuth/left, Z=up
+ * — the cfclient/stock lighthouse_geometry.c convention the calibration
+ * rotation matrices are estimated for):
+ *   d_local = normalize(cos(el)·cos(az), cos(el)·sin(az), sin(el)·cos(az))
  *
  * 3D position is the midpoint of closest approach between two rays
  * (one per base station) — see lh2_triangulate().
@@ -177,11 +180,10 @@ static bool bb_write_byte(uint8_t byte)
 /* ── Sweep block state ──────────────────────────────────────────────────────── */
 
 /*
- * Per-channel, per-rotor offset storage.
- * The UART frame's slow_bit field identifies which of the two rotors generated
- * each measurement (0 = rotor 0 / firstBeam, 1 = rotor 1 / secondBeam).
- * We store the latest offset for each (channel, rotor) pair and compute angles
- * only when we have a fresh measurement from both rotors of the same channel.
+ * Per-channel sweep-pair storage: one pending sweep per channel, matched to
+ * its revolution partner by rotor-zero time (timestamp − offset) — see the
+ * pairing comment in process_frame().  Beam roles come from arrival order
+ * within the matched pair, exactly like stock calculateAngles.
  *
  * (Declared as static inside process_frame() so the arrays live adjacent to
  * their use and the compiler can see they don't alias anything else.)
@@ -201,6 +203,33 @@ static bool           g_pos_valid;
 /* LPF coefficient for the position-derivative velocity estimate (applied per
  * accepted fix, ~50 Hz → time constant ≈ 60 ms). */
 #define LH2_VEL_LPF_ALPHA  0.3f
+
+/* Sweep pairing: two frames belong to the same revolution when their
+ * rotor-zero times (timestamp − offset) agree within this many 24 MHz
+ * ticks.  Stock pulse_processor_v2.c uses 10 for block-to-block matching,
+ * but that proved too tight on our single-sensor frame path (no pairs
+ * formed at all on the bench, 2026-07-05).  Physics allows a much looser
+ * gate: the only events that can agree in rotor-zero time are the two
+ * sweeps of one revolution — the same plane next revolution is a full
+ * cycle (~480 000 ticks) away, so anything ≪ half a period discriminates
+ * perfectly.  2 000 ticks = 83 µs. */
+#define LH2_MAX_T0_DIFF    2000u
+
+/* Within one revolution, offsets closer than this are the SAME sweep seen
+ * by different photodiodes (sensor spread ≤ ~1k ticks), not the second
+ * plane (~period/3 ≈ 160k ticks away). */
+#define LH2_SAME_SWEEP_MAX 20000u
+
+/* Max believable ray closest-approach distance for a published fix.
+ * Nominal is < 0.1 m without OOTX sweep calibration applied. */
+#define LH2_MAX_MISS_M     0.3f
+
+/* Jump gate (see comment at the publish site): max believable displacement
+ * between consecutive accepted fixes, and how many consecutive far fixes
+ * constitute a genuine re-acquisition rather than a wrong-geometry branch.
+ * At ~50 Hz fix rate, 0.5 m/fix would be 25 m/s — far beyond real motion. */
+#define LH2_JUMP_M         0.5f
+#define LH2_JUMP_REJECT_N  10
 
 /* Median filter state — circular buffer of raw triangulation results */
 static float g_med_buf[3][LH2_MEDIAN_N];
@@ -225,6 +254,13 @@ static void uart_cb(const struct device *dev, void *user_data)
 {
     ARG_UNUSED(user_data);
     uart_irq_update(dev);
+
+    /* Read-and-clear UART error flags — an uncleared error condition
+     * re-asserts the interrupt forever (see pm_uart_cb in cf21bl_pm.c for
+     * the full failure mode).  The 230400-baud FPGA stream tolerates the
+     * occasional dropped byte; a latched error flag is fatal. */
+    (void)uart_err_check(dev);
+
     /*
      * Drain ALL available bytes from the hardware FIFO before returning.
      * Calling uart_fifo_read() reads the USART DR register, which clears
@@ -304,8 +340,41 @@ static void lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
     float el = atan2f(sinf(second_beam - first_beam),
                       LH2_TANT * (cosf(first_beam) + cosf(second_beam)));
 
-    float cos_el   = cosf(el);
-    float d_local[3] = { sinf(az) * cos_el, sinf(el), cosf(az) * cos_el };
+    /*
+     * Base-station local frame MUST match the one the calibration rotation
+     * matrix was estimated for.  cfclient geometry (and stock
+     * lighthouse_geometry.c lighthouseGeometryGetRay()) uses:
+     *   X = forward (out of the face), Y = +azimuth (left), Z = up
+     * with the ray built as the intersection of the two sweep planes:
+     *   a = ( sin H, -cos H, 0 )         b = ( -sin V, 0, cos V )
+     *   ray = normalize(b × a) = normalize( cosV·cosH, cosV·sinH, sinV·cosH )
+     * The original code here used a Z-forward/Y-up spherical convention —
+     * applying the cfclient matrix to that permuted vector produced a
+     * consistently rotated world (drone on the floor read z ≈ +1.9 m and
+     * XY position hold pushed in wrong directions → wandering).
+     */
+    /* Convention-debug log (~1 Hz per BS at typical fix rates): compare
+     * against the expected angles computed from the calibrated geometry for
+     * a drone at a known position.  Sign errors in az/el (sweep pairing,
+     * rotation direction) show up here directly, decoupled from the
+     * triangulation. */
+    static int dbg_div;
+    if (++dbg_div >= 128) {
+        dbg_div = 0;
+        LOG_INF("angles ch=%u az=%.1f el=%.1f deg",
+                channel, (double)(az * 180.0f / (float)M_PI),
+                (double)(el * 180.0f / (float)M_PI));
+    }
+
+    float cH = cosf(az), sH = sinf(az);
+    float cV = cosf(el), sV = sinf(el);
+    float d_local[3] = { cV * cH, cV * sH, sV * cH };
+    float len = sqrtf(d_local[0] * d_local[0] +
+                      d_local[1] * d_local[1] +
+                      d_local[2] * d_local[2]);
+    if (len > 0.0f) {
+        d_local[0] /= len; d_local[1] /= len; d_local[2] /= len;
+    }
 
     mat3_mul_vec(pose->rot, d_local, out);
 }
@@ -316,7 +385,7 @@ static void lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
  */
 static bool lh2_triangulate(const float pa[3], const float da[3],
                              const float pb[3], const float db[3],
-                             float out[3])
+                             float out[3], float *miss_m)
 {
     float b = da[0]*db[0] + da[1]*db[1] + da[2]*db[2];
     float denom = 1.0f - b * b;
@@ -328,9 +397,20 @@ static bool lh2_triangulate(const float pa[3], const float da[3],
     float e = db[0]*w[0] + db[1]*w[1] + db[2]*w[2];
     float t = (b*e - d) / denom;
     float s = (e - b*d) / denom;
-    out[0] = 0.5f * ((pa[0] + t*da[0]) + (pb[0] + s*db[0]));
-    out[1] = 0.5f * ((pa[1] + t*da[1]) + (pb[1] + s*db[1]));
-    out[2] = 0.5f * ((pa[2] + t*da[2]) + (pb[2] + s*db[2]));
+    float qa[3] = { pa[0] + t*da[0], pa[1] + t*da[1], pa[2] + t*da[2] };
+    float qb[3] = { pb[0] + s*db[0], pb[1] + s*db[1], pb[2] + s*db[2] };
+    out[0] = 0.5f * (qa[0] + qb[0]);
+    out[1] = 0.5f * (qa[1] + qb[1]);
+    out[2] = 0.5f * (qa[2] + qb[2]);
+
+    /* Closest-approach miss distance: the health metric for the whole
+     * geometry chain.  With correct angles + frames the two rays nearly
+     * intersect (centimetres); a frame/convention error leaves them
+     * wildly skew while still producing a stable-looking midpoint. */
+    if (miss_m) {
+        float mx = qa[0]-qb[0], my = qa[1]-qb[1], mz = qa[2]-qb[2];
+        *miss_m = sqrtf(mx*mx + my*my + mz*mz);
+    }
     return true;
 }
 
@@ -373,15 +453,28 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
 
     bool    channel_found = (data[0] & 0x80) == 0;
     uint8_t channel       = (data[0] >> 3) & 0x0F;
-    uint8_t slow_bit      = (data[0] >> 2) & 0x01;   /* 0 = rotor 0, 1 = rotor 1 */
+    /* data[0] bit 2 is the slowBit: one bit of the base station's OOTX
+     * calibration data stream (stock feeds it to ootxDecoderProcessBit and
+     * nothing else).  It is NOT a sweep-plane identifier — a previous
+     * revision of this driver keyed sweep pairing on it, which paired
+     * same-plane offsets from different revolutions and produced stable
+     * but wildly wrong angles (bench 2026-07-05: az off by ~60°, el by
+     * 50-80°, ray miss distance 1.7 m). */
     uint8_t sensor        = data[0] & 0x03;
 
-    /* Validity checks */
-    bool is_valid = channel_found && (sensor == 0);
+    /* Validity checks.  Accept frames from ANY photodiode: the FPGA cannot
+     * fill in the channel on the first sensor a sweep crosses (it needs a
+     * second sensor to decode — see stock augmentFramesInWorkspace), so
+     * which sensors carry channelFound depends on sweep geometry.  A
+     * previous sensor==0-only filter starved one plane of BS1 entirely
+     * (bench 2026-07-05: ch1 never paired, t0_diff always one full
+     * revolution).  Sensor spacing on the deck (~1–2 cm) is far below our
+     * accuracy needs, so mixing sensors is fine. */
     bool padding_ok = ((data[5] | data[8]) & 0xFE) == 0;
-    if (!is_valid || !padding_ok) {
+    if (!channel_found || !padding_ok) {
         return;
     }
+    (void)sensor;
 
     /* Extract offset (24-bit LE, 6 MHz ticks) → multiply by 4 → 24 MHz ticks */
     uint32_t offset_raw = (uint32_t)data[3]
@@ -393,38 +486,67 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
         return;   /* no offset on this frame */
     }
 
+    /* Frame timestamp: 24-bit LE, 24 MHz ticks (bytes 9-11) */
+    uint32_t timestamp = (uint32_t)data[9]
+                       | ((uint32_t)data[10] << 8)
+                       | ((uint32_t)data[11] << 16);
+
     /*
-     * Store this sweep in the slot for (channel, slow_bit).
-     * slow_bit=0 → rotor 0 (firstBeam), slow_bit=1 → rotor 1 (secondBeam).
-     * We need one measurement from each rotor to compute angles; previously
-     * we used consecutive blocks regardless of rotor, which paired two frames
-     * from the same rotor and produced wildly wrong directions.
+     * Sweep pairing — stock pulse_processor_v2.c principle:
+     * timestamp0 = timestamp − offset is the rotor-zero time of the
+     * revolution this sweep belongs to (24-bit wraparound arithmetic).
+     * The two sweep planes of ONE revolution share timestamp0 to within
+     * LH2_MAX_T0_DIFF ticks (stock: 10), while the same plane one
+     * revolution later is a full cycle period (~480k ticks) away.
+     * Within a matched pair, arrival order gives the beam roles exactly
+     * as stock calculateAngles does: earlier frame → firstBeam (+π/3),
+     * later frame → secondBeam (−π/3).
      */
-    static uint32_t g_rotor_offset[16][2];   /* [channel][slow_bit] */
-    static uint32_t g_rotor_age_ms[16][2];
-    static bool     g_rotor_valid[16][2];
+    uint32_t t0 = (timestamp - offset) & 0xFFFFFFu;
 
-    g_rotor_offset[channel][slow_bit] = offset;
-    g_rotor_age_ms[channel][slow_bit] = k_uptime_get_32();
-    g_rotor_valid[channel][slow_bit]  = true;
+    static uint32_t g_pair_offset[16];
+    static uint32_t g_pair_t0[16];
+    static bool     g_pair_valid[16];
 
-    /* Need both rotors to compute angles */
-    int other_rotor = 1 - slow_bit;
-    if (!g_rotor_valid[channel][other_rotor]) {
+    uint32_t fwd     = (t0 - g_pair_t0[channel]) & 0xFFFFFFu;
+    uint32_t t0_diff = (fwd <= 0x800000u) ? fwd : (0x1000000u - fwd);
+
+    if (!g_pair_valid[channel] || t0_diff > LH2_MAX_T0_DIFF) {
+        /* Pairing diagnostic (~1 Hz at typical frame rates): the observed
+         * t0_diff distribution tells us where the same-revolution cluster
+         * actually sits.  Expect a bimodal split: small values (the pair
+         * partner) vs ~a full cycle period (~480k, next revolution). */
+        static int pair_dbg_div;
+        if (g_pair_valid[channel] && ++pair_dbg_div >= 100) {
+            pair_dbg_div = 0;
+            LOG_INF("pair miss ch=%u t0_diff=%u off0=%u off1=%u",
+                    channel, t0_diff, g_pair_offset[channel], offset);
+        }
+
+        /* First sweep of a new revolution: stash it and wait for its pair */
+        g_pair_offset[channel] = offset;
+        g_pair_t0[channel]     = t0;
+        g_pair_valid[channel]  = true;
         return;
     }
 
-    /* Check both measurements are fresh */
-    uint32_t now      = k_uptime_get_32();
-    uint32_t age_this = now - g_rotor_age_ms[channel][slow_bit];
-    uint32_t age_other = now - g_rotor_age_ms[channel][other_rotor];
-    if (age_this > LH2_BLOCK_FRESH_MS || age_other > LH2_BLOCK_FRESH_MS) {
+    /* Same revolution — but is it the OTHER plane, or the same sweep seen
+     * by another photodiode?  All four sensors share the rotor-zero time;
+     * their offsets differ only by the beam's transit across the deck
+     * (≤ ~1 000 ticks), while the two planes sit ~period/3 ≈ 160 000 ticks
+     * apart.  Ignore same-sweep duplicates and keep waiting for the
+     * genuine partner. */
+    uint32_t off_delta = (offset > g_pair_offset[channel])
+                         ? offset - g_pair_offset[channel]
+                         : g_pair_offset[channel] - offset;
+    if (off_delta < LH2_SAME_SWEEP_MAX) {
         return;
     }
 
-    /* offset0 = rotor-0 (slow_bit=0), offset1 = rotor-1 (slow_bit=1) */
-    uint32_t offset0 = g_rotor_offset[channel][0];
-    uint32_t offset1 = g_rotor_offset[channel][1];
+    /* Genuine plane pair: complete it (and consume the stored sweep) */
+    uint32_t offset0 = g_pair_offset[channel];   /* earlier → firstBeam  */
+    uint32_t offset1 = offset;                   /* later   → secondBeam */
+    g_pair_valid[channel] = false;
 
     /* Find which pose this channel maps to */
     int bs_idx = -1;
@@ -448,6 +570,8 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     static uint32_t g_dir_age[LH2_BS_COUNT];
     static bool     g_dir_valid[LH2_BS_COUNT];
 
+    uint32_t now = k_uptime_get_32();
+
     g_dir[bs_idx][0] = dir[0];
     g_dir[bs_idx][1] = dir[1];
     g_dir[bs_idx][2] = dir[2];
@@ -464,11 +588,29 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     }
 
     float result[3];
+    float miss_m = 0.0f;
     bool ok = lh2_triangulate(g_bs_pose[0].origin, g_dir[0],
                               g_bs_pose[1].origin, g_dir[1],
-                              result);
+                              result, &miss_m);
     if (!ok) {
         return;
+    }
+
+    /* Reject bad sweep pairs outright: with correct geometry the rays
+     * intersect within ~0.1 m (bench 2026-07-05: 0.045–0.09 m); a large
+     * miss means at least one beam angle is garbage (flight log showed a
+     * miss=0.97 m outlier pair mid-flight that dragged the position).
+     * Cheaper and earlier than letting the median/jump-gate fight it. */
+    if (miss_m > LH2_MAX_MISS_M) {
+        return;
+    }
+
+    static int miss_div;
+    if (++miss_div >= 64) {
+        miss_div = 0;
+        LOG_INF("fix (%.2f, %.2f, %.2f) miss=%.3f m",
+                (double)result[0], (double)result[1], (double)result[2],
+                (double)miss_m);
     }
 
     /* Push raw result into the median buffer */
@@ -487,12 +629,43 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     float my = lh2_median(g_med_buf[1]);
     float mz = lh2_median(g_med_buf[2]);
 
+    static int64_t g_vel_t_ms;
+    static float   g_prev[3];
+
+    /* ── Jump gate ─────────────────────────────────────────────────────────
+     * LH2 wrong-geometry solutions (wrong rotor pair / sweep pairing) can
+     * survive the median filter for over a second and land metres away from
+     * the true position — flight test 2026-07-03 saw a 1.76 m X teleport
+     * sustained ~1.7 s that drove position hold into a phantom correction on
+     * the ground, and a z=2.8 m burst that tripped the app's climb ceiling.
+     * A real drone cannot teleport: reject any fix further than LH2_JUMP_M
+     * from the last accepted one.  If LH2_JUMP_REJECT_N *consecutive* fixes
+     * agree on the far location, accept it as a genuine re-acquisition and
+     * re-seed (velocity restarts from zero).  Alternating good/bad solutions
+     * keep resetting the counter, so sustained flip-flopping never re-seeds
+     * onto the wrong branch. */
+    static bool  g_jump_seeded;
+    static int   g_jump_far_n;
+    if (g_jump_seeded) {
+        float jx = mx - g_prev[0];
+        float jy = my - g_prev[1];
+        float jz = mz - g_prev[2];
+        if (jx * jx + jy * jy + jz * jz > LH2_JUMP_M * LH2_JUMP_M) {
+            if (++g_jump_far_n < LH2_JUMP_REJECT_N) {
+                return;                      /* discard outlier fix */
+            }
+            g_vel_t_ms = 0;                  /* re-seed: velocity from zero */
+        }
+        g_jump_far_n = 0;
+    } else {
+        g_jump_seeded = true;
+        g_vel_t_ms    = 0;
+    }
+
     /* Velocity from the filtered-position derivative, low-passed.  Feeds the
      * stabilizer's position-hold damping term — a P-only position loop has no
      * damping and limit-cycles (stock runs a full velocity PID between its
      * position and attitude loops for the same reason). */
-    static int64_t g_vel_t_ms;
-    static float   g_prev[3];
     int64_t t_ms  = k_uptime_get();
     int64_t dt_ms = t_ms - g_vel_t_ms;
     float vx = g_vel.x, vy = g_vel.y, vz = g_vel.z;

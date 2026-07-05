@@ -217,7 +217,19 @@ static void pm_rx_byte(uint8_t c)
 static void pm_uart_cb(const struct device *dev, void *user_data)
 {
     ARG_UNUSED(user_data);
-    if (!uart_irq_update(dev) || !uart_irq_rx_ready(dev)) {
+    if (!uart_irq_update(dev)) {
+        return;
+    }
+
+    /* Read-and-clear UART error flags (overrun/framing/noise/parity).
+     * Electrical glitches on this board (notably PB6/PB7 deck bit-banging
+     * coupling into USART6 — see cf21bl_lighthouse.c lh2_boot_deck) can
+     * latch error flags without RXNE; left uncleared they re-assert the
+     * interrupt forever, starving SysTick until the IWDG resets the chip
+     * (observed as a 30 s reboot loop, reset cause IWDG). */
+    (void)uart_err_check(dev);
+
+    if (!uart_irq_rx_ready(dev)) {
         return;
     }
     uint8_t c;
@@ -250,19 +262,37 @@ static void pm_send(uint8_t type, const uint8_t *data, uint8_t len)
     k_mutex_unlock(&cf21bl_syslink_tx_mutex);
 }
 
+/* Defer arming the USART6 RX interrupt until the noisy part of boot is
+ * over: the lighthouse deck boot bit-bangs PB6/PB7 until ~5 s after power-
+ * on, and that activity couples into the USART6 lines on this board.  With
+ * RX interrupts already armed, the resulting line garbage triggered the
+ * error-flag storm described in pm_uart_cb (now also cleared defensively
+ * there).  8 s clears the deck-boot window with margin; battery telemetry
+ * is not needed earlier — flight examples arm no sooner than ~13 s. */
+#define PM_STARTUP_DELAY_S  8
+
 /*
- * The nRF51 sends SYSLINK_PM_BATTERY_STATE periodically only after receiving
+ * First run: arm the USART6 RX interrupt.  Every run: the nRF51 sends
+ * SYSLINK_PM_BATTERY_STATE periodically only after receiving
  * SYSLINK_PM_BATTERY_AUTOUPDATE (crazyflie2-nrf-firmware main.c:
- * syslinkEnableBatteryMessages()).  Re-send the request every 2 s until data
- * flows, from the system workqueue so the TX mutex serializes us against the
- * CRTP console backend.  Logs a diagnostic while unanswered: rx_bytes==0
- * means the nRF51 is sending nothing at all (UART RX path problem);
- * frames>0 with pm==0 means syslink is alive but our request isn't taking
- * effect (frame lost, or nRF51 firmware without AUTOUPDATE support).
+ * syslinkEnableBatteryMessages()), so re-send the request every 2 s until
+ * data flows, from the system workqueue so the TX mutex serializes us
+ * against the CRTP console backend.  Logs a diagnostic while unanswered:
+ * rx_bytes==0 means the nRF51 is sending nothing at all (UART RX path
+ * problem); frames>0 with pm==0 means syslink is alive but our request
+ * isn't taking effect (frame lost, or nRF51 firmware without AUTOUPDATE
+ * support).
  */
 static void pm_kick_fn(struct k_work *work)
 {
     struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+
+    static bool rx_armed;
+    if (!rx_armed) {
+        rx_armed = true;
+        uart_irq_callback_user_data_set(pm_uart, pm_uart_cb, NULL);
+        uart_irq_rx_enable(pm_uart);
+    }
 
     if (g_last_pkt_ms != 0) {
         return;                        /* telemetry flowing — stop retrying */
@@ -289,13 +319,10 @@ int cf21bl_pm_init(void)
         return -ENODEV;
     }
 
-    uart_irq_callback_user_data_set(pm_uart, pm_uart_cb, NULL);
-    uart_irq_rx_enable(pm_uart);
+    k_work_schedule(&pm_kick_work, K_SECONDS(PM_STARTUP_DELAY_S));
 
-    k_work_schedule(&pm_kick_work, K_NO_WAIT);
-
-    LOG_INF("battery monitor ready (standalone syslink RX, VREF=%d mV)",
-            CONFIG_CF21BL_PM_VREF_MV);
+    LOG_INF("battery monitor ready (standalone syslink RX armed in %d s, VREF=%d mV)",
+            PM_STARTUP_DELAY_S, CONFIG_CF21BL_PM_VREF_MV);
     return 0;
 }
 

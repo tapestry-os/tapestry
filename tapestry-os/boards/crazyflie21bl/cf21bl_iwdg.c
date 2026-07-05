@@ -31,6 +31,9 @@
 
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(cf21bl_iwdg, LOG_LEVEL_INF);
 
 #define IWDG_KR   (*(volatile uint32_t *)0x40003000U)
 #define IWDG_PR   (*(volatile uint32_t *)0x40003004U)
@@ -86,12 +89,42 @@ static void cf21bl_iwdg_kick_fn(struct k_timer *t)
 {
     ARG_UNUSED(t);
     IWDG_KR = 0xAAAAU;
+
+#ifdef CONFIG_CF21BL_IWDG_HEARTBEAT_LED
+    /* Diagnostic heartbeat: toggle the status LED on every kick (10 s).
+     * This handler runs at interrupt level via the system clock, so the
+     * LED keeps toggling through any thread-level hang or deadlock —
+     * a frozen LED during a silent-console hang means interrupts
+     * themselves are starved (IRQ lock / ISR storm), while a still-
+     * toggling LED means the kernel is alive and the silence is a
+     * logging/console failure.  Registers poked directly: this must not
+     * depend on any driver state. */
+    #define HB_GPIOC_ODR (*(volatile uint32_t *)0x40020814U)
+    HB_GPIOC_ODR ^= (1U << 1);   /* PC1 = status LED (active-low) */
+#endif
 }
 
 static K_TIMER_DEFINE(cf21bl_iwdg_timer, cf21bl_iwdg_kick_fn, NULL);
 
 static int cf21bl_iwdg_start_timer(void)
 {
+    /* Log why the previous reset happened (RM0090 §6.3.21 RCC_CSR flags),
+     * then clear the flags (RMVF) so the next boot reports only its own
+     * cause.  IWDG = watchdog starved (IRQ lock / ISR storm upstream);
+     * PIN without IWDG = external reset (NRST — e.g. the nRF51 power-
+     * cycling the STM32); SFT = software reset (Zephyr fatal handler). */
+    uint32_t csr = RCC_CSR;
+    LOG_INF("reset cause: CSR=0x%08x —%s%s%s%s%s%s%s",
+            csr,
+            (csr & (1U << 31)) ? " LPWR" : "",
+            (csr & (1U << 30)) ? " WWDG" : "",
+            (csr & (1U << 29)) ? " IWDG" : "",
+            (csr & (1U << 28)) ? " SFT"  : "",
+            (csr & (1U << 27)) ? " POR"  : "",
+            (csr & (1U << 26)) ? " PIN"  : "",
+            (csr & (1U << 25)) ? " BOR"  : "");
+    RCC_CSR |= (1U << 24);   /* RMVF: clear reset flags */
+
     /* Kick every 10 s — well within the ~32 s timeout. */
     k_timer_start(&cf21bl_iwdg_timer, K_SECONDS(10), K_SECONDS(10));
     return 0;

@@ -24,6 +24,11 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c
 )
 
+if(CONFIG_CF21BL_PM)
+  target_sources(app PRIVATE
+      ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_pm.c)
+endif()
+
 target_include_directories(app PRIVATE
     ${TAPESTRY_OS_ROOT}/include
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl

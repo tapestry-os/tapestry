@@ -107,9 +107,13 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 #ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
 /* linear.x/y ∈ [-1,+1] → setpoint in [−POS_MAX, +POS_MAX] metres from origin */
 #define CF21BL_POS_MAX_M       ((float)CONFIG_CF21BL_POS_MAX_M)
-/* Position P gain: metres error → angle correction in degrees.
- * 0.05 → at 1 m error the correction is 2.9° (within the 10° safe limit). */
-#define CF21BL_POS_KP          0.05f   /* rad/m  — converts metres error to rad */
+/* Position P gain: metres error → angle correction.
+ * 0.08 rad/m → 4.6°/m.  Raised from 0.05 after the 2026-07-05 flight: a
+ * small level-reference bias needs pos error ≈ bias/KP to cancel, and at
+ * 0.05 the equilibrium offset (~0.3+ m for ~1° bias) sat near the old
+ * error gate.  With saturation at 0.75 m the max correction is
+ * 0.08 × 0.75 ≈ 3.4°, well inside the 10° limit. */
+#define CF21BL_POS_KP          0.08f   /* rad/m  — converts metres error to rad */
 /* Velocity damping: tilt θ produces accel ≈ g·θ, so the closed loop is
  * s² + g·Kd·s + g·Kp; with Kp=0.05, ωn=√(g·Kp)≈0.70 rad/s and ζ≈0.7 needs
  * Kd = 2·ζ·ωn/g ≈ 0.10.  Without this term the P-only loop has no damping
@@ -562,11 +566,19 @@ static void stabilizer_fn(void *a, void *b, void *c)
             float ex = (g_pos_home_x + sp_x) - lhpos.x;
             float ey = (g_pos_home_y + sp_y) - lhpos.y;
 
-            /* Sanity gate: lighthouse estimates can jump tens of metres when
-             * tracking fails at height.  Errors > 2 m indicate a bad reading
-             * rather than real drift — skip the correction rather than command
-             * a full ±10° pitch/roll from a ghost position. */
-            if (fabsf(ex) <= 2.0f && fabsf(ey) <= 2.0f) {
+            /* Saturate the position error rather than skipping large ones:
+             * an earlier version gated out errors > 0.75 m entirely, which
+             * silenced position hold exactly when the drone had drifted
+             * furthest (2026-07-05 flight: drift past 0.75 m → corrections
+             * stopped → runaway off the tracking volume).  Ghost fixes are
+             * now rejected upstream (driver jump gate + miss-distance
+             * gate), so a large error here is real — push back at the
+             * saturated rate. */
+            if (ex >  0.75f) { ex =  0.75f; }
+            if (ex < -0.75f) { ex = -0.75f; }
+            if (ey >  0.75f) { ey =  0.75f; }
+            if (ey < -0.75f) { ey = -0.75f; }
+            {
                 /* PD correction in radians, converted to degrees for the
                  * angle loop.  The velocity term (see CF21BL_POS_KD) damps
                  * the otherwise-undamped P loop. */

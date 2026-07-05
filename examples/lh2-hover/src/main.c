@@ -3,8 +3,28 @@
  *
  * Control architecture:
  *   Attitude:       BMI088 → rate + angle PIDs in stabilizer (1 kHz)
- *   X/Y position:   lighthouse → position P in stabilizer (CF21BL_LIGHTHOUSE_POS_HOLD)
+ *   Yaw heading:    CONFIG_CF21BL_YAW_HOLD — heading locked to the boot
+ *                   orientation (Mahony yaw integrates from wherever the
+ *                   drone points at gyro calibration)
+ *   X/Y position:   lighthouse → position PD in stabilizer
+ *                   (CF21BL_LIGHTHOUSE_POS_HOLD; D term from the lighthouse
+ *                   velocity estimate damps the orbit/limit-cycle a P-only
+ *                   loop produces)
  *   Z (altitude):   lighthouse → manual ramp then PID here (50 Hz)
+ *
+ * PLACEMENT REQUIREMENT: the stabilizer maps world-frame position error
+ * directly onto body pitch/roll — it assumes the drone's nose points along
+ * the lighthouse world +X axis.  In the cfclient geometry, the world origin
+ * and axes are the DRONE'S pose during geometry estimation: +X is wherever
+ * the nose pointed while calibrating.  So: place the drone at power-on in
+ * the same spot/orientation it had during cfclient geometry estimation.
+ * Yaw hold then keeps that alignment valid for the whole flight.  (A yaw-
+ * rotation of the error vector would lift this requirement — future work.)
+ *
+ * Sanity check after any recalibration: with the drone on the floor at the
+ * calibration spot, Stage 2 home should read x≈0, y≈0, z≈0.  A large home
+ * offset (e.g. the z=+1.9 m seen 2026-07-04) means the geometry is being
+ * applied in the wrong frame — do not fly.
  *
  * Takeoff philosophy — "ratchet up until it just hovers":
  *   Stage 5 slowly ramps collective from first-spin level upward.
@@ -46,7 +66,21 @@
 LOG_MODULE_REGISTER(lh2_hover, LOG_LEVEL_INF);
 
 /* ── Calibrated BS poses ──────────────────────────────────────────────────── */
+/* July 4 2026 */
+ static const lh2_bs_pose_t BS0 = {
+    .origin = {1.7085734605789185,-0.43685105443000793,1.8661978244781494},
+    .rot    = {-0.8205968737602234,0.055611010640859604,-0.568795382976532,
+        -0.08727049082517624,-0.9957755208015442,0.02854771353304386,
+        -0.5648049712181091,0.07306522130966187,0.8219834566116333}
+  };
+static const lh2_bs_pose_t BS1 = {
+    .origin = {0.9165827035903931,2.814929246902466,1.7187764644622803},
+    .rot    = {0.09428899735212326,0.9954821467399597,-0.011177653446793556,
+        -0.8471673130989075,0.0743338093161583,-0.526100754737854,
+        -0.5228930711746216,0.05907485634088516,0.8503487706184387}
+};
 
+/*
 static const lh2_bs_pose_t BS0 = {
     .origin = {-0.1968589723110199f, 2.560563087463379f, 1.2248899936676025f},
     .rot    = { 0.24485638737678528f,  0.9695349335670471f, -0.006882685702294111f,
@@ -59,6 +93,7 @@ static const lh2_bs_pose_t BS1 = {
                 0.9137280583381653f,  -0.2697758674621582f,   0.30384543538093567f,
                -0.3134150207042694f,   0.007970745675265789f,  0.9495828151702881f}
 };
+*/
 #define BS0_CHANNEL  0
 #define BS1_CHANNEL  1
 
@@ -69,19 +104,25 @@ static const lh2_bs_pose_t BS1 = {
 /* ── Throttle ramp parameters ─────────────────────────────────────────────── */
 
 /*
- * linear.z → collective thrust T = (z+1)/2.
- * Spin threshold: 1180 µs → T=0.18 → linear.z = -0.64.
- * Hover (measured): T=0.65 → linear.z = 0.30.
+ * linear.z → collective thrust T = (z+1)/2, deadband-free mapping: any
+ * T > 0 is already in the live ESC range (motor_to_ns() maps (0,1] onto
+ * [spin threshold, full]), so "first spin" is any z above the stabilizer's
+ * idle sentinel (-0.9), not an ESC property.
+ * Hover (tether-measured 2026-07-03, battery-compensated at 3.7 V):
+ *   T ≈ 0.46 → linear.z ≈ -0.08.
  *
- * SPIN_START: just above the spin threshold so motors begin turning.
- * RAMP_RATE:  collective added per second.  0.04/s takes ~22 s from
- *             SPIN_START to hover — slow enough to feel controlled.
- * RAMP_MAX:   abort ramp if still not airborne by this collective.
+ * SPIN_START: motors clearly spinning and loaded (T=0.30) but still ~35%
+ *             below hover thrust — safe to jump straight to now that the
+ *             hover point is battery-compensated and precisely known.
+ * RAMP_RATE:  collective added per second.  0.06/s covers SPIN_START →
+ *             hover (z≈-0.08) in ~5 s.
+ * RAMP_MAX:   abort ramp if still not airborne by this collective
+ *             (T=0.55, well above the measured 0.46 hover point).
  * LIFTOFF_M:  Z rise above home that confirms the drone is airborne.
  */
-#define SPIN_START       -0.55f   /* linear.z at first motor spin                       */
-#define RAMP_RATE         0.04f   /* collective / second during ramp                    */
-#define RAMP_MAX          0.25f   /* abort if no liftoff by collective 0.25 (62.5%)     */
+#define SPIN_START       -0.40f   /* ramp start (T=0.30, well below hover)              */
+#define RAMP_RATE         0.06f   /* collective / second during ramp                    */
+#define RAMP_MAX          0.10f   /* abort if no liftoff by z=0.10 (T=0.55)             */
 #define LIFTOFF_M         0.10f   /* 10 cm sustained Z rise = airborne                  */
 #define LIFTOFF_HOLD_N      10    /* consecutive Z readings required above threshold     */
 #define MAX_CLIMB_M       0.40f   /* hard ceiling: abort if Z exceeds home + 40 cm      */
@@ -93,11 +134,11 @@ static const lh2_bs_pose_t BS1 = {
  * suggesting a climb while collective is this low is sensor noise/corruption,
  * not a real measurement, and must be ignored entirely (not just debounced).
  *
- * Measured hover is ~0.30 (65%); -0.20 (40% collective) is comfortably below
+ * Measured hover is z≈-0.08 (T=0.46); -0.30 (T=0.35) is comfortably below
  * any plausible liftoff point but still lets the gate open well before hover
  * so genuine early liftoff (light drone, fresh battery) isn't masked.
  */
-#define MIN_THRUST_FOR_CLIMB_CHECK  -0.20f
+#define MIN_THRUST_FOR_CLIMB_CHECK  -0.30f
 
 #define LOOP_DT       0.020f  /* 50 Hz control loop                 */
 
@@ -108,10 +149,13 @@ static const lh2_bs_pose_t BS1 = {
  * so no warmup is needed — the integral starts at zero and only corrects
  * small deviations from the natural hover point.
  */
-#define Z_KP        0.30f   /* 0.10 m error → 0.030 collective correction */
-#define Z_KI        0.04f   /* ~8 s to fully correct 0.10 m steady error  */
-#define Z_KD        0.08f   /* light damping; median filter adds 170 ms lag*/
-#define Z_I_LIMIT   0.20f
+/* Rescaled ×1.22 (=1000/820) from the values flown under the old motor
+ * mapping, matching the stabilizer's gain rescale: one z-unit now spans
+ * the 820 µs live ESC range instead of 1000 µs. */
+#define Z_KP        0.37f   /* 0.10 m error → 0.037 collective correction */
+#define Z_KI        0.05f   /* ~8 s to fully correct 0.10 m steady error  */
+#define Z_KD        0.10f   /* light damping; median filter adds 170 ms lag*/
+#define Z_I_LIMIT   0.25f
 #define Z_OUT_MIN  -0.70f
 #define Z_OUT_MAX   0.90f
 #define Z_IIR_A     0.15f   /* IIR smoothing on top of the median filter   */
@@ -254,9 +298,15 @@ int main(void)
             (double)SPIN_START, (double)RAMP_RATE,
             (double)(LIFTOFF_M * 100.0f));
 
+    /* Brief pause at first-spin so motors are running steadily.  Re-send the
+     * setpoint during the pause: SPIN_START is above the idle sentinel, so a
+     * single fire-and-forget move would trip the stabilizer's 500 ms
+     * staleness watchdog right at the boundary. */
     sp.linear.z = SPIN_START;
-    substrate_move(&sp);
-    k_msleep(500);   /* brief pause at first-spin so motors are running steadily */
+    for (int i = 0; i < 10; i++) {
+        substrate_move(&sp);
+        k_msleep(50);
+    }
 
     bool lifted = false;
     int  liftoff_count = 0;   /* consecutive readings above LIFTOFF_M  */

@@ -106,6 +106,17 @@ config CF21BL_SP_CUTOFF_MS
 
 endif # CF21BL_STABILIZER
 
+config CF21BL_IWDG_HEARTBEAT_LED
+	bool "Toggle the status LED from the IWDG kick handler (diagnostic)"
+	depends on BOARD_CRAZYFLIE21BL
+	default n
+	help
+	  Toggles PC1 (status LED) every 10 s from the watchdog kick k_timer,
+	  which runs at interrupt level.  Used to distinguish a thread-level
+	  hang (LED keeps toggling while the console is silent) from
+	  interrupt starvation (LED frozen → IRQ lock or ISR storm; the IWDG
+	  will reset ~33 s after the last kick).  Diagnostic only.
+
 config CF21BL_PM
 	bool "Battery monitoring via nRF51 syslink"
 	depends on BOARD_CRAZYFLIE21BL

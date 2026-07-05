@@ -30,9 +30,13 @@
  *   origin[3]: position of the base station optical centre in metres
  *   rot[9]:    row-major 3×3 rotation matrix mapping BS-local to world frame
  *
- *   BS-local frame axes (looking straight out of the BS face):
- *     X = right,   Y = up,   Z = forward (toward the flying space)
- *   At azimuth θ=0, elevation β=0 the direction vector is (0,0,1) in BS-local.
+ *   BS-local frame axes (stock lighthouse_geometry.c convention — the frame
+ *   cfclient's rotation matrices are estimated for):
+ *     X = forward (out of the face, toward the flying space),
+ *     Y = +azimuth (left),   Z = up
+ *   At azimuth θ=0, elevation β=0 the direction vector is (1,0,0) in BS-local.
+ *   The cfclient YAML "rotation" rows map directly onto rot[0..8] row-major;
+ *   no transpose.
  *
  * Position frame
  * --------------
