@@ -20,6 +20,7 @@
 #ifndef TAPESTRY_CF21BL_IMU_H
 #define TAPESTRY_CF21BL_IMU_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -75,9 +76,21 @@ void cf21bl_imu_calibrate_gyro(int n_samples);
 
 /*
  * cf21bl_imu_filter_init — (re)initialize the Mahony quaternion filter.
- * Gains: twoKp=0.8, twoKi=0.002 (CF21BL stock values).
+ * Gains: twoKi=0.002; twoKp is two-stage (0.8 ground / 0.15 airborne,
+ * see cf21bl_imu_set_airborne).  Init resets to the ground gain.
  */
 void cf21bl_imu_filter_init(void);
+
+/*
+ * cf21bl_imu_set_airborne — tell the Mahony filter whether the drone is
+ * actually flying.  On the ground (false, the init state) the accel
+ * correction runs at full gain so spin-up vibration and handling
+ * disturbances re-level quickly; airborne (true) it drops to a slow gain
+ * so sustained lateral accelerations don't tilt the level reference
+ * ("toilet bowl").  Called by the stabilizer: set once liftoff is
+ * detected, cleared at the idle sentinel.  Thread-safe (single bool).
+ */
+void cf21bl_imu_set_airborne(bool airborne);
 
 /*
  * cf21bl_imu_filter_update — fuse one IMU sample into the Mahony quaternion

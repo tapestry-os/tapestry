@@ -11,7 +11,9 @@
  *
  * Sensor filtering matches CF21BL stock firmware (sensors_bmi088_bmp3xx.c):
  *   - 2nd-order Butterworth LPF: gyro 80 Hz cutoff, accel 30 Hz cutoff
- *   - Attitude: Mahony quaternion filter, twoKp=0.8, twoKi=0.002
+ *   - Attitude: Mahony quaternion filter, twoKi=0.002; twoKp two-stage:
+ *     0.8 on ground, 0.15 airborne (anti toilet-bowl), switched via
+ *     cf21bl_imu_set_airborne() from the stabilizer
  */
 
 #include "cf21bl_imu.h"
@@ -33,9 +35,30 @@ LOG_MODULE_REGISTER(cf21bl_imu, LOG_LEVEL_INF);
 #define ACCEL_LPF_CUTOFF_HZ  30.0f
 #define SENSOR_SAMPLE_HZ   1000.0f   /* gyro INT3 rate drives both reads */
 
-/* Mahony filter gains — from CF21BL build/.config (twoKp=2*0.4, twoKi=2*0.001) */
-#define MAHONY_TWO_KP  0.8f
-#define MAHONY_TWO_KI  0.002f
+/* Mahony filter gains — from CF21BL build/.config (twoKp=2*0.4, twoKi=2*0.001).
+ *
+ * Two-stage accel correction, switched on AIRBORNE STATE
+ * (cf21bl_imu_set_airborne(), driven by the stabilizer): full gain
+ * (τ≈2.5 s) whenever the drone is on the ground — armed, spinning up,
+ * ramping, vibration and all (stock runs full gain through spin-up
+ * without trouble) — and a slower gain once actually flying.  At full
+ * gain in flight the filter chases the centripetal specific force during
+ * sustained lateral motion: a 0.2–0.5 m/s² orbit acceleration tilts the
+ * level reference 1–3°, comparable to the position loop's own commands,
+ * sustaining a slow "toilet bowl" circulation (2026-07-05 flights:
+ * ±0.25–0.4 m at 10–19 s period).
+ *
+ * HISTORY: the first version of this switch was TIME-based (12 s after
+ * filter init).  The window expired before the motors even spun, so ESC
+ * spin-up vibration during the ground ramp landed on a near-frozen level
+ * estimate (τ≈40 s at the original 0.05 air gain) — the drone tilted and
+ * drove itself 0.6+ m across the floor until the ramp abort cut motors
+ * (2026-07-05 run 2).  Air gain also softened 0.05 → 0.15 (τ≈13 s):
+ * still ~5× less orbit-period chasing than full gain, far less exposure
+ * to gyro-only drift.  MAHONY_TWO_KI unchanged (bias trim). */
+#define MAHONY_TWO_KP       0.8f
+#define MAHONY_TWO_KP_AIR   0.15f
+#define MAHONY_TWO_KI       0.002f
 
 static const struct device *const accel_dev = DEVICE_DT_GET(DT_NODELABEL(bmi088_accel));
 static const struct device *const gyro_dev  = DEVICE_DT_GET(DT_NODELABEL(bmi088_gyro));
@@ -324,10 +347,18 @@ uint32_t cf21bl_imu_get_drdy_count(void)
  *   pitch > 0 = nose-up
  *   yaw   > 0 = counterclockwise (turn left)
  */
+static bool m_airborne;   /* selects the accel-correction gain (see above) */
+
+void cf21bl_imu_set_airborne(bool airborne)
+{
+    m_airborne = airborne;
+}
+
 void cf21bl_imu_filter_init(void)
 {
     mq0 = 1.0f; mq1 = 0.0f; mq2 = 0.0f; mq3 = 0.0f;
     mifbx = 0.0f; mifby = 0.0f; mifbz = 0.0f;
+    m_airborne = false;
 }
 
 void cf21bl_imu_filter_update(const cf21bl_imu_sample_t *sample, float dt_s,
@@ -364,9 +395,12 @@ void cf21bl_imu_filter_update(const cf21bl_imu_sample_t *sample, float dt_s,
         mifby += MAHONY_TWO_KI * halfey * dt_s;
         mifbz += MAHONY_TWO_KI * halfez * dt_s;
 
-        gx += mifbx + MAHONY_TWO_KP * halfex;
-        gy += mifby + MAHONY_TWO_KP * halfey;
-        gz += mifbz + MAHONY_TWO_KP * halfez;
+        /* Two-stage accel-correction gain (see MAHONY_TWO_KP_AIR above) */
+        float two_kp = m_airborne ? MAHONY_TWO_KP_AIR : MAHONY_TWO_KP;
+
+        gx += mifbx + two_kp * halfex;
+        gy += mifby + two_kp * halfey;
+        gz += mifbz + two_kp * halfez;
     } else {
         mifbx = 0.0f; mifby = 0.0f; mifbz = 0.0f;
     }

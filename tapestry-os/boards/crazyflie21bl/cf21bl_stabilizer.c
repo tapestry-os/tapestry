@@ -124,6 +124,16 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
  * Without this term the P-only loop has no damping at all and
  * orbits/limit-cycles around the setpoint. */
 #define CF21BL_POS_KD          0.14f   /* rad per m/s */
+/* Slow position integrator (WS6 item 3): trims the standing offset a
+ * level-reference bias creates (offset = bias/KP; ~0.35 m observed
+ * 2026-07-05 for ~1.6° of bias).  Deliberately slow relative to the loop
+ * (ωn≈0.9 rad/s): a 0.35 m error winds in ≈8 s, so it adds no meaningful
+ * phase lag at the loop frequency.  Integrates the BODY-frame error —
+ * the bias being trimmed lives in the body/IMU frame, so the trim must
+ * rotate with the airframe, not the world.  Clamped to ±5° (larger than
+ * any plausible level bias); reset at idle and on fix loss. */
+#define CF21BL_POS_KI          0.010f  /* rad per m·s */
+#define CF21BL_POS_ILIM_RAD    (5.0f * (float)M_PI / 180.0f)
 #define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
 #define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
@@ -327,6 +337,11 @@ static int64_t g_sp_last_ms;
 
 /* Tumble supervisor state — written only by the stabilizer thread. */
 static bool g_tumbled;       /* latched on crash; cleared only by power-cycle */
+static bool g_airborne;      /* liftoff detected; drives the Mahony two-stage
+                              * accel gain (cf21bl_imu_set_airborne).  Set when
+                              * altitude rises >0.15 m above home, cleared only
+                              * at the idle sentinel — mid-flight z dips don't
+                              * flap the gain. */
 static int  g_tumble_count;  /* consecutive below-threshold samples            */
 
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
@@ -370,7 +385,14 @@ static float wrap180f(float a)
  * Position setpoints are offsets from this origin. */
 static float    g_pos_home_x;
 static float    g_pos_home_y;
+static float    g_pos_home_z;
 static bool     g_pos_home_set;
+static float    g_pos_ix;        /* position integrator, body frame, rad */
+static float    g_pos_iy;
+static float    g_yaw_now_deg;   /* last Mahony yaw (previous 1 kHz tick) —
+                                  * pos-hold runs before this tick's
+                                  * filter_update; 1 ms staleness is
+                                  * irrelevant at these dynamics */
 #endif
 
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
@@ -562,7 +584,18 @@ static void stabilizer_fn(void *a, void *b, void *c)
             if (!g_pos_home_set) {
                 g_pos_home_x   = lhpos.x;
                 g_pos_home_y   = lhpos.y;
+                g_pos_home_z   = lhpos.z;
                 g_pos_home_set = true;
+            }
+
+            /* Liftoff detection for the Mahony two-stage accel gain: keep
+             * full gain through arm/spin-up/ramp (vibration disturbances
+             * re-level in ~2.5 s), drop to the slow airborne gain only
+             * once genuinely flying. */
+            if (!g_airborne && (lhpos.z - g_pos_home_z) > 0.15f) {
+                g_airborne = true;
+                cf21bl_imu_set_airborne(true);
+                LOG_INF("airborne — Mahony accel gain -> flight value");
             }
 
             float sp_x = sp.linear.x * CF21BL_POS_MAX_M;
@@ -584,14 +617,39 @@ static void stabilizer_fn(void *a, void *b, void *c)
             if (ey >  0.75f) { ey =  0.75f; }
             if (ey < -0.75f) { ey = -0.75f; }
             {
-                /* PD correction in radians, converted to degrees for the
+                /* PID correction in radians, converted to degrees for the
                  * angle loop.  The velocity term (see CF21BL_POS_KD) damps
-                 * the otherwise-undamped P loop. */
+                 * the otherwise-undamped P loop; the slow integrator (see
+                 * CF21BL_POS_KI) trims the level-bias standing offset. */
                 lh2_position_t lhvel = { 0 };
                 (void)cf21bl_lighthouse_get_velocity(&lhvel);
 
-                float cx_rad = CF21BL_POS_KP * ex - CF21BL_POS_KD * lhvel.x;
-                float cy_rad = CF21BL_POS_KP * ey - CF21BL_POS_KD * lhvel.y;
+                /* Rotate world-frame error/velocity into the body-aligned
+                 * control frame by the current Mahony yaw (boot-relative).
+                 * Under YAW_HOLD this is ≈0 for the whole flight; it
+                 * matters when yaw drifts or is later commanded.  NOTE:
+                 * Mahony yaw has no absolute reference, so the boot
+                 * placement requirement (nose along world +X at power-on)
+                 * STILL STANDS — this only keeps corrections mapped
+                 * correctly if the heading moves after boot. */
+                float psi  = g_yaw_now_deg * ((float)M_PI / 180.0f);
+                float cpsi = cosf(psi), spsi = sinf(psi);
+                float ex_b =  cpsi * ex      + spsi * ey;
+                float ey_b = -spsi * ex      + cpsi * ey;
+                float vx_b =  cpsi * lhvel.x + spsi * lhvel.y;
+                float vy_b = -spsi * lhvel.x + cpsi * lhvel.y;
+
+                g_pos_ix += CF21BL_POS_KI * ex_b * CF21BL_LOOP_DT;
+                g_pos_iy += CF21BL_POS_KI * ey_b * CF21BL_LOOP_DT;
+                if (g_pos_ix >  CF21BL_POS_ILIM_RAD) { g_pos_ix =  CF21BL_POS_ILIM_RAD; }
+                if (g_pos_ix < -CF21BL_POS_ILIM_RAD) { g_pos_ix = -CF21BL_POS_ILIM_RAD; }
+                if (g_pos_iy >  CF21BL_POS_ILIM_RAD) { g_pos_iy =  CF21BL_POS_ILIM_RAD; }
+                if (g_pos_iy < -CF21BL_POS_ILIM_RAD) { g_pos_iy = -CF21BL_POS_ILIM_RAD; }
+
+                float cx_rad = CF21BL_POS_KP * ex_b + g_pos_ix
+                             - CF21BL_POS_KD * vx_b;
+                float cy_rad = CF21BL_POS_KP * ey_b + g_pos_iy
+                             - CF21BL_POS_KD * vy_b;
 
                 if (cx_rad >  CF21BL_POS_OLIM_RAD) { cx_rad =  CF21BL_POS_OLIM_RAD; }
                 if (cx_rad < -CF21BL_POS_OLIM_RAD) { cx_rad = -CF21BL_POS_OLIM_RAD; }
@@ -604,16 +662,22 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 static int pos_log_div;
                 if (++pos_log_div >= 500) {
                     pos_log_div = 0;
-                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f vx=%.3f vy=%.3f",
+                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f vx=%.3f vy=%.3f ix=%.2f iy=%.2f",
                             (double)lhpos.x, (double)lhpos.y, (double)lhpos.z,
                             (double)ex, (double)ey,
-                            (double)lhvel.x, (double)lhvel.y);
+                            (double)lhvel.x, (double)lhvel.y,
+                            (double)(g_pos_ix * 180.0f / (float)M_PI),
+                            (double)(g_pos_iy * 180.0f / (float)M_PI));
                 }
             }
         } else if (g_pos_home_set && !cf21bl_lighthouse_is_valid()) {
-            /* Fix lost mid-flight: log once and allow angle-mode fallback */
+            /* Fix lost mid-flight: log once and allow angle-mode fallback.
+             * Drop the integrator too — its trim was wound against a home
+             * that will be re-captured on re-acquisition. */
             LOG_WRN("LH2 fix lost, falling back to angle mode feedforward");
             g_pos_home_set = false;
+            g_pos_ix = 0.0f;
+            g_pos_iy = 0.0f;
         }
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
@@ -623,6 +687,9 @@ static void stabilizer_fn(void *a, void *b, void *c)
          * either feature is enabled — not just in angle mode. */
         cf21bl_imu_attitude_t att;
         cf21bl_imu_filter_update(&sample, CF21BL_LOOP_DT, &att);
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+        g_yaw_now_deg = att.yaw_deg;   /* consumed by pos-hold next tick */
+#endif
 #endif
 
 #ifdef CONFIG_CF21BL_ANGLE_MODE
@@ -719,6 +786,14 @@ static void stabilizer_fn(void *a, void *b, void *c)
             pid_reset(&g_pid_roll_angle,  att.roll_deg);
             pid_reset(&g_pid_pitch_angle, att.pitch_deg);
 #endif
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+            g_pos_ix = 0.0f;
+            g_pos_iy = 0.0f;
+#endif
+            /* Back on the ground: restore the fast Mahony accel gain so
+             * the level reference re-converges before the next takeoff. */
+            g_airborne = false;
+            cf21bl_imu_set_airborne(false);
 #ifdef CONFIG_CF21BL_YAW_HOLD
             /* Re-seed the heading target at the current yaw so takeoff never
              * starts with a stale heading error. */
@@ -769,6 +844,14 @@ static void stabilizer_fn(void *a, void *b, void *c)
             float net_az_ms2 = (att.accel_up_g - 1.0f) * CF21BL_G_MPS2;
             vel_est += net_az_ms2 * CF21BL_LOOP_DT;
             alt_est += vel_est * CF21BL_LOOP_DT;
+
+            /* Liftoff detection for the Mahony two-stage accel gain
+             * (baro path; the lighthouse path does the same above). */
+            if (!g_airborne && alt_est > 0.15f) {
+                g_airborne = true;
+                cf21bl_imu_set_airborne(true);
+                LOG_INF("airborne — Mahony accel gain -> flight value");
+            }
 
             /* Poll BMP388 every CF21BL_BARO_POLL_DIV iterations (~50 Hz) and
              * correct both filter states from the resulting position

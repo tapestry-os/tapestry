@@ -18,8 +18,13 @@
  * and axes are the DRONE'S pose during geometry estimation: +X is wherever
  * the nose pointed while calibrating.  So: place the drone at power-on in
  * the same spot/orientation it had during cfclient geometry estimation.
- * Yaw hold then keeps that alignment valid for the whole flight.  (A yaw-
- * rotation of the error vector would lift this requirement — future work.)
+ * Yaw hold keeps that alignment, and the stabilizer additionally rotates
+ * the position error by the Mahony yaw estimate, so post-boot yaw drift or
+ * commanded yaw no longer corrupts the corrections.  Mahony yaw is
+ * boot-relative (no absolute reference), so the power-on placement
+ * requirement itself STILL STANDS — lifting it needs an absolute yaw
+ * estimate (e.g. correlating commanded tilt with measured lighthouse
+ * motion) — future work.
  *
  * Sanity check after any recalibration: with the drone on the floor at the
  * calibration spot, Stage 2 home should read x≈0, y≈0, z≈0.  A large home
@@ -44,7 +49,7 @@
  *   5  Slow ramp: collective climbs from SPIN_START at RAMP_RATE/s
  *      until lighthouse Z shows liftoff (> LIFTOFF_M above ground)
  *   6  Hold: PID from natural hover FF, target HOME_Z + HOVER_HEIGHT
- *      for 10 s, position logged at 2 Hz
+ *      for HOLD_DURATION_S, position logged at 2 Hz
  *   7  Land: symmetric slow ramp DOWN at RAMP_RATE/s until Z is back
  *      near ground, then cut to idle
  *   8  Idle 2 s
@@ -129,6 +134,11 @@ static const lh2_bs_pose_t BS1 = {
 /* ── Mission parameters ───────────────────────────────────────────────────── */
 
 #define HOVER_HEIGHT_M  0.30f   /* target altitude above ground (metres) */
+#define HOLD_DURATION_S 30      /* Stage 6 hold time; raised 10→30 for the
+                                 * untethered validation campaign (Phase B) —
+                                 * long enough to see the standing offset trim
+                                 * out (integrator winds in ~8 s) and any
+                                 * residual orbit complete 2+ periods */
 
 /* ── Throttle ramp parameters ─────────────────────────────────────────────── */
 
@@ -458,8 +468,9 @@ int main(void)
     }
 
     /* ── Stage 6: hold at target height ─────────────────────────────────── */
-    LOG_INF("Stage 6: holding %.0f cm for 10 s (ff=%.3f, PID active) ...",
-            (double)(HOVER_HEIGHT_M * 100.0f), (double)g_ff_hover);
+    LOG_INF("Stage 6: holding %.0f cm for %d s (ff=%.3f, PID active) ...",
+            (double)(HOVER_HEIGHT_M * 100.0f), HOLD_DURATION_S,
+            (double)g_ff_hover);
 
     /* Initialise PID state: Z target ramps from current position to goal.
      * Retry until we get a validated reading (within HOME_XY_RADIUS) so an
@@ -483,7 +494,7 @@ int main(void)
     int fix_loss_count = 0;
 
     int log_tick = 0;
-    for (int i = 0; i < 500; i++) {    /* 500 × 20 ms = 10 s */
+    for (int i = 0; i < HOLD_DURATION_S * 50; i++) {   /* 50 iters/s (20 ms) */
         ramp_z_target(hold_goal, hold_step);
 
         lh2_position_t pos;
