@@ -53,21 +53,23 @@
 
 LOG_MODULE_REGISTER(alt_hold_test, LOG_LEVEL_INF);
 
-/* Paste your calibrated poses from cfclient here. Lighthouse is used here
- * purely as an informational cross-check logged alongside the baro estimate
- * (if a fix is available) — it does not drive any control decision, so the
- * test still runs fine with no base stations powered on. */
+/* From lighthouse_cal_office_260706.yaml (2026-07-06, second recalibration same day —
+ * BS1 suspected partially occluded, tilted further and re-run). Lighthouse
+ * is used here purely as an informational cross-check logged alongside
+ * the baro estimate (if a fix is available) — it does not drive any
+ * control decision, so the test still runs fine with no base stations
+ * powered on. */
 static const lh2_bs_pose_t BS0 = {
-    .origin = {-0.1968589723110199f, 2.560563087463379f, 1.2248899936676025f},
-    .rot    = {0.24485638737678528f, 0.9695349335670471f, -0.006882685702294111f,
-               -0.9386824369430542f, 0.23527540266513824f, -0.25203338265419006f,
-               -0.2427358329296112f, 0.0681726410984993f,  0.9676940441131592f}
+    .origin = {-0.6803646087646484f, 0.6335355639457703f, 1.615210771560669f},
+    .rot    = {0.8344101905822754f, -0.08563866466283798f, 0.5444498062133789f,
+               0.13026301562786102f, 0.9905099272727966f, -0.04383661970496178f,
+               -0.535528838634491f, 0.1074993908405304f, 0.8376471400260925f}
 };
 static const lh2_bs_pose_t BS1 = {
-    .origin = {1.066727876663208f, -1.6772024631500244f, 0.9965450167655945f},
-    .rot    = {-0.25859639048576355f, -0.9628901481628418f,  -0.07726871222257614f,
-                0.9137280583381653f,  -0.2697758674621582f,   0.30384543538093567f,
-               -0.3134150207042694f,   0.007970745675265789f, 0.9495828151702881f}
+    .origin = {0.09399518370628357f, -2.2131965160369873f, 1.4227608442306519f},
+    .rot    = {0.049453821033239365f, -0.9982976317405701f, 0.03092208132147789f,
+               0.9098809957504272f, 0.057799000293016434f, 0.41082337498664856f,
+               -0.4119112491607666f, 0.00781862810254097f, 0.911190390586853f}
 };
 #define BS0_CHANNEL  0
 #define BS1_CHANNEL  1

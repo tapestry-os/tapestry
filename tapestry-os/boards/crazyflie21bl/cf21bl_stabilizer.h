@@ -66,6 +66,7 @@
 #ifndef TAPESTRY_CF21BL_STABILIZER_H
 #define TAPESTRY_CF21BL_STABILIZER_H
 
+#include <stdbool.h>
 #include <tapestry/substrate.h>
 
 #ifdef __cplusplus
@@ -84,6 +85,19 @@ int cf21bl_stabilizer_start(void);
  * Called from substrate_move(); the stabilizer thread reads it each cycle.
  */
 void cf21bl_stabilizer_set_setpoint(const substrate_twist_t *sp);
+
+/*
+ * cf21bl_stabilizer_get_pos_home — Copy out the lighthouse home position
+ * (world-frame metres, captured at first valid fix — see "Position hold"
+ * above) that linear.x/y=0 currently resolves to.  Needed by callers that
+ * want to command an ABSOLUTE world-frame target rather than a home-relative
+ * one (e.g. a multi-drone formation converging on shared world coordinates):
+ *   sp.linear.x = (target_x - home_x) / CONFIG_CF21BL_POS_MAX_M, clamped.
+ * Returns false (leaves *x and *y untouched) when CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+ * is not built in, or no home has been captured yet (no fix seen since boot
+ * or since the last fix loss — home re-captures at the next fix).
+ */
+bool cf21bl_stabilizer_get_pos_home(float *x, float *y);
 
 #ifdef __cplusplus
 }

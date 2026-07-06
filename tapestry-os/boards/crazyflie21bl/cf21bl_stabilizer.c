@@ -131,9 +131,17 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
  * phase lag at the loop frequency.  Integrates the BODY-frame error —
  * the bias being trimmed lives in the body/IMU frame, so the trim must
  * rotate with the airframe, not the world.  Clamped to ±5° (larger than
- * any plausible level bias); reset at idle and on fix loss. */
+ * any plausible level bias).  PERSISTS across idle and fix loss — the
+ * bias is a physical constant of the airframe, so the learned trim stays
+ * valid between hops; reset only at boot. */
 #define CF21BL_POS_KI          0.010f  /* rad per m·s */
 #define CF21BL_POS_ILIM_RAD    (5.0f * (float)M_PI / 180.0f)
+/* Only wind the trim while near the setpoint.  During an excursion the
+ * error is dynamics, not bias — integrating it makes the trim ride the
+ * oscillation (2026-07-05 30s flight: iy pumped 1.36°→0.06° with the y
+ * excursions while ix, on the quiet axis, converged cleanly to the
+ * ~1.7° level bias).  Frozen — not reset — beyond this radius. */
+#define CF21BL_POS_KI_FREEZE_M 0.30f
 #define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
 #define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
@@ -639,8 +647,12 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 float vx_b =  cpsi * lhvel.x + spsi * lhvel.y;
                 float vy_b = -spsi * lhvel.x + cpsi * lhvel.y;
 
-                g_pos_ix += CF21BL_POS_KI * ex_b * CF21BL_LOOP_DT;
-                g_pos_iy += CF21BL_POS_KI * ey_b * CF21BL_LOOP_DT;
+                if (fabsf(ex_b) < CF21BL_POS_KI_FREEZE_M) {
+                    g_pos_ix += CF21BL_POS_KI * ex_b * CF21BL_LOOP_DT;
+                }
+                if (fabsf(ey_b) < CF21BL_POS_KI_FREEZE_M) {
+                    g_pos_iy += CF21BL_POS_KI * ey_b * CF21BL_LOOP_DT;
+                }
                 if (g_pos_ix >  CF21BL_POS_ILIM_RAD) { g_pos_ix =  CF21BL_POS_ILIM_RAD; }
                 if (g_pos_ix < -CF21BL_POS_ILIM_RAD) { g_pos_ix = -CF21BL_POS_ILIM_RAD; }
                 if (g_pos_iy >  CF21BL_POS_ILIM_RAD) { g_pos_iy =  CF21BL_POS_ILIM_RAD; }
@@ -656,28 +668,53 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 if (cy_rad >  CF21BL_POS_OLIM_RAD) { cy_rad =  CF21BL_POS_OLIM_RAD; }
                 if (cy_rad < -CF21BL_POS_OLIM_RAD) { cy_rad = -CF21BL_POS_OLIM_RAD; }
 
-                pos_pitch_correction_deg = cx_rad * (180.0f / (float)M_PI);
-                pos_roll_correction_deg  = cy_rad * (180.0f / (float)M_PI);
+                /* NEGATED here per the "Axis sign convention" comment above
+                 * this block: forward (+X) motion requires negative pitch,
+                 * left (+Y) motion requires negative roll.  cx_rad/cy_rad
+                 * are positive when MORE +X/+Y motion is needed (ex_b/ey_b
+                 * positive), so the correction must flip sign before being
+                 * added to pitch_sp_deg/roll_sp_deg below — this negation
+                 * was missing (found 2026-07-06 after extensive independent
+                 * ruling-out of calibration, hardware, yaw, and lighthouse-
+                 * sensor causes for a reproducible position-hold runaway;
+                 * the sibling non-POS_HOLD branch two blocks down already
+                 * correctly subtracts sp.linear.x/y, confirming this is the
+                 * intended convention everywhere else it's applied). */
+                pos_pitch_correction_deg = -cx_rad * (180.0f / (float)M_PI);
+                pos_roll_correction_deg  = -cy_rad * (180.0f / (float)M_PI);
 
                 static int pos_log_div;
                 if (++pos_log_div >= 500) {
                     pos_log_div = 0;
-                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f vx=%.3f vy=%.3f ix=%.2f iy=%.2f",
+                    /* yaw added 2026-07-06: altitude-hold-tether (no
+                     * LIGHTHOUSE_POS_HOLD, no YAW_HOLD) flew stable on both
+                     * "bad" drones, isolating the problem to this subsystem
+                     * — but this log line never showed whether the Mahony
+                     * yaw estimate (boot-relative, no absolute reference,
+                     * used a few lines above to rotate ex/ey/vx/vy into
+                     * body frame) drifts during flight.  A large in-flight
+                     * yaw drift would misdirect every position correction
+                     * without touching roll/pitch self-leveling or
+                     * altitude at all — invisible to the altitude-hold-
+                     * tether test, and invisible to every prior flight log
+                     * since yaw was never logged here before now. */
+                    LOG_INF("pos x=%.3f y=%.3f z=%.3f ex=%.3f ey=%.3f vx=%.3f vy=%.3f ix=%.2f iy=%.2f yaw=%.1f",
                             (double)lhpos.x, (double)lhpos.y, (double)lhpos.z,
                             (double)ex, (double)ey,
                             (double)lhvel.x, (double)lhvel.y,
                             (double)(g_pos_ix * 180.0f / (float)M_PI),
-                            (double)(g_pos_iy * 180.0f / (float)M_PI));
+                            (double)(g_pos_iy * 180.0f / (float)M_PI),
+                            (double)g_yaw_now_deg);
                 }
             }
         } else if (g_pos_home_set && !cf21bl_lighthouse_is_valid()) {
             /* Fix lost mid-flight: log once and allow angle-mode fallback.
-             * Drop the integrator too — its trim was wound against a home
-             * that will be re-captured on re-acquisition. */
+             * The integrator is kept: the trim is body-frame level bias,
+             * not home-relative, so it stays valid across re-acquisition
+             * (and holding the learned tilt during the outage beats
+             * reverting to the biased level). */
             LOG_WRN("LH2 fix lost, falling back to angle mode feedforward");
             g_pos_home_set = false;
-            g_pos_ix = 0.0f;
-            g_pos_iy = 0.0f;
         }
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
@@ -786,10 +823,13 @@ static void stabilizer_fn(void *a, void *b, void *c)
             pid_reset(&g_pid_roll_angle,  att.roll_deg);
             pid_reset(&g_pid_pitch_angle, att.pitch_deg);
 #endif
-#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
-            g_pos_ix = 0.0f;
-            g_pos_iy = 0.0f;
-#endif
+            /* NOTE: g_pos_ix/iy deliberately NOT reset here — the trim is
+             * a physical constant of the airframe (IMU level bias), so the
+             * value learned in flight stays valid across landings.  Every
+             * takeoff after the first starts pre-trimmed instead of
+             * re-learning the bias airborne (the untrimmed first ~10 s
+             * caused a 1.5 m departure on a fresh pack, 2026-07-05).
+             * Reset only at boot (static zero-init). */
             /* Back on the ground: restore the fast Mahony accel gain so
              * the level reference re-converges before the next takeoff. */
             g_airborne = false;
@@ -1048,4 +1088,24 @@ void cf21bl_stabilizer_set_setpoint(const substrate_twist_t *sp)
     g_sp_last_ms = k_uptime_get();
 #endif
     k_spin_unlock(&g_sp_lock, key);
+}
+
+bool cf21bl_stabilizer_get_pos_home(float *x, float *y)
+{
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+    /* Unlocked: g_pos_home_x/y change only a few times per flight (captured
+     * once per fix acquisition) and the reader tolerates a stale-by-one-tick
+     * value, same tradeoff as other slowly-varying cross-thread reads in
+     * this file (e.g. cf21bl_pm_vbat()). */
+    if (!g_pos_home_set) {
+        return false;
+    }
+    *x = g_pos_home_x;
+    *y = g_pos_home_y;
+    return true;
+#else
+    ARG_UNUSED(x);
+    ARG_UNUSED(y);
+    return false;
+#endif
 }

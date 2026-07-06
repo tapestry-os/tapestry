@@ -206,13 +206,25 @@ static bool           g_pos_valid;
 
 /* LPF coefficient for the position-derivative velocity estimate (applied per
  * accepted fix, ~50 Hz → time constant ≈ 60 ms). */
-#define LH2_VEL_LPF_ALPHA  0.3f
-/* When the position derivative can't be trusted (jump-gate re-seed, long
- * fix gap, or two publishes so close together the division blows up), the
- * velocity estimate DECAYS with this half-life instead of snapping to
- * zero.  Flight logs 2026-07-05 showed vx/vy=0.000 exactly at peak
- * position errors — every hard-zero turned the position loop P-only right
- * when damping mattered most. */
+/* Velocity estimate: finite difference over a ~150 ms baseline (ring
+ * buffer of accepted fixes) instead of per-publish (~10–20 ms) deltas.
+ * Position noise (median quantization, ~cm) is amplified by 1/dt when
+ * differentiating: the short-baseline version needed a heavy LPF
+ * (α=0.3) whose lag+attenuation cut the delivered damping ~4× — the
+ * 2026-07-05 30 s-hold flight measured real |v|≈0.12 m/s while the
+ * estimate logged 0.03, so the Kd term flew at a quarter strength.  A
+ * 150 ms baseline divides the same noise by ~10× more time; only light
+ * smoothing is needed and the estimate tracks real motion. */
+#define LH2_VEL_BASELINE_MS      150   /* target finite-difference baseline  */
+#define LH2_VEL_MIN_BASELINE_MS  60    /* shortest usable baseline (startup) */
+#define LH2_VEL_MAX_BASELINE_MS  400   /* older ⇒ a fix outage — restart     */
+#define LH2_VEL_BUF_N            32    /* ≥320 ms of history at ~100 fix/s   */
+#define LH2_VEL_LPF_ALPHA        0.5f
+/* When the derivative can't be formed (jump-gate re-seed flushes the
+ * history, fix outage, startup), the velocity estimate DECAYS with this
+ * half-life instead of snapping to zero.  Flight logs 2026-07-05 showed
+ * vx/vy=0.000 exactly at peak position errors — every hard-zero turned
+ * the position loop P-only right when damping mattered most. */
 #define LH2_VEL_DECAY_HALF_MS  100.0f
 
 /* Sweep pairing: two frames belong to the same revolution when their
@@ -265,9 +277,30 @@ static bool           g_pos_valid;
  * motion.  Tightened 0.5→0.2 (2026-07-05): phantom #2's clean-miss fixes
  * landed only 0.3–0.4 m off and sailed under the 0.5 m threshold; the
  * flip-flop counter already protects against interleaved phantoms
- * stealing a re-seed. */
+ * stealing a re-seed.
+ *
+ * REVISED 2026-07-06: LH2_JUMP_M alone assumes the ~50 Hz fix rate holds
+ * continuously.  This room's 2026-07-06 base-station placement produces
+ * noticeably more pair-miss/angle-reject traffic than the old placement
+ * (visible throughout every flight log) — when the accepted-fix rate dips,
+ * two consecutive accepted fixes are further apart in TIME, so genuine,
+ * physically real motion can legitimately cover more than a fixed 0.2 m
+ * between them.  Confirmed on a real flight log (2026-07-06): the velocity
+ * estimate disagreed in SIGN with the velocity implied by real consecutive
+ * position readings, at exactly the points the drone was moving fastest —
+ * consistent with the jump gate misreading a real fast movement (across a
+ * temporarily slower fix cadence) as a teleport, discarding it or wiping
+ * the velocity history via re-seed, and leaving a stale/decayed velocity
+ * feeding CF21BL_POS_KD right when accurate damping mattered most (a
+ * wrong-signed "damping" term adds energy instead of removing it).  The
+ * jump limit is now a SPEED limit (LH2_MAX_SPEED_MPS), scaled by the
+ * actual elapsed time since the last accepted fix, so a real gap in fix
+ * rate no longer misclassifies real motion as a teleport — only motion
+ * that would require exceeding this drone's plausible top speed still
+ * gets rejected. */
 #define LH2_JUMP_M         0.2f
 #define LH2_JUMP_REJECT_N  10
+#define LH2_MAX_SPEED_MPS  3.0f   /* generous ceiling for this airframe */
 
 /* Median filter state — circular buffer of raw triangulation results */
 static float g_med_buf[3][LH2_MEDIAN_N];
@@ -799,6 +832,12 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
      * re-seed (velocity restarts from zero).  Alternating good/bad solutions
      * keep resetting the counter, so sustained flip-flopping never re-seeds
      * onto the wrong branch. */
+    /* t_ms/dt_ms computed here (moved up from the velocity section below)
+     * so the jump gate can scale its distance threshold by actual elapsed
+     * time since the last accepted fix, not assume a fixed fix rate. */
+    int64_t t_ms  = k_uptime_get();
+    int64_t dt_ms = t_ms - g_vel_t_ms;
+
     static bool  g_jump_seeded;
     static int   g_jump_far_n;
     bool derivative_valid = true;
@@ -806,7 +845,9 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
         float jx = mx - g_prev[0];
         float jy = my - g_prev[1];
         float jz = mz - g_prev[2];
-        if (jx * jx + jy * jy + jz * jz > LH2_JUMP_M * LH2_JUMP_M) {
+        float jump_limit_m = LH2_MAX_SPEED_MPS * (float)dt_ms / 1000.0f;
+        if (jump_limit_m < LH2_JUMP_M) { jump_limit_m = LH2_JUMP_M; }
+        if (jx * jx + jy * jy + jz * jz > jump_limit_m * jump_limit_m) {
             if (++g_jump_far_n < LH2_JUMP_REJECT_N) {
                 return;                      /* discard outlier fix */
             }
@@ -823,30 +864,72 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
         derivative_valid = false;
     }
 
-    /* Velocity from the filtered-position derivative, low-passed.  Feeds the
+    /* Velocity from a long-baseline finite difference over the accepted-fix
+     * history (see LH2_VEL_BASELINE_MS block comment).  Feeds the
      * stabilizer's position-hold damping term — a P-only position loop has no
      * damping and limit-cycles (stock runs a full velocity PID between its
      * position and attitude loops for the same reason). */
-    int64_t t_ms  = k_uptime_get();
-    int64_t dt_ms = t_ms - g_vel_t_ms;
     float vx = g_vel.x, vy = g_vel.y, vz = g_vel.z;
 
-    if (derivative_valid && g_vel_t_ms != 0 && dt_ms >= 5 && dt_ms <= 500) {
-        float inv_dt = 1000.0f / (float)dt_ms;
+    static float   g_vhist[LH2_VEL_BUF_N][3];
+    static int64_t g_vhist_t[LH2_VEL_BUF_N];
+    static int     g_vhist_head;    /* next write slot */
+    static int     g_vhist_n;
+
+    if (!derivative_valid) {
+        /* Re-seed/first fix: history belongs to the old solution branch —
+         * a difference across the teleport would read tens of m/s. */
+        g_vhist_n = 0;
+    }
+
+    /* Most recent history sample at least BASELINE_MS old; fall back to
+     * the oldest entry during startup if it spans MIN_BASELINE_MS. */
+    const float *old_m = NULL;
+    int64_t      old_t = 0;
+    for (int i = 1; i <= g_vhist_n; i++) {
+        int idx = (g_vhist_head - i + LH2_VEL_BUF_N) % LH2_VEL_BUF_N;
+        if (t_ms - g_vhist_t[idx] >= LH2_VEL_BASELINE_MS) {
+            old_m = g_vhist[idx];
+            old_t = g_vhist_t[idx];
+            break;
+        }
+    }
+    if (old_m == NULL && g_vhist_n > 0) {
+        int idx = (g_vhist_head - g_vhist_n + LH2_VEL_BUF_N) % LH2_VEL_BUF_N;
+        if (t_ms - g_vhist_t[idx] >= LH2_VEL_MIN_BASELINE_MS) {
+            old_m = g_vhist[idx];
+            old_t = g_vhist_t[idx];
+        }
+    }
+
+    if (old_m != NULL && (t_ms - old_t) <= LH2_VEL_MAX_BASELINE_MS) {
+        float inv_dt = 1000.0f / (float)(t_ms - old_t);
         float a = LH2_VEL_LPF_ALPHA;
-        vx += a * ((mx - g_prev[0]) * inv_dt - vx);
-        vy += a * ((my - g_prev[1]) * inv_dt - vy);
-        vz += a * ((mz - g_prev[2]) * inv_dt - vz);
+        vx += a * ((mx - old_m[0]) * inv_dt - vx);
+        vy += a * ((my - old_m[1]) * inv_dt - vy);
+        vz += a * ((mz - old_m[2]) * inv_dt - vz);
     } else {
-        /* Derivative unusable (first fix, re-seed, >500 ms gap, or two
-         * publishes <5 ms apart — both BS pairs completing near-
-         * simultaneously hits this constantly).  Decay the estimate by
-         * elapsed time instead of zeroing it: a hard zero here is what
-         * kept stripping the position loop's damping mid-flight. */
+        if (old_m != NULL) {
+            /* Nearest usable sample predates a fix outage — restart the
+             * history rather than difference across the gap. */
+            g_vhist_n = 0;
+        }
+        /* No usable baseline: decay the estimate by elapsed time instead
+         * of zeroing it — a hard zero here is what kept stripping the
+         * position loop's damping mid-flight. */
         float k = exp2f(-(float)dt_ms / LH2_VEL_DECAY_HALF_MS);
         vx *= k; vy *= k; vz *= k;
     }
-    g_prev[0] = mx; g_prev[1] = my; g_prev[2] = mz;
+
+    /* Push this fix into the history ring */
+    g_vhist[g_vhist_head][0] = mx;
+    g_vhist[g_vhist_head][1] = my;
+    g_vhist[g_vhist_head][2] = mz;
+    g_vhist_t[g_vhist_head]  = t_ms;
+    g_vhist_head = (g_vhist_head + 1) % LH2_VEL_BUF_N;
+    if (g_vhist_n < LH2_VEL_BUF_N) { g_vhist_n++; }
+
+    g_prev[0] = mx; g_prev[1] = my; g_prev[2] = mz;   /* jump-gate reference */
     g_vel_t_ms = t_ms;
 
     k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
