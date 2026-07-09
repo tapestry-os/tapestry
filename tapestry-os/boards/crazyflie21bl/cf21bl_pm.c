@@ -137,6 +137,8 @@ void cf21bl_pm_syslink_input(const uint8_t *payload, uint8_t len)
 #include <zephyr/device.h>
 #include <zephyr/drivers/uart.h>
 
+#include "cf21bl_syslink_tx.h"
+
 #define SYSLINK_MAGIC_0               0xBCu
 #define SYSLINK_MAGIC_1               0xCFu
 #define SYSLINK_PM_BATTERY_STATE      0x13u
@@ -144,11 +146,6 @@ void cf21bl_pm_syslink_input(const uint8_t *payload, uint8_t len)
 #define SYSLINK_MTU                   32u
 
 static const struct device *pm_uart;
-
-/* Shared USART6 TX serialization — defined in cf21bl_crtp_log.c (always
- * compiled on this board).  Interleaving two writers' frames makes the
- * nRF51 parser eat one frame as the other's payload; both are then lost. */
-extern struct k_mutex cf21bl_syslink_tx_mutex;
 
 /* RX diagnostics: distinguishes "UART RX dead" (bytes stay 0) from "syslink
  * flows but no battery packets" (frames > 0, pm_frames == 0 → the nRF51 is

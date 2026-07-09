@@ -198,6 +198,18 @@ static uint8_t       g_bs_channel[LH2_BS_COUNT] = { 0, 1 }; /* default mapping *
 static lh2_bs_calib_t g_bs_calib[LH2_BS_COUNT];
 static bool           g_bs_calib_set[LH2_BS_COUNT];
 
+/* Per-channel ray health counters — quantify asymmetric BS quality (e.g.
+ * flights showing one BS's rays rejected/mispaired far more than the
+ * other's) instead of eyeballing sparsely-throttled debug lines. Indexed
+ * by raw channel (0-15), incremented in lh2_offsets_to_direction() (ok/
+ * rej_angle) and process_frame()'s pairing block (pair_miss); dumped and
+ * reset every LH2_STAT_PERIOD_MS by lh2_log_stats_maybe(). */
+#define LH2_STAT_PERIOD_MS 2000u
+static uint32_t g_ch_ok[16];
+static uint32_t g_ch_rej_angle[16];
+static uint32_t g_ch_pair_miss[16];
+static uint32_t g_stat_last_ms;
+
 /* Output position + velocity under spinlock */
 static struct k_spinlock g_pos_lock;
 static lh2_position_t g_pos;
@@ -510,6 +522,7 @@ static bool lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
      * block comment). */
     if (az > LH2_AZ_LIMIT_RAD || az < -LH2_AZ_LIMIT_RAD ||
         el > LH2_EL_MAX_RAD   || el < LH2_EL_MIN_RAD) {
+        g_ch_rej_angle[channel]++;
         static int rej_div;
         if (++rej_div >= 8) {
             rej_div = 0;
@@ -559,6 +572,7 @@ static bool lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
     }
 
     mat3_mul_vec(pose->rot, d_local, out);
+    g_ch_ok[channel]++;
     return true;
 }
 
@@ -623,8 +637,30 @@ static float lh2_median(const float src[LH2_MEDIAN_N])
  *
  * When a channel has two consecutive blocks, attempt position estimation.
  */
+static void lh2_log_stats_maybe(void)
+{
+    uint32_t now = k_uptime_get_32();
+    if (now - g_stat_last_ms < LH2_STAT_PERIOD_MS) {
+        return;
+    }
+    g_stat_last_ms = now;
+
+    for (int i = 0; i < LH2_BS_COUNT; i++) {
+        uint8_t ch = g_bs_channel[i];
+        LOG_INF("lh2 stats bs%d(ch%u): ok=%u rej_angle=%u pair_miss=%u",
+                i, ch, g_ch_ok[ch], g_ch_rej_angle[ch], g_ch_pair_miss[ch]);
+        g_ch_ok[ch]        = 0;
+        g_ch_rej_angle[ch] = 0;
+        g_ch_pair_miss[ch] = 0;
+    }
+}
+
 static void process_frame(const uint8_t data[LH2_FRAME_LEN])
 {
+    /* Per-BS ray health, dumped every LH2_STAT_PERIOD_MS regardless of this
+     * frame's content — see g_ch_ok/g_ch_rej_angle/g_ch_pair_miss above. */
+    lh2_log_stats_maybe();
+
     /* Sync frame: all 0xFF */
     bool is_sync = true;
     for (int i = 0; i < LH2_FRAME_LEN; i++) {
@@ -695,6 +731,13 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     uint32_t t0_diff = (fwd <= 0x800000u) ? fwd : (0x1000000u - fwd);
 
     if (!g_pair_valid[channel] || t0_diff > LH2_MAX_T0_DIFF) {
+        /* Only count as a miss if we actually had a pending partner to miss
+         * against — the very first sweep ever seen on a channel isn't a
+         * failure, just cold start. */
+        if (g_pair_valid[channel]) {
+            g_ch_pair_miss[channel]++;
+        }
+
         /* Pairing diagnostic (~1 Hz at typical frame rates): the observed
          * t0_diff distribution tells us where the same-revolution cluster
          * actually sits.  Expect a bimodal split: small values (the pair
@@ -796,9 +839,17 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     static int miss_div;
     if (++miss_div >= 64) {
         miss_div = 0;
-        LOG_INF("fix (%.2f, %.2f, %.2f) miss=%.3f m",
+        /* age0/age1: how old each BS's contributing ray was at this fix, ms.
+         * The BS that triggered this triangulation reads ~0; the other can
+         * be up to LH2_BLOCK_FRESH_MS old — a fix built from a stale ray
+         * paired with a fresh one is a real geometry error (the stale ray
+         * assumes the drone hasn't moved since it was measured), not just
+         * noise, and this makes that directly visible per-fix instead of
+         * inferred from scattered accept/reject counts. */
+        LOG_INF("fix (%.2f, %.2f, %.2f) miss=%.3f m age0=%u age1=%u",
                 (double)result[0], (double)result[1], (double)result[2],
-                (double)miss_m);
+                (double)miss_m,
+                now - g_dir_age[0], now - g_dir_age[1]);
     }
 
     /* Push raw result into the median buffer */

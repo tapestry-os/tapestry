@@ -19,7 +19,9 @@ target_sources(app PRIVATE src/main.c)
 if("${BOARD}" STREQUAL "crazyflie21bl")
     target_sources(app PRIVATE ${TAPESTRY_OS_ROOT}/boards/crazyflie21bl/cf21bl_iwdg.c)
     if(CONFIG_LOG)
-        target_sources(app PRIVATE ${TAPESTRY_OS_ROOT}/boards/crazyflie21bl/cf21bl_crtp_log.c)
+        target_sources(app PRIVATE
+            ${TAPESTRY_OS_ROOT}/boards/crazyflie21bl/cf21bl_crtp_log.c
+            ${TAPESTRY_OS_ROOT}/boards/crazyflie21bl/cf21bl_syslink_tx.c)
     endif()
 endif()
 

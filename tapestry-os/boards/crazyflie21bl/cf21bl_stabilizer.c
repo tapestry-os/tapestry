@@ -204,6 +204,25 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
  * examples/altitude-hold-test/src/main.c, which hit this exact failure mode. */
 #define CF21BL_ALT_OUTLIER_M   0.40f
 
+/* Lighthouse z as a second altitude correction source (CONFIG_CF21BL_
+ * LIGHTHOUSE_POS_HOLD only — reuses the home-z already captured for the
+ * position-hold liftoff check). Baro can be fooled by ground-effect
+ * pressure changes near the floor — confirmed 2026-07-xx: raw baro read
+ * ~0.56 m against a 0.30 m cruise target while lighthouse z read ~0 m
+ * (the drone was actually on the ground), driving a real unscheduled
+ * descent. Lighthouse triangulation doesn't share that failure mode, so
+ * fusing it in stops baro from unilaterally driving the descent. Same
+ * poll cadence as baro (CF21BL_BARO_POLL_DIV) rather than every 1 kHz
+ * tick — the lighthouse position cache updates asynchronously at roughly
+ * baro's own rate, and applying a KP-fraction correction every tick
+ * against a stale cached value would silently multiply the effective
+ * gain by however many ticks pass between real updates. Gains start
+ * equal to baro's (KP=0.06/0.02) — deliberately not favoring either
+ * source yet; raise the lighthouse gains later if it should dominate
+ * more, given it doesn't share baro's ground-effect failure mode. */
+#define CF21BL_ALT_LH_KP        0.06f
+#define CF21BL_VEL_LH_KP        0.02f
+
 /* Outer loop: altitude error [m] → climb-rate setpoint [m/s]. */
 #define CF21BL_ALT_POS_KP      0.8f
 #define CF21BL_ALT_POS_KI      0.1f
@@ -442,6 +461,9 @@ static void stabilizer_fn(void *a, void *b, void *c)
     float vel_est   = 0.0f;   /* world-frame vertical velocity, m/s (complementary filter) */
     float alt_baro  = 0.0f;   /* last raw (unfiltered) baro reading, m — logged for diagnosis */
     int   baro_cnt  = 0;
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+    float alt_lh    = 0.0f;   /* last lighthouse-derived altitude above home, m — logged for diagnosis */
+#endif
 #endif
 
     while (true) {
@@ -873,6 +895,9 @@ static void stabilizer_fn(void *a, void *b, void *c)
             vel_est   = 0.0f;
             alt_baro  = 0.0f;
             baro_cnt  = 0;
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+            alt_lh    = 0.0f;
+#endif
             g_land_t0_ms = 0;   /* abandon any in-progress descent state */
             linear_z_out = -1.0f;
         } else {
@@ -914,6 +939,24 @@ static void stabilizer_fn(void *a, void *b, void *c)
                     alt_est += CF21BL_ALT_BARO_KP * baro_err;
                     vel_est += CF21BL_VEL_BARO_KP * baro_err;
                 }
+
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+                /* Second, independent altitude correction (see
+                 * CF21BL_ALT_LH_KP above) — same poll cadence, same
+                 * single-sample outlier gate as baro, just a different
+                 * measurement of the same alt_est/vel_est pair. */
+                if (g_pos_home_set && cf21bl_lighthouse_is_valid()) {
+                    lh2_position_t lhpos_alt;
+                    if (cf21bl_lighthouse_get_position(&lhpos_alt) == 0) {
+                        alt_lh = lhpos_alt.z - g_pos_home_z;
+                        float lh_err = alt_lh - alt_est;
+                        if (fabsf(lh_err) <= CF21BL_ALT_OUTLIER_M) {
+                            alt_est += CF21BL_ALT_LH_KP * lh_err;
+                            vel_est += CF21BL_VEL_LH_KP * lh_err;
+                        }
+                    }
+                }
+#endif
             }
 
             /* ── Cascaded position → velocity → thrust ────────────────────
@@ -969,11 +1012,20 @@ static void stabilizer_fn(void *a, void *b, void *c)
             static int alt_log_div;
             if (++alt_log_div >= 500) {
                 alt_log_div = 0;
-#ifdef CONFIG_CF21BL_PM
+#if defined(CONFIG_CF21BL_PM) && defined(CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD)
+                LOG_INF("alt=%.3f m  raw=%.3f m  lh=%.3f m  vz=%.3f m/s  target=%.3f m  vz_sp=%.3f  T=%.2f  vbat=%.2f",
+                        (double)alt_est, (double)alt_baro, (double)alt_lh, (double)vel_est,
+                        (double)target_alt, (double)target_vz, (double)T_cmd,
+                        (double)cf21bl_pm_vbat());
+#elif defined(CONFIG_CF21BL_PM)
                 LOG_INF("alt=%.3f m  raw=%.3f m  vz=%.3f m/s  target=%.3f m  vz_sp=%.3f  T=%.2f  vbat=%.2f",
                         (double)alt_est, (double)alt_baro, (double)vel_est,
                         (double)target_alt, (double)target_vz, (double)T_cmd,
                         (double)cf21bl_pm_vbat());
+#elif defined(CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD)
+                LOG_INF("alt=%.3f m  raw=%.3f m  lh=%.3f m  vz=%.3f m/s  target=%.3f m  vz_sp=%.3f  T=%.2f",
+                        (double)alt_est, (double)alt_baro, (double)alt_lh, (double)vel_est,
+                        (double)target_alt, (double)target_vz, (double)T_cmd);
 #else
                 LOG_INF("alt=%.3f m  raw=%.3f m  vz=%.3f m/s  target=%.3f m  vz_sp=%.3f  T=%.2f",
                         (double)alt_est, (double)alt_baro, (double)vel_est,

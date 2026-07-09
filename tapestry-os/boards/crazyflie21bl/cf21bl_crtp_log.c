@@ -35,21 +35,13 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/devicetree.h>
 
+#include "cf21bl_syslink_tx.h"
+
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(usart6), okay)
 
 #define CRTP_CONSOLE_MAX_TEXT  30   /* nRF51 console port payload limit */
 
 static const struct device *uart6;
-
-/*
- * Serializes all syslink TX on USART6.  Multiple writers share this UART
- * (this log backend, cf21bl_pm.c's battery-autoupdate request): if one
- * writer's frame is inserted mid-frame of another, the nRF51 parser eats
- * the inner frame as payload of the outer one and both are lost to the
- * checksum.  Every board-level USART6 writer must hold this mutex around
- * a complete frame (thread context only — skip when in ISR/panic).
- */
-K_MUTEX_DEFINE(cf21bl_syslink_tx_mutex);
 
 /*
  * send_crtp — transmit one syslink-framed CRTP console packet.

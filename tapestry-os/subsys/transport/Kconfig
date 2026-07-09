@@ -58,9 +58,11 @@ config TAPESTRY_TRANSCEIVER_SYSLINK
 	  default 80 = 2480 MHz).  The transceiver sends SYSLINK_RADIO_CHANNEL at
 	  init to activate the nRF51 link and lock the channel simultaneously.
 
-	  Do NOT compile cf21bl_crtp_log.c alongside this transceiver — both
-	  transmit on USART6 without mutual exclusion.  Use USART3 for debug
-	  console in formation builds.
+	  cf21bl_crtp_log.c (CRTP console) may be compiled alongside this
+	  transceiver — both share cf21bl_syslink_tx_mutex (cf21bl_syslink_tx.c)
+	  to serialize USART6 TX.  Simultaneous consoles from multiple drones
+	  still share one nRF51 radio config; verify a channel/timing plan
+	  before relying on 3 consoles at once.
 
 config TAPESTRY_P2P_CHANNEL
 	int "nRF51 ESB P2P radio channel (0-125, maps to 2400+N MHz)"

@@ -12,6 +12,7 @@ target_sources(app PRIVATE
     src/main.c
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_iwdg.c
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c
+    ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_lighthouse.c
 )
 target_include_directories(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21bl)

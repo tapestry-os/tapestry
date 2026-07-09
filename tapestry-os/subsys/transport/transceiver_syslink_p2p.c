@@ -25,6 +25,20 @@
  *   CONFIG_TAPESTRY_TRANSCEIVER_SYSLINK=y  — compile and register this backend
  *   CONFIG_TAPESTRY_P2P_CHANNEL            — shared ESB channel (default 80)
  *   CONFIG_UART_INTERRUPT_DRIVEN=y         — required for USART6 RX ISR
+ *
+ * CONFIG_CF21BL_PM coexistence:
+ *   This transceiver owns USART6 whenever it is built in, so cf21bl_pm.c
+ *   does no UART I/O of its own in that configuration (see cf21bl_pm.h) —
+ *   its RX parsing is done here (SYSLINK_PM_BATTERY_STATE forwarded to
+ *   cf21bl_pm_syslink_input()) and its TX activation (the
+ *   SYSLINK_PM_BATTERY_AUTOUPDATE kick, otherwise the nRF51 never sends
+ *   battery packets) is done here too.
+ *
+ * cf21bl_crtp_log.c coexistence:
+ *   All TX on USART6 (this file, cf21bl_pm.c's standalone mode,
+ *   cf21bl_crtp_log.c's console backend) is serialized through the shared
+ *   cf21bl_syslink_tx_mutex (cf21bl_syslink_tx.c) — a build may freely
+ *   combine this transceiver with the CRTP console backend.
  */
 
 #include "transceiver_syslink_p2p.h"
@@ -47,13 +61,22 @@ LOG_MODULE_REGISTER(syslink_p2p, LOG_LEVEL_INF);
 #define SYSLINK_RADIO_CHANNEL       0x01u
 #define SYSLINK_RADIO_P2P_BROADCAST 0x0Au
 #define SYSLINK_PM_BATTERY_STATE    0x13u
+#define SYSLINK_PM_BATTERY_AUTOUPDATE 0x14u
 
 #ifdef CONFIG_CF21BL_PM
 /* Board-level battery monitor (cf21bl_pm.c) consumes PM battery packets
  * arriving on the same syslink stream.  Declared here rather than via the
  * board header so the transport subsystem needs no board include path. */
 extern void cf21bl_pm_syslink_input(const uint8_t *payload, uint8_t len);
+extern float cf21bl_pm_vbat(void);
 #endif
+
+/* Shared USART6 TX serialization (cf21bl_syslink_tx.c, always compiled on
+ * this board) — required whenever cf21bl_crtp_log.c's console backend is
+ * linked into the same build as this transceiver.  Declared here rather
+ * than via the board header, same rationale as the PM externs above. */
+extern struct k_mutex cf21bl_syslink_tx_mutex;
+
 #define SYSLINK_MTU                 64u
 #define TAPESTRY_P2P_PORT           0x00u   /* custom Tapestry gossip port */
 
@@ -64,10 +87,6 @@ extern void cf21bl_pm_syslink_input(const uint8_t *payload, uint8_t len);
 /* ── UART device ─────────────────────────────────────────────────────────── */
 
 static const struct device *uart6;
-
-/* ── TX spinlock (shared conceptually with any other USART6 TX user) ──────── */
-
-static struct k_spinlock tx_lock;
 
 /* ── RX ring buffer ──────────────────────────────────────────────────────── */
 
@@ -95,6 +114,9 @@ void syslink_p2p_stats(uint32_t *rx_bytes, uint32_t *rx_frames, uint32_t *tx_fra
  * uart_poll_out() is safe from any thread context when
  * CONFIG_UART_INTERRUPT_DRIVEN=y; the STM32 UART driver does not mix
  * poll TX with interrupt TX.
+ *
+ * Thread context only (holds cf21bl_syslink_tx_mutex) — every caller in
+ * this file runs from init() or a k_work handler, never an ISR.
  */
 static void syslink_send(uint8_t type, const uint8_t *data, uint8_t len)
 {
@@ -106,7 +128,7 @@ static void syslink_send(uint8_t type, const uint8_t *data, uint8_t len)
         cb += ca;
     }
 
-    k_spinlock_key_t key = k_spin_lock(&tx_lock);
+    k_mutex_lock(&cf21bl_syslink_tx_mutex, K_FOREVER);
     uart_poll_out(uart6, SYSLINK_MAGIC_0);
     uart_poll_out(uart6, SYSLINK_MAGIC_1);
     uart_poll_out(uart6, type);
@@ -116,8 +138,36 @@ static void syslink_send(uint8_t type, const uint8_t *data, uint8_t len)
     }
     uart_poll_out(uart6, ca);
     uart_poll_out(uart6, cb);
-    k_spin_unlock(&tx_lock, key);
+    k_mutex_unlock(&cf21bl_syslink_tx_mutex);
 }
+
+#ifdef CONFIG_CF21BL_PM
+/*
+ * PM battery-telemetry activation — the nRF51 stays silent on
+ * SYSLINK_PM_BATTERY_STATE until it receives one SYSLINK_PM_BATTERY_AUTOUPDATE
+ * request (crazyflie2-nrf-firmware syslinkEnableBatteryMessages()).  In
+ * standalone mode (no transport) cf21bl_pm.c sends this itself; here the
+ * transport owns USART6, so we must send it — cf21bl_pm_init() only logs and
+ * does no UART I/O in this build (see cf21bl_pm.h).  Retries every 2 s (via
+ * the same mutex-serialized syslink_send() gossip uses) until the first
+ * battery packet is observed, matching cf21bl_pm.c's own standalone cadence.
+ */
+#define PM_AUTOUPDATE_RETRY_MS 2000
+
+static void pm_kick_fn(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+
+    if (cf21bl_pm_vbat() > 0.0f) {
+        return;   /* telemetry flowing — stop retrying */
+    }
+
+    syslink_send(SYSLINK_PM_BATTERY_AUTOUPDATE, NULL, 0u);
+    k_work_schedule(dwork, K_MSEC(PM_AUTOUPDATE_RETRY_MS));
+}
+
+static K_WORK_DELAYABLE_DEFINE(pm_kick_work, pm_kick_fn);
+#endif /* CONFIG_CF21BL_PM */
 
 /* ── Syslink RX parser (ISR context) ────────────────────────────────────── */
 
@@ -258,6 +308,10 @@ static int syslink_init(void)
      * and the channel configuration for all three drones. */
     uint8_t ch = (uint8_t)CONFIG_TAPESTRY_P2P_CHANNEL;
     syslink_send(SYSLINK_RADIO_CHANNEL, &ch, 1u);
+
+#ifdef CONFIG_CF21BL_PM
+    k_work_schedule(&pm_kick_work, K_NO_WAIT);
+#endif
 
     LOG_INF("syslink P2P ready  channel=%u  queue=%u slots",
             CONFIG_TAPESTRY_P2P_CHANNEL, RX_QUEUE_DEPTH);

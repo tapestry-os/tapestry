@@ -75,8 +75,13 @@ endif()
 # CF2.1 CRTP log backend — sends Zephyr LOG_* output as syslink console packets
 # over USART6 to the nRF51 co-processor; read_console.py receives them via radio.
 # Compiled only when CONFIG_LOG=y (i.e. the log subsystem is present).
+# cf21bl_syslink_tx.c (the shared USART6 TX mutex) is compiled unconditionally
+# alongside it so any combination of USART6 writers (console, PM, syslink P2P
+# transport) can be linked together safely.
 if("${BOARD}" STREQUAL "crazyflie21bl")
-    target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_iwdg.c)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_iwdg.c
+        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c)
     if(CONFIG_LOG)
         target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c)
     endif()

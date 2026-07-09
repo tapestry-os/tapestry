@@ -1,20 +1,32 @@
 /*
  * formation.h — CF21BL collective formation (L4 only, no SCR)
  *
- * Spring-field formation control adapted from examples/collective-formation
- * for the Crazyflie 2.1 brushless quadrotor.
+ * Holonomic spring-field formation control driven by real lighthouse
+ * position, not dead reckoning.
  *
- * Key differences from the Cutebot version:
- *   - Dead-reckoning integrates linear.x (forward tilt → horizontal velocity)
- *     rather than wheel odometry.
- *   - DEMO_MAX_SPEED is a tuning constant for the tilt-to-velocity mapping.
- *   - demo_display_position() and the micro:bit LED matrix are removed.
- *   - demo_set_leds() still calls substrate_set_signal() for the CF21BL LED.
+ * Units: element_state_t.position (and everything in this file) is in
+ * METRES, home-relative in the shared lighthouse world frame — NOT the
+ * abstract [0,100] WORLD_SIZE convention csm.h's other constants
+ * (MIN_SEPARATION, REPULSION_RADIUS, GOSSIP_RADIUS) assume.  Those CSM
+ * constants are unused by this example for exactly that reason; formation.c
+ * and main.c define their own metre-scale thresholds instead.
  *
- * Initial formation tuning for 3 drones in a ~3 m × 3 m arena:
- *   DEMO_TARGET_SPACING = 30 units  → ~1.5 m equilateral triangle
- *   SPRING_K            = 2.0       → gentle restoring force
- *   DEMO_MAX_SPEED      = 30.0      → conservative first test
+ * REQUIRES all drones to share the SAME lighthouse base-station poses and
+ * OOTX calibration (main.c) — gossiped positions are only comparable if
+ * every drone's "home" is the same physical point in the same physical
+ * frame.  Flash all drones from the same build of this example.
+ *
+ * Key differences from the old dead-reckoning version:
+ *   - No heading/odometry integration: cf21bl_stabilizer's
+ *     CF21BL_LIGHTHOUSE_POS_HOLD loop is holonomic (absolute X/Y setpoint,
+ *     rotated into body frame internally by Mahony yaw), so formation
+ *     control just outputs a target XY point, no forward/turn decomposition.
+ *   - Peer distances and separation math use REAL measured position
+ *     (broadcast by main.c from cf21bl_lighthouse_get_position()), not an
+ *     integrated estimate — no drift accumulation.
+ *   - demo_setpoint_t is a virtual, slowly-moving target the stabilizer's
+ *     position PID chases; it is deliberately NOT the same as the drone's
+ *     real position, so peers always gossip ground truth.
  */
 
 #ifndef TAPESTRY_CF21BL_FORMATION_H
@@ -25,40 +37,60 @@
 #include <tapestry/csm.h>
 #include <tapestry/substrate.h>
 
-#ifndef DEMO_MAX_SPEED
-#define DEMO_MAX_SPEED     30.0f   /* logical units/s at linear.x = 1.0 */
+/* Desired peer spacing at equilibrium, metres. */
+#ifndef DEMO_TARGET_SPACING_M
+#define DEMO_TARGET_SPACING_M  1.0f
 #endif
 
-#ifndef DEMO_MAX_OMEGA
-#define DEMO_MAX_OMEGA      1.0f   /* rad/s at angular.z = 1.0 */
+/* Max commanded approach speed, m/s — conservative for a first campaign. */
+#ifndef DEMO_MAX_SPEED_MPS
+#define DEMO_MAX_SPEED_MPS     0.3f
 #endif
 
-#ifndef DEMO_TARGET_SPACING
-#define DEMO_TARGET_SPACING 30.0f  /* desired peer spacing, logical units */
-#endif
+/* Spring constant — force per metre of spacing error. */
+#define SPRING_K            1.0f
 
-/* ── Dead-reckoning state ───────────────────────────────────────────────── */
+/* Hard-floor separation, metres — below this an extra repulsion term (on
+ * top of the smooth spring) reacts faster than SPRING_K alone would.
+ * 0.5 m is a props-clearance margin, not a contact distance. */
+#define DEMO_MIN_SEP_M      0.5f
+#define EMERGENCY_K         4.0f
+
+/* Maps net spring force magnitude to a commanded speed fraction of
+ * DEMO_MAX_SPEED_MPS. */
+#define FORCE_TO_SPEED      0.15f
+
+/* Hysteresis thresholds on net spring force magnitude (avoids dithering
+ * right at equilibrium). */
+#define FORCE_STOP          0.15f
+#define FORCE_START         0.30f
+
+/* Arena clamp for the commanded target — keeps formation.c's output well
+ * inside the stabilizer's CF21BL_POS_MAX_M range (main.c enforces the
+ * tighter, landing-triggering geofence on the drone's REAL position). */
+#define DEMO_ARENA_LIMIT_M  ((float)CONFIG_CF21BL_POS_MAX_M - 0.3f)
+
+/* ── Formation target state ──────────────────────────────────────────────── */
 
 typedef struct {
-    float x;
-    float y;
-    float heading;
+    float x;   /* commanded X setpoint, metres, home-relative */
+    float y;   /* commanded Y setpoint, metres, home-relative */
     bool  moving;
-} demo_odometry_t;
+} demo_setpoint_t;
 
-void demo_odometry_init(demo_odometry_t *odo, float x, float y);
-void demo_odometry_update(demo_odometry_t *odo,
-                           float speed_norm, float rate_norm,
-                           uint32_t dt_ms);
+void demo_setpoint_init(demo_setpoint_t *sp, float x, float y);
 
-/* ── Formation control ──────────────────────────────────────────────────── */
+/* Advance *target toward the spring-field equilibrium by dt_ms, using
+ * REAL peer positions from wm and this drone's REAL position (own_pos_m,
+ * metres) for the force calculation.  Also returns the minimum distance
+ * observed to any fresh peer this call (for main.c's separation warning),
+ * or -1.0f if no fresh peers were found. */
+float demo_compute_drive(const world_model_t *wm,
+                          const position_t *own_pos_m,
+                          demo_setpoint_t *target,
+                          uint32_t dt_ms);
 
-void demo_compute_drive(const world_model_t *wm,
-                         demo_odometry_t *odo,
-                         float *speed_out,
-                         float *rate_out);
-
-/* ── Signal feedback ────────────────────────────────────────────────────── */
+/* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 
 void demo_set_leds(const world_model_t *wm);
 

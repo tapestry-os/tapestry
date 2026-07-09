@@ -25,7 +25,9 @@ target_sources(app PRIVATE src/main.c)
 
 # CRTP radio log backend — routes Zephyr LOG_* to nRF51 → crazyradio2 → read_console.py
 if("${BOARD}" STREQUAL "crazyflie21bl")
-    target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c
+        ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c)
 endif()
 
 # Substrate selection: CF21bl (PWM), Cutebot (I2C), null stub everywhere else.
