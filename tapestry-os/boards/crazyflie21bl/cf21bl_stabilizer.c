@@ -136,12 +136,22 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
  * valid between hops; reset only at boot. */
 #define CF21BL_POS_KI          0.010f  /* rad per m·s */
 #define CF21BL_POS_ILIM_RAD    (5.0f * (float)M_PI / 180.0f)
-/* Only wind the trim while near the setpoint.  During an excursion the
- * error is dynamics, not bias — integrating it makes the trim ride the
- * oscillation (2026-07-05 30s flight: iy pumped 1.36°→0.06° with the y
- * excursions while ix, on the quiet axis, converged cleanly to the
- * ~1.7° level bias).  Frozen — not reset — beyond this radius. */
-#define CF21BL_POS_KI_FREEZE_M 0.30f
+/* The error fed to the trim integrator is CLAMPED to ±this radius (a hard
+ * freeze-beyond-radius until 2026-07-10).  Near the setpoint the trim
+ * learns the level bias at full fidelity, unchanged.  Beyond it the
+ * winding RATE is capped (KI × 0.30 m ≈ 0.17°/s) instead of zeroed:
+ * a symmetric limit-cycle ride (the 2026-07-05 iy-pumping problem the
+ * freeze was added for) still averages to ≈0 net winding over a cycle,
+ * but a sustained ONE-SIDED push keeps learning in the right direction —
+ * the hard freeze locked the trim out exactly when a large static bias
+ * made it most needed (drone #2 post-crash, 2026-07-10: ix froze at
+ * −0.69° the moment ex saturated and stayed locked through a runaway to
+ * the geofence; the bias needed more trim than P's ~3.4°-at-saturation
+ * could supply and the trim was forbidden to provide it).  Wrong-way
+ * winding during a sensor-artifact excursion is bounded by the same rate
+ * cap, the ±5° ILIM, and unlearns at the same rate once tracking is
+ * true. */
+#define CF21BL_POS_KI_CLAMP_M  0.30f
 #define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
 #define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
@@ -228,6 +238,31 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 #define CF21BL_ALT_POS_KI      0.1f
 #define CF21BL_ALT_POS_ILIM    0.2f    /* max ki·integral contribution, m/s          */
 #define CF21BL_ALT_VEL_SP_MAX  0.5f    /* climb/descend rate clamp, m/s              */
+
+/* Freeze the outer loop's integral while target_alt is far from alt_est.
+ * (The lighthouse XY trim used the same hard-freeze pattern until
+ * 2026-07-10, now softened to a rate clamp — see CF21BL_POS_KI_CLAMP_M.
+ * This one stays a TRUE freeze deliberately: the XY trim is learning a
+ * physical airframe bias that persists and must eventually be learned
+ * even mid-excursion, whereas a large altitude gap here is the commanded
+ * takeoff ramp working as intended — pure windup, nothing to learn.)
+ * Without this, the takeoff ramp (main.c walks target_alt from
+ * ALT_RAMP_START_M up to cruise at a fixed rate, so ramp DURATION scales
+ * with cruise altitude, i.e. with CONFIG_TAPESTRY_ELEMENT_ID via
+ * ALT_STEP_PER_ID_M) keeps a large, sustained tracking gap in front of
+ * this PID for several seconds on higher-ID drones, winding the integral
+ * toward its ILIM cap. That wound-up I-term then keeps commanding extra
+ * climb rate well after cruise altitude is reached — confirmed 2026-07-xx:
+ * element_id=2 (0.80 m cruise, 6.5 s ramp) climbed past 1.0 m and was
+ * still rising when the mission ended it; element_id=0 (0.30 m cruise,
+ * 1.5 s ramp) never showed this. Kp=0.8 already tracks the ramp
+ * aggressively on its own; the integral only exists to trim small
+ * steady-state bias, so it has no business accumulating while genuinely
+ * far from target — a large gap is the ramp working as intended, not a
+ * bias to learn. Conservative starting point (larger than either
+ * element_id=0's 0.15 m ramp gap, which never caused a problem, so this
+ * shouldn't change that drone's behavior) — tune on hardware. */
+#define CF21BL_ALT_POS_KI_FREEZE_M  0.15f
 
 /* Inner loop: climb-rate error [m/s] → collective correction [fraction].
  * This is the velocity-damping stage the single-stage baro-only P+I lacked —
@@ -669,12 +704,14 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 float vx_b =  cpsi * lhvel.x + spsi * lhvel.y;
                 float vy_b = -spsi * lhvel.x + cpsi * lhvel.y;
 
-                if (fabsf(ex_b) < CF21BL_POS_KI_FREEZE_M) {
-                    g_pos_ix += CF21BL_POS_KI * ex_b * CF21BL_LOOP_DT;
-                }
-                if (fabsf(ey_b) < CF21BL_POS_KI_FREEZE_M) {
-                    g_pos_iy += CF21BL_POS_KI * ey_b * CF21BL_LOOP_DT;
-                }
+                /* Rate-capped trim winding (see CF21BL_POS_KI_CLAMP_M) */
+                float exi = ex_b, eyi = ey_b;
+                if (exi >  CF21BL_POS_KI_CLAMP_M) { exi =  CF21BL_POS_KI_CLAMP_M; }
+                if (exi < -CF21BL_POS_KI_CLAMP_M) { exi = -CF21BL_POS_KI_CLAMP_M; }
+                if (eyi >  CF21BL_POS_KI_CLAMP_M) { eyi =  CF21BL_POS_KI_CLAMP_M; }
+                if (eyi < -CF21BL_POS_KI_CLAMP_M) { eyi = -CF21BL_POS_KI_CLAMP_M; }
+                g_pos_ix += CF21BL_POS_KI * exi * CF21BL_LOOP_DT;
+                g_pos_iy += CF21BL_POS_KI * eyi * CF21BL_LOOP_DT;
                 if (g_pos_ix >  CF21BL_POS_ILIM_RAD) { g_pos_ix =  CF21BL_POS_ILIM_RAD; }
                 if (g_pos_ix < -CF21BL_POS_ILIM_RAD) { g_pos_ix = -CF21BL_POS_ILIM_RAD; }
                 if (g_pos_iy >  CF21BL_POS_ILIM_RAD) { g_pos_iy =  CF21BL_POS_ILIM_RAD; }
@@ -998,8 +1035,18 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 g_land_t0_ms = 0;   /* trigger cleared before touchdown */
             }
 
+            /* Freeze-above-threshold anti-windup (see CF21BL_ALT_POS_KI_FREEZE_M):
+             * pid_update() already accumulated this tick's integral by the
+             * time it returns, so roll it back when the gap is too large to
+             * trust as steady-state bias. One tick's worth of accumulation
+             * (dt=1ms) is negligible either way — this only matters over the
+             * many consecutive ticks of a real ramp. */
+            float alt_integral_before = g_pid_alt_pos.integral;
             float target_vz  = pid_update(&g_pid_alt_pos,
                                           target_alt, alt_est, CF21BL_LOOP_DT);
+            if (fabsf(target_alt - alt_est) > CF21BL_ALT_POS_KI_FREEZE_M) {
+                g_pid_alt_pos.integral = alt_integral_before;
+            }
             float delta_T    = pid_update(&g_pid_alt_vel,
                                           target_vz, vel_est, CF21BL_LOOP_DT);
 

@@ -27,7 +27,8 @@ void demo_setpoint_init(demo_setpoint_t *sp, float x, float y)
 float demo_compute_drive(const world_model_t *wm,
                           const position_t *own_pos_m,
                           demo_setpoint_t *target,
-                          uint32_t dt_ms)
+                          uint32_t dt_ms,
+                          element_id_t own_id)
 {
     float dt = (float)dt_ms * 0.001f;
 
@@ -102,7 +103,8 @@ float demo_compute_drive(const world_model_t *wm,
     target->x = clampf(target->x + vx * dt, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
     target->y = clampf(target->y + vy * dt, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
 
-    LOG_DBG("fx=%.2f fy=%.2f |f|=%.2f v=(%.2f,%.2f) tgt=(%.2f,%.2f) peers=%d min_d=%.2f",
+    LOG_DBG("id=%u fx=%.2f fy=%.2f |f|=%.2f v=(%.2f,%.2f) tgt=(%.2f,%.2f) peers=%d min_d=%.2f",
+            (unsigned)own_id,
             (double)fx, (double)fy, (double)force_mag,
             (double)vx, (double)vy,
             (double)target->x, (double)target->y,

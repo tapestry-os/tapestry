@@ -260,7 +260,8 @@ static bool           g_pos_valid;
 #define LH2_MAX_MISS_M     0.3f
 
 /* Angle-plausibility gate: reject sweep pairs whose az/el cannot be a real
- * drone position.  TWO repeatable phantom pairs observed (2026-07-05):
+ * drone position.  TWO repeatable phantom pairs observed (2026-07-05, OLD
+ * pre-recalibration base-station placement):
  *   ch1 az≈+71° el≈−75° — three flights, incl. once while stationary on
  *     the ground; won the jump gate's consecutive-N re-seed and ended one
  *     flight on a phantom "Touchdown at z=-19.8 m".
@@ -273,14 +274,51 @@ static bool           g_pos_valid;
  * plane pair has Δoff ≈ 160k ticks; a real+reflected optical pair shows a
  * different but consistent same-revolution Δoff; a mis-pair that slipped
  * the t0 guard shows anomalous offsets.  The gate works either way.
- * Bounds: LH2 optical FOV is ~150°×110°, so el beyond ±55° is physically
- * impossible regardless of room.  el floor −35° splits the gap between
- * phantom #2 (−43.7°) and the legit extreme observed in this room
- * (−26.8°; el is BS-face-relative and the BS tilts ~35° down, so even a
- * drone on the floor near the origin stays above ~−27°). */
-#define LH2_AZ_LIMIT_RAD   (60.0f * (float)M_PI / 180.0f)
-#define LH2_EL_MIN_RAD     (-35.0f * (float)M_PI / 180.0f)
-#define LH2_EL_MAX_RAD     (30.0f * (float)M_PI / 180.0f)
+ *
+ * Bounds are the LH2 hardware's optical FOV (~150°×110° → az ±75°,
+ * el ±55°) — a fixed physical property of the base station, independent of
+ * room geometry or where the stations are mounted, so it can never go
+ * stale on a recalibration.  Anything a station can physically illuminate
+ * passes; only decode/pairing artifacts (like the el≈−75° family above,
+ * impossible optics) are rejected.
+ *
+ * HISTORY (2026-07-1x): the previous floor, el ≥ −35°, was an empirical
+ * fit to the OLD placement ("legit extreme −26.8°, phantom −43.7°, split
+ * the gap").  The 2026-07-06 recalibrations moved and retilted both
+ * stations; nobody re-derived the bound.  Replaying this driver's own
+ * az/el math over the current calibration (lighthouse_cal_office_260706
+ * .yaml) shows legitimate flight-volume elevations reach −44.6° on BS0
+ * (the calibration origin itself sits at −35.3°, already outside the old
+ * floor), and the flight-4 "reject implausible angles ch=0 el=−38..−42,
+ * az=−11..+7" burst maps exactly onto real room positions ~0.3–0.5 m from
+ * directly under BS0 — genuine rays, wrongly rejected, starving the BS0
+ * direction (stale-ray fixes for LH2_BLOCK_FRESH_MS, then no fixes) right
+ * as the drone flew that zone.  That gate-induced dropout↔XY-excursion
+ * coupling recurred across 4 flights/3 airframes before being traced.
+ *
+ * CAUTION: the old ch0 phantom family (el −43..−50°) is INSIDE the FOV
+ * bound, so this gate alone no longer rejects it.  That family was only
+ * ever observed under the old placement/aim, and the defenses added since
+ * it last did damage (miss gate 0.3 m, median-of-5, 0.2 m-floor speed
+ * jump gate, velocity decay, ±0.75 m stabilizer error saturation, and the
+ * corrected position-hold sign) all stand between a re-admitted phantom
+ * and the controller.  The watch log below keeps the formerly-rejected
+ * band visible in flight logs (with the Δoff discriminator) so a
+ * re-emergence is caught from telemetry, not from another excursion hunt.
+ * Do NOT re-tighten these to a room-derived envelope: three prior
+ * attempts (2026-07-06) showed any bound tuned to a "legitimate small
+ * envelope" clips exactly the large excursions it is meant to diagnose. */
+#define LH2_AZ_LIMIT_RAD   (75.0f * (float)M_PI / 180.0f)
+#define LH2_EL_MIN_RAD     (-55.0f * (float)M_PI / 180.0f)
+#define LH2_EL_MAX_RAD     (55.0f * (float)M_PI / 180.0f)
+
+/* Watch band: rays that the pre-2026-07-1x bounds (az ±60°, el −35..+30°)
+ * would have rejected but the FOV bounds accept.  Logged (throttled) so the
+ * old phantom signatures remain visible if they resurface under the new
+ * base-station aim.  Diagnostic only — no gating. */
+#define LH2_AZ_WATCH_RAD   (60.0f * (float)M_PI / 180.0f)
+#define LH2_EL_WATCH_MIN_RAD (-35.0f * (float)M_PI / 180.0f)
+#define LH2_EL_WATCH_MAX_RAD (30.0f * (float)M_PI / 180.0f)
 
 /* Jump gate (see comment at the publish site): max believable displacement
  * between consecutive accepted fixes, and how many consecutive far fixes
@@ -533,6 +571,22 @@ static bool lh2_offsets_to_direction(uint32_t offset0, uint32_t offset1,
                     offset0, offset1);
         }
         return false;
+    }
+
+    /* Accepted, but inside the watch band the old empirical bounds would
+     * have rejected (see LH2_AZ_WATCH_RAD block comment).  Offsets included
+     * so a resurfaced reflection shows its Δoff signature in flight logs. */
+    if (az > LH2_AZ_WATCH_RAD || az < -LH2_AZ_WATCH_RAD ||
+        el > LH2_EL_WATCH_MAX_RAD || el < LH2_EL_WATCH_MIN_RAD) {
+        static int watch_div;
+        if (++watch_div >= 8) {
+            watch_div = 0;
+            LOG_INF("accept beyond old bounds ch=%u az=%.1f el=%.1f "
+                    "off0=%u off1=%u",
+                    channel, (double)(az * 180.0f / (float)M_PI),
+                    (double)(el * 180.0f / (float)M_PI),
+                    offset0, offset1);
+        }
     }
 
     /*

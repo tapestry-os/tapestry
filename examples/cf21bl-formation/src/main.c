@@ -211,18 +211,21 @@ int main(void)
     cf21bl_lighthouse_set_bs_channel(0, BS0_CHANNEL);
     cf21bl_lighthouse_set_bs_channel(1, BS1_CHANNEL);
     if (cf21bl_lighthouse_init() != 0) {
-        LOG_ERR("lighthouse init failed — cannot fly without position");
+        LOG_ERR("id=%u lighthouse init failed — cannot fly without position",
+                (unsigned)CONFIG_TAPESTRY_ELEMENT_ID);
         return -1;
     }
 
     /* substrate_init() -> cf21bl_init(): ESC arming + gyro cal + stabilizer
      * start (baro home average).  Motors silent throughout. */
     if (substrate_init() != 0) {
-        LOG_WRN("substrate_init failed — actuation disabled");
+        LOG_WRN("id=%u substrate_init failed — actuation disabled",
+                (unsigned)CONFIG_TAPESTRY_ELEMENT_ID);
     }
 
     if (transport_init() != 0) {
-        LOG_WRN("transport_init failed — no peer awareness");
+        LOG_WRN("id=%u transport_init failed — no peer awareness",
+                (unsigned)CONFIG_TAPESTRY_ELEMENT_ID);
     }
 
     const element_id_t element_id = (element_id_t)CONFIG_TAPESTRY_ELEMENT_ID;
@@ -234,24 +237,27 @@ int main(void)
             (unsigned)element_id, n_total, (double)cruise_alt_m,
             (double)DEMO_TARGET_SPACING_M);
 
-    LOG_INF("Waiting for lighthouse fix (up to 30 s) ...");
+    LOG_INF("id=%u Waiting for lighthouse fix (up to 30 s) ...", (unsigned)element_id);
     {
         uint32_t deadline = k_uptime_get_32() + 30000u;
         while (!cf21bl_lighthouse_is_valid()) {
             if (k_uptime_get_32() > deadline) {
-                LOG_ERR("No lighthouse fix — base stations on? poses correct? "
-                        "staying grounded.");
+                LOG_ERR("id=%u No lighthouse fix — base stations on? poses correct? "
+                        "staying grounded.", (unsigned)element_id);
                 substrate_set_power(SUBSTRATE_POWER_SLEEP);
                 return -1;
             }
             k_msleep(200);
         }
     }
-    LOG_INF("Fix acquired");
+    LOG_INF("id=%u Fix acquired", (unsigned)element_id);
 
-    LOG_INF("PLACE ON GROUND (nose along lighthouse world +X) AND STAND CLEAR "
-            "— arming in 5 s ...");
-    for (int i = 5; i > 0; i--) { LOG_INF("  %d ...", i); k_msleep(1000); }
+    LOG_INF("id=%u PLACE ON GROUND (nose along lighthouse world +X) AND STAND CLEAR "
+            "— arming in 5 s ...", (unsigned)element_id);
+    for (int i = 5; i > 0; i--) {
+        LOG_INF("id=%u  %d ...", (unsigned)element_id, i);
+        k_msleep(1000);
+    }
 
     element_state_t own_state = { 0 };
     own_state.id = element_id;
@@ -297,7 +303,7 @@ int main(void)
         k_msleep(WM_CYCLE_MS);
     }
 
-    LOG_INF("Arming and entering flight loop");
+    LOG_INF("id=%u Arming and entering flight loop", (unsigned)element_id);
     substrate_set_power(SUBSTRATE_POWER_ACTIVE);
 
     flight_state_t state       = FLIGHT_RAMPING;
@@ -356,7 +362,8 @@ int main(void)
             if (alt_cmd_m >= cruise_alt_m) {
                 alt_cmd_m = cruise_alt_m;
                 state = FLIGHT_FLYING;
-                LOG_INF("Cruise altitude reached — formation control active");
+                LOG_INF("id=%u Cruise altitude reached — formation control active",
+                        (unsigned)element_id);
             }
             sp.linear.z = alt_cmd_m - 1.0f;
             break;
@@ -365,11 +372,12 @@ int main(void)
             if (!fix_valid) {
                 if (fix_lost_since_ms == 0) {
                     fix_lost_since_ms = k_uptime_get_32();
-                    LOG_WRN("lighthouse fix lost — holding, X/Y zeroed");
+                    LOG_WRN("id=%u lighthouse fix lost — holding, X/Y zeroed",
+                            (unsigned)element_id);
                 }
                 if (k_uptime_get_32() - fix_lost_since_ms > FIX_LOSS_GRACE_MS) {
-                    LOG_ERR("fix lost > %d ms — landing independently",
-                            FIX_LOSS_GRACE_MS);
+                    LOG_ERR("id=%u fix lost > %d ms — landing independently",
+                            (unsigned)element_id, FIX_LOSS_GRACE_MS);
                     state = FLIGHT_LANDING;
                     landing_alt_m = alt_cmd_m;
                     sp.linear.z = alt_cmd_m - 1.0f;
@@ -387,7 +395,8 @@ int main(void)
             float origin_dist = sqrtf(own_pos_m.x * own_pos_m.x
                                        + own_pos_m.y * own_pos_m.y);
             if (origin_dist > GEOFENCE_RADIUS_M) {
-                LOG_ERR("geofence breach (%.2f m > %.2f m) — landing independently",
+                LOG_ERR("id=%u geofence breach (%.2f m > %.2f m) — landing independently",
+                        (unsigned)element_id,
                         (double)origin_dist, (double)GEOFENCE_RADIUS_M);
                 state = FLIGHT_LANDING;
                 landing_alt_m = alt_cmd_m;
@@ -396,20 +405,22 @@ int main(void)
             }
 
             if (k_uptime_get_32() - mission_t0_ms > (uint32_t)MISSION_DURATION_S * 1000u) {
-                LOG_INF("mission duration elapsed — landing");
+                LOG_INF("id=%u mission duration elapsed — landing", (unsigned)element_id);
                 state = FLIGHT_LANDING;
                 landing_alt_m = alt_cmd_m;
                 sp.linear.z = alt_cmd_m - 1.0f;
                 break;
             }
 
-            float min_dist_m = demo_compute_drive(&wm, &own_pos_m, &target, WM_CYCLE_MS);
+            float min_dist_m = demo_compute_drive(&wm, &own_pos_m, &target, WM_CYCLE_MS,
+                                                  element_id);
             if (min_dist_m >= 0.0f && min_dist_m < DEMO_MIN_SEP_M) {
                 static int sep_log_div;
                 if (++sep_log_div >= 20) {   /* ~2 Hz at WM_CYCLE_MS=100 */
                     sep_log_div = 0;
-                    LOG_WRN("separation violation: nearest peer %.2f m "
-                            "(min %.2f m)", (double)min_dist_m, (double)DEMO_MIN_SEP_M);
+                    LOG_WRN("id=%u separation violation: nearest peer %.2f m "
+                            "(min %.2f m)", (unsigned)element_id,
+                            (double)min_dist_m, (double)DEMO_MIN_SEP_M);
                 }
             }
 
@@ -439,7 +450,7 @@ int main(void)
                 land_settle_ms += WM_CYCLE_MS;
                 if (land_settle_ms >= LAND_SETTLE_MS) {
                     state = FLIGHT_LANDED;
-                    LOG_INF("landed — disarming");
+                    LOG_INF("id=%u landed — disarming", (unsigned)element_id);
                 }
             } else {
                 land_settle_ms = 0;
@@ -469,9 +480,9 @@ int main(void)
                     if (!e->is_stale) { fresh++; }
                 }
             }
-            LOG_INF("%s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
+            LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
                     "cmd_z=%.2f",
-                    flight_state_name(state), fresh, active,
+                    (unsigned)element_id, flight_state_name(state), fresh, active,
                     (double)own_pos_m.x, (double)own_pos_m.y,
                     (double)target.x, (double)target.y,
                     (double)alt_cmd_m, (double)sp.linear.z);

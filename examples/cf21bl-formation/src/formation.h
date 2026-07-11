@@ -84,11 +84,15 @@ void demo_setpoint_init(demo_setpoint_t *sp, float x, float y);
  * REAL peer positions from wm and this drone's REAL position (own_pos_m,
  * metres) for the force calculation.  Also returns the minimum distance
  * observed to any fresh peer this call (for main.c's separation warning),
- * or -1.0f if no fresh peers were found. */
+ * or -1.0f if no fresh peers were found.  own_id is only used to tag the
+ * LOG_DBG line — with multiple drones sharing one radio channel (no
+ * per-drone channel plan yet), interleaved console output is otherwise
+ * impossible to attribute to a specific drone. */
 float demo_compute_drive(const world_model_t *wm,
                           const position_t *own_pos_m,
                           demo_setpoint_t *target,
-                          uint32_t dt_ms);
+                          uint32_t dt_ms,
+                          element_id_t own_id);
 
 /* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 
