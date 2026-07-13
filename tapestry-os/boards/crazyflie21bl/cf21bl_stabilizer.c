@@ -1162,6 +1162,35 @@ int cf21bl_stabilizer_start(void)
              CF21BL_ALT_VEL_ILIM, CF21BL_ALT_VEL_OLIM);
 #endif
 
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+    /* Pre-seed the XY level trim from per-build constants (0.01° units,
+     * default 0 = no change).  The trim otherwise starts at zero every
+     * boot and learns at the KI_CLAMP-capped ~0.17°/s, so an airframe
+     * with a large static bias spends its first ~10-20 s of flight
+     * diving off in the bias direction while the trim catches up (drone
+     * #2 solo flight 2026-07-11: 1.3 m departure with the error
+     * saturated before recovery).  Seeding with values read from a
+     * previous flight's ix/iy log skips that transient.
+     * CAUTION: only valid while the airframe's bias is unchanged — this
+     * project's problem unit changes bias direction when handled/
+     * repaired, and a wrong-DIRECTION seed doubles the transient instead
+     * of removing it.  Re-read ix/iy from a fresh log after any physical
+     * work, and keep these at 0 for healthy airframes. */
+    g_pos_ix = (float)CONFIG_CF21BL_POS_TRIM_X_CDEG * 0.01f
+               * (float)M_PI / 180.0f;
+    g_pos_iy = (float)CONFIG_CF21BL_POS_TRIM_Y_CDEG * 0.01f
+               * (float)M_PI / 180.0f;
+    if (g_pos_ix >  CF21BL_POS_ILIM_RAD) { g_pos_ix =  CF21BL_POS_ILIM_RAD; }
+    if (g_pos_ix < -CF21BL_POS_ILIM_RAD) { g_pos_ix = -CF21BL_POS_ILIM_RAD; }
+    if (g_pos_iy >  CF21BL_POS_ILIM_RAD) { g_pos_iy =  CF21BL_POS_ILIM_RAD; }
+    if (g_pos_iy < -CF21BL_POS_ILIM_RAD) { g_pos_iy = -CF21BL_POS_ILIM_RAD; }
+    if (CONFIG_CF21BL_POS_TRIM_X_CDEG != 0 || CONFIG_CF21BL_POS_TRIM_Y_CDEG != 0) {
+        LOG_INF("XY trim pre-seeded: ix=%.2f iy=%.2f deg",
+                (double)(g_pos_ix * 180.0f / (float)M_PI),
+                (double)(g_pos_iy * 180.0f / (float)M_PI));
+    }
+#endif
+
 #if CONFIG_CF21BL_SP_STALE_MS > 0
     /* Arm the watchdog clock immediately before the thread starts so the
      * gyro-calibration window (~1 s above) does not count as stale time. */

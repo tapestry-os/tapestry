@@ -46,6 +46,11 @@ float demo_compute_drive(const world_model_t *wm,
     float fy          = 0.0f;
     int   peer_count  = 0;
     float min_dist_m  = -1.0f;
+    float peer_sum_x  = 0.0f;   /* for the formation centroid */
+    float peer_sum_y  = 0.0f;
+    float pair_dx     = 0.0f;   /* bearing to the (single) fresh peer — only
+                                 * meaningful when peer_count ends up 1 */
+    float pair_dy     = 0.0f;
 
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
@@ -53,9 +58,15 @@ float demo_compute_drive(const world_model_t *wm,
             continue;
         }
 
+        peer_sum_x += e->state.position.x;
+        peer_sum_y += e->state.position.y;
+
         float dx   = e->state.position.x - own_pos_m->x;
         float dy   = e->state.position.y - own_pos_m->y;
         float dist = sqrtf(dx * dx + dy * dy);
+
+        pair_dx = dx;
+        pair_dy = dy;
 
         if (min_dist_m < 0.0f || dist < min_dist_m) {
             min_dist_m = dist;
@@ -80,6 +91,18 @@ float demo_compute_drive(const world_model_t *wm,
     }
 
     if (peer_count == 0) {
+        /* No fresh peers: glide the target back over our own position and
+         * hover (see DEMO_SOLO_GLIDE_MPS — a frozen far-away target made
+         * the last drone standing chase it indefinitely). */
+        float gx = own_pos_m->x - target->x;
+        float gy = own_pos_m->y - target->y;
+        float gd = sqrtf(gx * gx + gy * gy);
+        if (gd > 0.01f) {
+            float step = DEMO_SOLO_GLIDE_MPS * dt;
+            if (step > gd) { step = gd; }
+            target->x += gx / gd * step;
+            target->y += gy / gd * step;
+        }
         target->moving = false;
         return min_dist_m;
     }
@@ -92,16 +115,70 @@ float demo_compute_drive(const world_model_t *wm,
         target->moving = false;
     }
 
-    if (!target->moving || force_mag < 1e-6f) {
-        return min_dist_m;
+    /* Velocity assembled from up to three terms.  The spring term keeps
+     * its start/stop hysteresis; the choreography terms below (rotation,
+     * alignment — see formation.h) are deliberately NOT gated by it, since
+     * they must act precisely when the springs are at equilibrium. */
+    float vx = 0.0f;
+    float vy = 0.0f;
+
+    if (target->moving && force_mag >= 1e-6f) {
+        float speed = clampf(force_mag * FORCE_TO_SPEED, 0.0f, DEMO_MAX_SPEED_MPS);
+        vx += (fx / force_mag) * speed;
+        vy += (fy / force_mag) * speed;
     }
 
-    float speed = clampf(force_mag * FORCE_TO_SPEED, 0.0f, DEMO_MAX_SPEED_MPS);
-    float vx    = (fx / force_mag) * speed;
-    float vy    = (fy / force_mag) * speed;
+    /* Formation centroid over self + fresh peers (real positions). */
+    float cx = (peer_sum_x + own_pos_m->x) / (float)(peer_count + 1);
+    float cy = (peer_sum_y + own_pos_m->y) / (float)(peer_count + 1);
+
+    if (peer_count >= 2) {
+        /* Triangle phase: orbit the centroid (v = ω ⟂ r, CCW). */
+        vx += -DEMO_ROT_OMEGA_RADPS * (target->y - cy);
+        vy +=  DEMO_ROT_OMEGA_RADPS * (target->x - cx);
+    } else if (peer_count == 1) {
+        /* Pair phase: rotate the pair about its centroid until its axis
+         * lies along world X.  A torque, never a translation — see the
+         * DEMO_ALIGN_ROT_RADPS block comment for why the earlier y-pull
+         * version drove a north–south pair into a spring standoff. */
+        float phi   = atan2f(pair_dy, pair_dx);
+        float omega = -DEMO_ALIGN_ROT_RADPS * sinf(2.0f * phi);
+        vx += -omega * (target->y - cy);
+        vy +=  omega * (target->x - cx);
+    }
+
+    /* Centroid anchor (see DEMO_ANCHOR_* block comment): identical for
+     * every drone → pure translation of the whole formation toward the
+     * anchor point, no shape distortion. */
+    vx += DEMO_ANCHOR_K * (DEMO_ANCHOR_X_M - cx);
+    vy += DEMO_ANCHOR_K * (DEMO_ANCHOR_Y_M - cy);
+
+    float v_mag = sqrtf(vx * vx + vy * vy);
+    if (v_mag < 1e-6f) {
+        return min_dist_m;
+    }
+    if (v_mag > DEMO_MAX_SPEED_MPS) {
+        vx *= DEMO_MAX_SPEED_MPS / v_mag;
+        vy *= DEMO_MAX_SPEED_MPS / v_mag;
+    }
 
     target->x = clampf(target->x + vx * dt, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
     target->y = clampf(target->y + vy * dt, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
+
+    /* Leash the target to the drone's real position (see
+     * DEMO_TARGET_LEASH_M): every term above moves the TARGET, but the
+     * forces are computed from REAL positions — once the body can't
+     * follow, an unleashed target's relationship to the field is
+     * fiction. */
+    {
+        float lx = target->x - own_pos_m->x;
+        float ly = target->y - own_pos_m->y;
+        float ld = sqrtf(lx * lx + ly * ly);
+        if (ld > DEMO_TARGET_LEASH_M) {
+            target->x = own_pos_m->x + lx / ld * DEMO_TARGET_LEASH_M;
+            target->y = own_pos_m->y + ly / ld * DEMO_TARGET_LEASH_M;
+        }
+    }
 
     LOG_DBG("id=%u fx=%.2f fy=%.2f |f|=%.2f v=(%.2f,%.2f) tgt=(%.2f,%.2f) peers=%d min_d=%.2f",
             (unsigned)own_id,

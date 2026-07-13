@@ -70,6 +70,77 @@
  * tighter, landing-triggering geofence on the drone's REAL position). */
 #define DEMO_ARENA_LIMIT_M  ((float)CONFIG_CF21BL_POS_MAX_M - 0.3f)
 
+/* ── Choreography terms (phase = pure function of fresh-peer count) ───────
+ *
+ * Rotation: with exactly TWO fresh peers (full triangle), each drone's
+ * target orbits the formation centroid (self + fresh peers, real gossiped
+ * positions — every drone computes ≈ the same point, no leader) at this
+ * angular rate.  0.12 rad/s ≈ 6.9°/s → just over half a revolution across
+ * a 30 s triangle phase; tangential speed at the 1 m-triangle circumradius
+ * (0.58 m) is ~0.07 m/s, well inside DEMO_MAX_SPEED_MPS.  0.0f disables. */
+#define DEMO_ROT_OMEGA_RADPS  0.12f
+
+/* Alignment: with exactly ONE fresh peer (pair phase), the pair ROTATES
+ * about its centroid until the pair axis lies along world X (mod π):
+ * ω = −K·sin(2φ), where φ is the bearing to the peer.  sin(2φ) is
+ * identical from both ends of the pair (φ vs φ+π), so both drones agree
+ * on the rotation direction with no communication, and a pure rotation
+ * preserves separation by construction.
+ *
+ * HISTORY (2026-07-11 rehearsal): the first version instead pulled each
+ * target's y toward the pair centroid's y.  For a pair left oriented
+ * north–south by the preceding rotation phase, "converge in y" means
+ * "fly at each other" — the y-pull fought the springs to a standoff at
+ * min_d≈0.34 m, |f|≈1.31 (= spring −0.66 + emergency 0.64 exactly), with
+ * only the altitude stagger as real margin.  Alignment must be a torque,
+ * never a translation.
+ *
+ * Peak rate 0.25 rad/s at φ=45°; tangential speed ≤ ~0.13 m/s at 0.5 m
+ * radius.  φ=90° (exactly N–S) is the unstable equilibrium — sensor noise
+ * seeds the rotation in either direction, both of which are correct.
+ * Transient radio-contention staleness blips cannot falsely trigger the
+ * pair phase: any active-but-stale peer freezes the whole drive
+ * (hold-in-place check at the top of demo_compute_drive), so peer_count
+ * only drops to 1 after a peer is fully expired
+ * (WM_EXPIRE_THRESHOLD_MS = genuinely gone). */
+#define DEMO_ALIGN_ROT_RADPS  0.25f
+
+/* Centroid anchor: every drone adds v = K·(anchor − formation_centroid).
+ * The springs/rotation/alignment terms control SHAPE and ORIENTATION only
+ * — the field is otherwise translation-invariant, so the formation lives
+ * wherever accumulated drift leaves it (2026-07-11 full run: the pair
+ * re-formed a clean X-parallel line, but displaced ~(+0.2,+0.3) from the
+ * ground marks; an earlier rehearsal drifted ~0.5 m west when one biased
+ * member dragged the rest through the springs).  The anchor is identical
+ * for every drone, so it is a pure translation — zero shape distortion,
+ * still leaderless.  K=0.08 /s (τ≈12 s, ≤0.04 m/s at 0.5 m offset) —
+ * deliberately the weakest term in the field: it parks the show over the
+ * marks without visibly fighting the choreography.  Set K to 0 for
+ * pure-emergence mode (no world-frame preference at all).  Anchor point
+ * chosen between the marks-layout pair centroid (0.5, 0) and triangle
+ * centroid (0.5, 0.29). */
+#define DEMO_ANCHOR_X_M       0.5f
+#define DEMO_ANCHOR_Y_M       0.15f
+#define DEMO_ANCHOR_K         0.08f
+
+/* Target leash: the virtual target may never be further than this from the
+ * drone's REAL position.  Without it the target can detach unboundedly
+ * (2026-07-11 flight: an emergency-repulsion episode pushed targets away
+ * at the 0.3 m/s clamp for seconds, then the alignment torque — whose
+ * tangential speed is ω·|target−centroid|, unbounded in radius — kept a
+ * target orbiting 2.7 m from its drone at max speed; the drone chased a
+ * point it could never reach).  0.75 m matches the stabilizer's own
+ * error-saturation radius: commanding further is meaningless anyway. */
+#define DEMO_TARGET_LEASH_M   0.75f
+
+/* With ZERO fresh peers the target glides back over the drone's own
+ * position at this rate (→ hover in place).  Previously it froze wherever
+ * the field last left it — fine when the target had never moved, but
+ * after a chaotic episode the last survivor chased a stranded far-away
+ * target indefinitely (2026-07-11: id=0 "ran away" toward a target
+ * abandoned at (−0.7,−0.8) after both peers landed). */
+#define DEMO_SOLO_GLIDE_MPS   0.15f
+
 /* ── Formation target state ──────────────────────────────────────────────── */
 
 typedef struct {

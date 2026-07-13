@@ -153,9 +153,13 @@ static const lh2_bs_calib_t BS1_CALIB = {
 /* ── Mission parameters ───────────────────────────────────────────────────── */
 
 /* Per-drone cruise altitude, staggered by element_id to reduce downwash
- * interaction — TUNE ON HARDWARE, 0.25 m is a starting guess, not validated. */
+ * interaction.  Step compressed 0.25→0.20 m (cruises 0.30/0.50/0.70): at
+ * 0.80 m the top drone received BS1's light only ~12.6° above its deck
+ * horizon and dropped to ok=0 in bursts (grazing incidence — BS1 is
+ * mounted low and far in this room); 0.70 m buys back ~3° of arrival
+ * angle and every recorded dropout instance was on the highest drone. */
 #define ALT_BASE_M           0.30f
-#define ALT_STEP_PER_ID_M    0.25f
+#define ALT_STEP_PER_ID_M    0.20f
 
 /* Gentle altitude ramp on takeoff (same convention as altitude-hold-tether:
  * ramp the closed-loop PID's TARGET, don't jump straight to cruise). */
@@ -176,8 +180,12 @@ static const lh2_bs_calib_t BS1_CALIB = {
 #define GEOFENCE_RADIUS_M    2.0f
 
 /* Every drone lands independently after this long from its own arm time —
- * the closest thing to a "coordinated" land without a wireless uplink. */
-#define MISSION_DURATION_S   60
+ * the closest thing to a "coordinated" land without a wireless uplink.
+ * Per-build (Kconfig) so one drone can leave the formation early: it lands,
+ * goes gossip-silent (see the FLIGHT_LANDED gate at the send site), peers
+ * expire it after WM_EXPIRE_THRESHOLD_MS, and the field re-forms without
+ * it — the demo's "member departs, formation heals" beat. */
+#define MISSION_DURATION_S   CONFIG_DEMO_MISSION_DURATION_S
 
 #define LOOP_DT_S  ((float)WM_CYCLE_MS * 0.001f)
 
@@ -186,7 +194,8 @@ static const lh2_bs_calib_t BS1_CALIB = {
 typedef enum {
     FLIGHT_RAMPING,   /* gentle climb from ALT_RAMP_START_M to cruise altitude */
     FLIGHT_FLYING,    /* formation control active                              */
-    FLIGHT_LANDING,   /* ramping altitude target down to 0, X/Y held at home    */
+    FLIGHT_LANDING,   /* alt target ramps to 0; X/Y held where landing began
+                       * (fix-loss landings: X/Y zeroed — no position to hold) */
     FLIGHT_LANDED,    /* idle sentinel forever                                  */
 } flight_state_t;
 
@@ -252,6 +261,23 @@ int main(void)
     }
     LOG_INF("id=%u Fix acquired", (unsigned)element_id);
 
+#if CONFIG_DEMO_START_DELAY_S > 0
+    /* Staggered join: hold on the ground BEFORE the arming countdown.  Not
+     * gossiping yet, so already-flying peers don't count this drone until
+     * it enters the flight loop — it then joins the formation visibly.
+     * (Once it starts gossiping during its own ramp, peers correctly make
+     * XY room for it before it reaches cruise — expected, and wanted for
+     * separation.) */
+    LOG_INF("id=%u staggered start — joining the formation in %d s",
+            (unsigned)element_id, CONFIG_DEMO_START_DELAY_S);
+    for (int i = CONFIG_DEMO_START_DELAY_S; i > 0; i--) {
+        if (i <= 3 || (i % 5) == 0) {
+            LOG_INF("id=%u  join in %d ...", (unsigned)element_id, i);
+        }
+        k_msleep(1000);
+    }
+#endif
+
     LOG_INF("id=%u PLACE ON GROUND (nose along lighthouse world +X) AND STAND CLEAR "
             "— arming in 5 s ...", (unsigned)element_id);
     for (int i = 5; i > 0; i--) {
@@ -273,6 +299,11 @@ int main(void)
      * (unlike lh2-hover, which always commands zero offset from home). */
     demo_setpoint_t target = { 0 };
     bool            target_init = false;
+#ifdef CONFIG_DEMO_HOLD_STATION
+    /* First-fix seed: the pinned member holds here for the whole mission. */
+    float           seed_x = 0.0f;
+    float           seed_y = 0.0f;
+#endif
 
     uint32_t gossip_accum = GOSSIP_INTERVAL_MS;
 
@@ -314,6 +345,20 @@ int main(void)
     uint32_t       land_settle_ms = 0;
     position_t     own_pos_m   = { 0.0f, 0.0f };
     bool           have_pos    = false;
+    /* Land-in-place: latched at the moment a fix-valid landing (mission
+     * end, geofence) begins.  The old behavior — holding X/Y at the boot
+     * home — sent drones on long low-altitude cross-room transits at the
+     * end of a mission (after the rotation phase nobody is near their own
+     * pad; the slot swap means not even the survivors are), and the
+     * 0.3 m/s descent lands them at an arbitrary point along the way.
+     * Freezing the formation's final geometry is predictable and keeps
+     * the end of the show clean.  Fix-LOSS landings deliberately do NOT
+     * latch (land_hold_valid stays false → X/Y zeroed, the stabilizer's
+     * fix-lost velocity-damp fallback): latching a position we can no
+     * longer measure is meaningless. */
+    bool           land_hold_valid = false;
+    float          land_hold_x = 0.0f;
+    float          land_hold_y = 0.0f;
 
     while (true) {
         transport_drain(&wm, element_id);
@@ -334,6 +379,10 @@ int main(void)
              * non-idle tick) so zero-peer flight holds station instead of
              * translating to world (0,0). */
             demo_setpoint_init(&target, own_pos_m.x, own_pos_m.y);
+#ifdef CONFIG_DEMO_HOLD_STATION
+            seed_x = own_pos_m.x;
+            seed_y = own_pos_m.y;
+#endif
             target_init = true;
         }
 
@@ -379,6 +428,7 @@ int main(void)
                     LOG_ERR("id=%u fix lost > %d ms — landing independently",
                             (unsigned)element_id, FIX_LOSS_GRACE_MS);
                     state = FLIGHT_LANDING;
+                    land_hold_valid = false;   /* no fix — no position to hold */
                     landing_alt_m = alt_cmd_m;
                     sp.linear.z = alt_cmd_m - 1.0f;
                     break;
@@ -399,14 +449,22 @@ int main(void)
                         (unsigned)element_id,
                         (double)origin_dist, (double)GEOFENCE_RADIUS_M);
                 state = FLIGHT_LANDING;
+                land_hold_x = own_pos_m.x;
+                land_hold_y = own_pos_m.y;
+                land_hold_valid = true;
                 landing_alt_m = alt_cmd_m;
                 sp.linear.z = alt_cmd_m - 1.0f;
                 break;
             }
 
             if (k_uptime_get_32() - mission_t0_ms > (uint32_t)MISSION_DURATION_S * 1000u) {
-                LOG_INF("id=%u mission duration elapsed — landing", (unsigned)element_id);
+                LOG_INF("id=%u mission duration elapsed — landing in place at "
+                        "(%.2f, %.2f)", (unsigned)element_id,
+                        (double)own_pos_m.x, (double)own_pos_m.y);
                 state = FLIGHT_LANDING;
+                land_hold_x = own_pos_m.x;
+                land_hold_y = own_pos_m.y;
+                land_hold_valid = true;
                 landing_alt_m = alt_cmd_m;
                 sp.linear.z = alt_cmd_m - 1.0f;
                 break;
@@ -414,6 +472,14 @@ int main(void)
 
             float min_dist_m = demo_compute_drive(&wm, &own_pos_m, &target, WM_CYCLE_MS,
                                                   element_id);
+#ifdef CONFIG_DEMO_HOLD_STATION
+            /* Pinned member: the drive above still ran (its min_dist_m
+             * feeds the separation warning below, and its LOG_DBG keeps
+             * this drone's view of the field observable), but the target
+             * stays at the first-fix seed — formation forces are observed,
+             * not obeyed.  Peers still see this drone and form around it. */
+            demo_setpoint_init(&target, seed_x, seed_y);
+#endif
             if (min_dist_m >= 0.0f && min_dist_m < DEMO_MIN_SEP_M) {
                 static int sep_log_div;
                 if (++sep_log_div >= 20) {   /* ~2 Hz at WM_CYCLE_MS=100 */
@@ -445,6 +511,19 @@ int main(void)
             if (landing_alt_m < 0.0f) { landing_alt_m = 0.0f; }
             sp.linear.x = 0.0f;
             sp.linear.y = 0.0f;
+#ifdef CONFIG_PWM
+            /* Land in place (see land_hold_valid above): hold the latched
+             * position instead of translating home during the descent. */
+            if (land_hold_valid) {
+                float home_x, home_y;
+                if (cf21bl_stabilizer_get_pos_home(&home_x, &home_y)) {
+                    float nx = (land_hold_x - home_x) / (float)CONFIG_CF21BL_POS_MAX_M;
+                    float ny = (land_hold_y - home_y) / (float)CONFIG_CF21BL_POS_MAX_M;
+                    sp.linear.x = nx < -1.0f ? -1.0f : (nx > 1.0f ? 1.0f : nx);
+                    sp.linear.y = ny < -1.0f ? -1.0f : (ny > 1.0f ? 1.0f : ny);
+                }
+            }
+#endif
             sp.linear.z = landing_alt_m - 1.0f;
             if (landing_alt_m <= 0.02f) {
                 land_settle_ms += WM_CYCLE_MS;
@@ -489,7 +568,14 @@ int main(void)
         }
 
         gossip_accum += WM_CYCLE_MS;
-        if (gossip_accum >= GOSSIP_INTERVAL_MS) {
+        /* A LANDED drone goes gossip-silent: it has left the collective, and
+         * peers must be able to expire it (WM_EXPIRE_THRESHOLD_MS) so the
+         * formation heals around the survivors.  Without this gate a landed
+         * drone broadcast its ground position forever and the others held
+         * formation around a parked airframe.  LANDING (still airborne,
+         * descending) keeps gossiping — peers should make room for it until
+         * it is actually down. */
+        if (state != FLIGHT_LANDED && gossip_accum >= GOSSIP_INTERVAL_MS) {
             own_state.update_seq++;
             transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
             gossip_accum = 0;

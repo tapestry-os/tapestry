@@ -232,4 +232,26 @@ config CF21BL_POS_MAX_M
 	  linear.x/y = ±1.0 maps to ±CF21BL_POS_MAX_M metres from the
 	  lighthouse origin.  Default 5 m gives a 10 m × 10 m arena.
 
+config CF21BL_POS_TRIM_X_CDEG
+	int "Boot-time XY level-trim seed, X axis (0.01 deg units)"
+	depends on CF21BL_LIGHTHOUSE_POS_HOLD
+	default 0
+	range -500 500
+	help
+	  Pre-seed the position-hold trim integrator (g_pos_ix) at boot,
+	  in hundredths of a degree (e.g. 190 = 1.90 deg).  Read the value
+	  from a previous flight's converged ix in the pos log line.  Only
+	  valid while the airframe's physical bias is unchanged — re-measure
+	  after any crash, repair, or re-mounting; a wrong-direction seed
+	  doubles the takeoff transient instead of removing it.  Leave 0
+	  for healthy airframes.
+
+config CF21BL_POS_TRIM_Y_CDEG
+	int "Boot-time XY level-trim seed, Y axis (0.01 deg units)"
+	depends on CF21BL_LIGHTHOUSE_POS_HOLD
+	default 0
+	range -500 500
+	help
+	  Same as CF21BL_POS_TRIM_X_CDEG for g_pos_iy.
+
 endif # CF21BL_LIGHTHOUSE
