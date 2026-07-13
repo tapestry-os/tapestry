@@ -63,6 +63,37 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./tapestry/tapestry-scr-sim/build/test-scr/zephyr/zephyr.exe
 
+      # ── cf21bl formation field ──────────────────────────────────────────
+      # Regression tests for the flight-found spring-field bugs (target
+      # leash, alignment squeeze, solo glide, hold-on-stale) plus the
+      # rotation/anchor invariants.  Pure C — runs on native_sim.
+
+      - name: Build formation-field unit tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/examples/cf21bl-formation/build/test-formation \
+            tapestry/examples/cf21bl-formation/tests
+
+      - name: Run formation-field unit tests
+        working-directory: ${{ github.workspace }}
+        run: ./tapestry/examples/cf21bl-formation/build/test-formation/zephyr/zephyr.exe
+
+      # ── cf21bl motor mixing ─────────────────────────────────────────────
+      # Existing ztest suite (uniform-reduction saturation, yaw signs);
+      # previously only ever run on hardware — also pure C.
+
+      - name: Build motor-mix unit tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/tapestry-scr-hw/build/test-mix \
+            tapestry/tapestry-scr-hw/tests
+
+      - name: Run motor-mix unit tests
+        working-directory: ${{ github.workspace }}
+        run: ./tapestry/tapestry-scr-hw/build/test-mix/zephyr/zephyr.exe
+
       # ── Simulation elements (compile-only) ──────────────────────────────
       # These are not run in CI (they require the Python orchestrator)
       # but we verify they compile to catch regressions early.
@@ -199,3 +230,24 @@ jobs:
           west build -b bbc_microbit_v2 \
             --build-dir tapestry/examples/collective-formation/build/hw-mb \
             tapestry/examples/collective-formation
+
+      # ── Crazyflie 2.1 Brushless (STM32F405 / Cortex-M4F) ────────────────
+      # Compile-only: the full stabilizer/lighthouse/PM board stack via the
+      # three-drone demo, and the L4-L7 runtime element.  The out-of-tree
+      # board definition lives in tapestry-scr-hw/boards (each app appends
+      # it to BOARD_ROOT itself).  Note: the local Zephyr I2C-v1-RTIO patch
+      # (patches/) fixes runtime bugs only — compilation is unaffected.
+
+      - name: Build cf21bl-formation demo — crazyflie21bl
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b crazyflie21bl \
+            --build-dir tapestry/examples/cf21bl-formation/build/hw-cf21bl \
+            tapestry/examples/cf21bl-formation
+
+      - name: Build Phase 2 element — crazyflie21bl
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b crazyflie21bl \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-cf21bl \
+            tapestry/tapestry-scr-hw
