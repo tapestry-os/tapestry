@@ -1,4 +1,0 @@
-mainmenu "Tapestry lh2-hover"
-
-source "Kconfig.zephyr"
-rsource "../../tapestry-os/boards/crazyflie21bl/Kconfig"

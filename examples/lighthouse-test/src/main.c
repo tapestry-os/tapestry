@@ -40,60 +40,11 @@ LOG_MODULE_REGISTER(lh2_test, LOG_LEVEL_INF);
  * identity / placeholder — position will be wrong but the log will show
  * whether frames are arriving (fix status changes from "no fix" to numbers).
  */
-/* lighthouse_cal_office_260706.yaml — SECOND 2026-07-06 recalibration (BS1 suspected
- * partially occluded, tilted further and re-run); supersedes both the
- * July-4 poses and the first 2026-07-06 poses that used to live here. */
-static const lh2_bs_pose_t BS0 = {
-    .origin = {-0.6803646087646484, 0.6335355639457703, 1.615210771560669},
-    .rot    = {0.8344101905822754, -0.08563866466283798, 0.5444498062133789,
-               0.13026301562786102, 0.9905099272727966, -0.04383661970496178,
-               -0.535528838634491, 0.1074993908405304, 0.8376471400260925}
-};
-
-static const lh2_bs_pose_t BS1 = {
-    .origin = {0.09399518370628357, -2.2131965160369873, 1.4227608442306519},
-    .rot    = {0.049453821033239365, -0.9982976317405701, 0.03092208132147789,
-               0.9098809957504272, 0.057799000293016434, 0.41082337498664856,
-               -0.4119112491607666, 0.00781862810254097, 0.911190390586853}
-};
-
-/* OOTX sweep calibration — from the same YAML's "calibs:" section, unchanged
- * from July 4 (factory calibration is per-physical-BS, tied to uid, not to
- * where the base station is placed in the room). */
-static const lh2_bs_calib_t BS0_CALIB = {
-    .sweep = {
-        { .phase = 0.0f,                  .tilt = -0.0482177734375f,
-          .curve = -0.139892578125f,      .gibphase = 2.232421875f,
-          .gibmag = -0.001861572265625f,  .ogeephase = 1.1142578125f,
-          .ogeemag = -0.1802978515625f },
-        { .phase = -0.0070343017578125f,  .tilt = 0.038848876953125f,
-          .curve = -0.047149658203125f,   .gibphase = 1.4541015625f,
-          .gibmag = -0.0013513565063476562f, .ogeephase = 2.359375f,
-          .ogeemag = -0.25439453125f },
-    },
-    .uid = 3438823989u
-};
-static const lh2_bs_calib_t BS1_CALIB = {
-    .sweep = {
-        { .phase = 0.0f,                  .tilt = -0.047393798828125f,
-          .curve = -0.3046875f,           .gibphase = 1.1494140625f,
-          .gibmag = -0.004795074462890625f, .ogeephase = 0.0887451171875f,
-          .ogeemag = 0.09014892578125f },
-        { .phase = -0.0010623931884765625f, .tilt = 0.051727294921875f,
-          .curve = -0.1802978515625f,     .gibphase = 1.525390625f,
-          .gibmag = -0.007568359375f,     .ogeephase = 0.97998046875f,
-          .ogeemag = 0.24072265625f },
-    },
-    .uid = 3211055830u
-};
-
-/*
- * SteamVR channel assignments (0-indexed = SteamVR channel number − 1).
- * Check cfclient Lighthouse tab to see which channel each BS is assigned.
- * Default: BS0 on channel 0, BS1 on channel 1.
- */
-#define BS0_CHANNEL  0
-#define BS1_CHANNEL  1
+/* Single shared copy of poses + OOTX calibration + channel assignments —
+ * see that header's comment for the recalibration procedure.  This example
+ * is the verification tool for it: after any recalibration, a drone on the
+ * floor at the calibration spot must read ≈ (0, 0, 0). */
+#include "../../lighthouse_cal_office_260706.h"
 
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 

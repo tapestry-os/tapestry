@@ -6,10 +6,11 @@ dead reckoning), and gossip over the nRF51822's syslink P2P radio channel.
 No central controller, no L5 SCR — formation is a pure L4 emergent behavior,
 same philosophy as `examples/collective-formation` for Cutebots.
 
-This is the multi-drone follow-on to the single-drone work in
-`examples/lh2-hover` (lighthouse position hold) and `examples/altitude-hold-tether`
-(baro altitude hold) — both flight-validated prerequisites. Read those first
-if the stabilizer/lighthouse architecture is unfamiliar.
+This is the multi-drone follow-on to the flight-validated single-drone
+stack (lighthouse XY position hold + baro altitude hold in
+`cf21bl_stabilizer.c`). For a gentler on-ramp, `examples/altitude-hold-tether`
+exercises the altitude loop alone and `examples/lighthouse-test` the
+positioning alone.
 
 ## How it works
 
@@ -40,11 +41,9 @@ uses — see the comment block at the top of `src/formation.h`.
 - All three drones must be flashed with the **same** lighthouse base-station
   poses and OOTX calibration (`src/main.c`'s `BS0`/`BS1`/`BS0_CALIB`/
   `BS1_CALIB`) — gossiped positions are only comparable in a shared frame.
-  Current values are from `examples/lighthouse_cal_office_260706.yaml`
-  (2026-07-06); keep this in sync with `examples/lh2-hover/src/main.c` if
-  the room is recalibrated again.
-- Same lighthouse base stations, same room, same physical setup used for
-  the single-drone lh2-hover validation.
+  Current values come from the single shared header
+  `examples/lighthouse_cal_office_260706.h` (generated from the YAML next
+  to it) — if the room is recalibrated, update that ONE file.
 - Each drone needs its own lighthouse deck (USART3, PC10/PC11 — see
   `cf21bl_lighthouse.c`) and a working BMP390 baro for altitude hold.
 
@@ -136,7 +135,8 @@ affects another's flight, per the project's Phase E requirement.
 
 1. Flash all three drones with IDs 0, 1, 2 (same BS calibration on all three).
 2. Place each drone in the arena, **nose along lighthouse world +X**
-   (same placement requirement as lh2-hover), spaced roughly
+   (yaw hold locks heading at boot, and world-frame corrections assume
+   that boot heading — see the note in `prj.conf`), spaced roughly
    `DEMO_TARGET_SPACING_M` apart. Exact placement doesn't matter — the
    stabilizer captures each drone's own position as its home the instant
    this file starts commanding a non-idle altitude, and the spring field

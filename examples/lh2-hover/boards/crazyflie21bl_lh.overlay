@@ -1,5 +1,0 @@
-/* Reconfigure USART3 to 230400 baud for lighthouse deck FPGA data stream */
-&usart3 {
-	current-speed = <230400>;
-	status = "okay";
-};

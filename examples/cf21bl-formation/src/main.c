@@ -9,9 +9,9 @@
  * Architecture:
  *   Attitude:    BMI088 rate + angle loops (cf21bl_stabilizer.c, unchanged)
  *   Yaw heading: CONFIG_CF21BL_YAW_HOLD — locked to boot orientation so
- *                world-frame corrections stay meaningful (see lh2-hover's
- *                placement-requirement note; the same requirement applies
- *                here: place each drone with its nose along lighthouse
+ *                world-frame corrections stay meaningful (Mahony yaw is
+ *                boot-relative with no absolute reference, hence the
+ *                requirement: place each drone with its nose along lighthouse
  *                world +X at power-on).
  *   Altitude:    CONFIG_CF21BL_ALTITUDE_HOLD (baro, closed-loop) — each
  *                drone holds a fixed, ID-staggered cruise altitude.
@@ -97,58 +97,11 @@
 LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
 
 /* ── Calibrated BS poses + OOTX calibration ──────────────────────────────── */
-/* Poses from lighthouse_cal_office_260706.yaml (2026-07-06, second recalibration same
- * day — BS1 suspected partially occluded, tilted further and re-run).
- * Supersedes both the July-4 poses and the first 2026-07-06 poses.  OOTX
- * sweep calibration below is unchanged (same uid per physical BS across
- * all three calibrations — factory calibration doesn't change when a base
- * station is moved or tilted, only its geometry pose does).  MUST match
- * the physical base station placement at flight time and MUST be
- * identical across all three drones (gossiped positions are only
- * comparable in a shared frame).  If the room is recalibrated again,
- * update this AND examples/lh2-hover/src/main.c. */
-static const lh2_bs_pose_t BS0 = {
-    .origin = {-0.6803646087646484f, 0.6335355639457703f, 1.615210771560669f},
-    .rot    = {0.8344101905822754f,  -0.08563866466283798f, 0.5444498062133789f,
-               0.13026301562786102f,  0.9905099272727966f, -0.04383661970496178f,
-              -0.535528838634491f,    0.1074993908405304f,  0.8376471400260925f}
-};
-static const lh2_bs_pose_t BS1 = {
-    .origin = {0.09399518370628357f, -2.2131965160369873f, 1.4227608442306519f},
-    .rot    = {0.049453821033239365f, -0.9982976317405701f,  0.03092208132147789f,
-               0.9098809957504272f,    0.057799000293016434f, 0.41082337498664856f,
-              -0.4119112491607666f,    0.00781862810254097f,  0.911190390586853f}
-};
-
-static const lh2_bs_calib_t BS0_CALIB = {
-    .sweep = {
-        { .phase = 0.0f,                  .tilt = -0.0482177734375f,
-          .curve = -0.139892578125f,      .gibphase = 2.232421875f,
-          .gibmag = -0.001861572265625f,  .ogeephase = 1.1142578125f,
-          .ogeemag = -0.1802978515625f },
-        { .phase = -0.0070343017578125f,  .tilt = 0.038848876953125f,
-          .curve = -0.047149658203125f,   .gibphase = 1.4541015625f,
-          .gibmag = -0.0013513565063476562f, .ogeephase = 2.359375f,
-          .ogeemag = -0.25439453125f },
-    },
-    .uid = 3438823989u
-};
-static const lh2_bs_calib_t BS1_CALIB = {
-    .sweep = {
-        { .phase = 0.0f,                  .tilt = -0.047393798828125f,
-          .curve = -0.3046875f,           .gibphase = 1.1494140625f,
-          .gibmag = -0.004795074462890625f, .ogeephase = 0.0887451171875f,
-          .ogeemag = 0.09014892578125f },
-        { .phase = -0.0010623931884765625f, .tilt = 0.051727294921875f,
-          .curve = -0.1802978515625f,     .gibphase = 1.525390625f,
-          .gibmag = -0.007568359375f,     .ogeephase = 0.97998046875f,
-          .ogeemag = 0.24072265625f },
-    },
-    .uid = 3211055830u
-};
-
-#define BS0_CHANNEL  0
-#define BS1_CHANNEL  1
+/* Single shared copy (see that header's comment for the recalibration
+ * procedure).  MUST match the physical base-station placement at flight
+ * time and MUST be identical across all drones — gossiped positions are
+ * only comparable in a shared frame. */
+#include "../../lighthouse_cal_office_260706.h"
 
 /* ── Mission parameters ───────────────────────────────────────────────────── */
 
@@ -166,7 +119,7 @@ static const lh2_bs_calib_t BS1_CALIB = {
 #define ALT_RAMP_START_M     0.15f
 #define ALT_RAMP_RATE_MPS    0.10f
 
-/* Individual landing ramp (same convention as lh2-hover Stage 7). */
+/* Individual landing ramp (walk the altitude target down, settle, disarm). */
 #define LAND_RATE_MPS        0.30f
 #define LAND_SETTLE_MS       2000
 

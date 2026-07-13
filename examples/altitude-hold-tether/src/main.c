@@ -16,8 +16,9 @@
  *   Do this over a soft surface, clear of people and pets.
  *   DO NOT RUN THIS UNTETHERED.
  *
- * Unlike altitude-hold-test (which deliberately drives collective open-loop,
- * because the pre-WS3 controller porpoised in closed loop), this ramps the
+ * Unlike the retired altitude-hold-test example (which drove collective
+ * open-loop, because the pre-WS3 controller porpoised in closed loop — see
+ * git history), this ramps the
  * ALTITUDE SETPOINT and lets the stabilizer's own closed loop fly itself
  * there — that loop is exactly what's under test.
  *

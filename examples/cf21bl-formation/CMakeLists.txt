@@ -4,8 +4,8 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-scr-hw)
 list(APPEND DTS_ROOT   ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os)
 
 # Second overlay reconfigures USART3 to 230400 baud for the lighthouse deck
-# FPGA data stream (same fragment lh2-hover/altitude-hold-test use) — this
-# also means the wired USART3 console is unavailable; use CRTP radio.
+# FPGA data stream — this also means the wired USART3 console is
+# unavailable; use CRTP radio.
 set(DTC_OVERLAY_FILE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os/boards/crazyflie21bl/crazyflie21bl.overlay"
     "${CMAKE_CURRENT_SOURCE_DIR}/boards/crazyflie21bl_lh.overlay"
