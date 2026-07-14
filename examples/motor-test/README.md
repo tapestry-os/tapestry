@@ -9,7 +9,7 @@ supported, each with its own sweep:
 - **bbc_microbit_v2** (Cutebot) — forward-speed sweep to find the stiction
   threshold and measure speed vs. throttle.
 
-Results feed into `examples/collective-formation` (`DEMO_MAX_SPEED`,
+Results feed into `examples/cutebot-formation` (`DEMO_MAX_SPEED`,
 `DEMO_WHEEL_TRACK`) and into `tapestry-os/boards/crazyflie21bl/crazyflie21bl.c`
 (`CF21BL_PWM_MIN_NS`).
 

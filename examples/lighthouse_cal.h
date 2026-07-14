@@ -1,6 +1,6 @@
 /*
- * lighthouse_cal_office_260706.h — the ONE in-code copy of the base-station
- * geometry + OOTX calibration, generated from lighthouse_cal_office_260706.yaml
+ * lighthouse_cal.h — the ONE in-code copy of the base-station
+ * geometry + OOTX calibration, generated from lighthouse_cal.yaml
  * (same directory; cfclient export, 2026-07-06 second recalibration — BS1
  * suspected partially occluded, tilted further and re-run).
  *
@@ -22,8 +22,8 @@
  * a drone on the floor at the calibration spot must read ≈ (0, 0, 0).
  */
 
-#ifndef TAPESTRY_EXAMPLES_LIGHTHOUSE_CAL_OFFICE_260706_H
-#define TAPESTRY_EXAMPLES_LIGHTHOUSE_CAL_OFFICE_260706_H
+#ifndef TAPESTRY_EXAMPLES_LIGHTHOUSE_CAL_H
+#define TAPESTRY_EXAMPLES_LIGHTHOUSE_CAL_H
 
 #include "cf21bl_lighthouse.h"
 
@@ -72,4 +72,4 @@ static const lh2_bs_calib_t BS1_CALIB = {
 #define BS0_CHANNEL  0
 #define BS1_CHANNEL  1
 
-#endif /* TAPESTRY_EXAMPLES_LIGHTHOUSE_CAL_OFFICE_260706_H */
+#endif /* TAPESTRY_EXAMPLES_LIGHTHOUSE_CAL_H */

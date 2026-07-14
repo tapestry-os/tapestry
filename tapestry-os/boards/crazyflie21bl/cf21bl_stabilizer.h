@@ -50,8 +50,8 @@
  *
  * Position hold (CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD=y, requires ANGLE_MODE):
  *   When the lighthouse has a valid fix and linear.z > -0.9 (flying):
- *     linear.x ∈ [-1, +1] → X position setpoint ±CONFIG_CF21BL_POS_MAX_M metres
- *     linear.y ∈ [-1, +1] → Y position setpoint ±CONFIG_CF21BL_POS_MAX_M metres
+ *     linear.x ∈ [-1, +1] → X position setpoint ±CONFIG_CF21BL_POS_MAX_M meters
+ *     linear.y ∈ [-1, +1] → Y position setpoint ±CONFIG_CF21BL_POS_MAX_M meters
  *     Both relative to the home position captured at first valid LH fix.
  *     Implemented as a P controller (position error → angle correction) feeding
  *     into the existing angle loop; no separate I/D to avoid cascade windup.
@@ -88,7 +88,7 @@ void cf21bl_stabilizer_set_setpoint(const substrate_twist_t *sp);
 
 /*
  * cf21bl_stabilizer_get_pos_home — Copy out the lighthouse home position
- * (world-frame metres, captured at first valid fix — see "Position hold"
+ * (world-frame meters, captured at first valid fix — see "Position hold"
  * above) that linear.x/y=0 currently resolves to.  Needed by callers that
  * want to command an ABSOLUTE world-frame target rather than a home-relative
  * one (e.g. a multi-drone formation converging on shared world coordinates):

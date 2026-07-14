@@ -221,15 +221,15 @@ jobs:
             --build-dir tapestry/tapestry-scr-hw/build/hw-mb \
             tapestry/tapestry-scr-hw
 
-      # ── collective-formation example ─────────────────────────────────────
+      # ── cutebot-formation example ─────────────────────────────────────
       # L4-only formation demo; compile-only (flashing requires physical hardware).
 
-      - name: Build collective-formation — bbc_microbit_v2
+      - name: Build cutebot-formation — bbc_microbit_v2
         working-directory: ${{ github.workspace }}
         run: |
           west build -b bbc_microbit_v2 \
-            --build-dir tapestry/examples/collective-formation/build/hw-mb \
-            tapestry/examples/collective-formation
+            --build-dir tapestry/examples/cutebot-formation/build/hw-mb \
+            tapestry/examples/cutebot-formation
 
       # ── Crazyflie 2.1 Brushless (STM32F405 / Cortex-M4F) ────────────────
       # Compile-only: the full stabilizer/lighthouse/PM board stack via the

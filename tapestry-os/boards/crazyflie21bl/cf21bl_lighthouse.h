@@ -35,7 +35,7 @@
  * corrected through the stock measurement model before triangulation.
  *
  * Base station pose convention (right-handed, Z-up world frame):
- *   origin[3]: position of the base station optical centre in metres
+ *   origin[3]: position of the base station optical center in meters
  *   rot[9]:    row-major 3×3 rotation matrix mapping BS-local to world frame
  *
  *   BS-local frame axes (stock lighthouse_geometry.c convention — the frame
@@ -50,7 +50,7 @@
  * --------------
  * Reported positions are in the world frame defined by the base station
  * calibration — typically the SteamVR chaperone origin (floor level, roughly
- * centred in the tracking volume).
+ * centered in the tracking volume).
  *
  * Frame transport
  * ---------------
@@ -94,10 +94,10 @@ extern "C" {
  *   python3 -m cflib.crazyflie.mem.lighthouseConfigWriter --estimate-geometry
  *
  * The JSON output "rotation_matrix" is rot[0..8] row-major, and "origin" is
- * origin[0..2] in metres.
+ * origin[0..2] in meters.
  */
 typedef struct {
-    float origin[3];   /* [x, y, z] BS optical centre, metres, world frame   */
+    float origin[3];   /* [x, y, z] BS optical center, meters, world frame   */
     float rot[9];      /* row-major R: rot[r*3+c] = R_world←BS[r][c]         */
 } lh2_bs_pose_t;
 
@@ -129,7 +129,7 @@ typedef struct {
     uint32_t             uid;      /* OOTX id from the YAML; informational */
 } lh2_bs_calib_t;
 
-/* 3D position estimate in the world frame, metres */
+/* 3D position estimate in the world frame, meters */
 typedef struct {
     float x, y, z;
 } lh2_position_t;

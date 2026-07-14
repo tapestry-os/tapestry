@@ -12,7 +12,7 @@
  *          // read state, drive substrate, sleep
  *      }
  *
- * Not for use by demos that bypass L5/L6 (e.g. collective-formation, which
+ * Not for use by demos that bypass L5/L6 (e.g. cutebot-formation, which
  * implements its own control law directly on L4).
  *
  * Design invariants:

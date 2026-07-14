@@ -6,7 +6,7 @@ if("${BOARD}" STREQUAL "bbc_microbit_v2")
 endif()
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
-project(tapestry_collective_formation)
+project(tapestry_cutebot_formation)
 
 set(TAPESTRY_OS_ROOT      ${CMAKE_CURRENT_SOURCE_DIR}/../../tapestry-os)
 set(TAPESTRY_OS_CSM       ${TAPESTRY_OS_ROOT}/subsys/csm)

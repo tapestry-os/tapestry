@@ -92,4 +92,4 @@ config TAPESTRY_MESH_RELAY
 
 	  Relay logic (ring buffer, last-relayed clock table, flush timer) is
 	  compiled out when this option is disabled, preserving identical
-	  single-hop broadcast behaviour on memory-constrained targets.
+	  single-hop broadcast behavior on memory-constrained targets.

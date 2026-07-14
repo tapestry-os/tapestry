@@ -4,7 +4,7 @@ Three Crazyflie 2.1 Brushless quadrotors self-organize into a spring-field
 formation using the Tapestry L4 world model, REAL lighthouse position (not
 dead reckoning), and gossip over the nRF51822's syslink P2P radio channel.
 No central controller, no L5 SCR — formation is a pure L4 emergent behavior,
-same philosophy as `examples/collective-formation` for Cutebots.
+same philosophy as `examples/cutebot-formation` for Cutebots.
 
 This is the multi-drone follow-on to the flight-validated single-drone
 stack (lighthouse XY position hold + baro altitude hold in
@@ -15,7 +15,7 @@ positioning alone.
 ## How it works
 
 1. Each drone reads its own absolute position from the lighthouse deck
-   (metres, home-relative to the shared calibration origin) and gossips it.
+   (meters, home-relative to the shared calibration origin) and gossips it.
 2. Peer positions arrive into the local L4 world model — no odometry, no
    drift; every drone's reported position is ground truth.
 3. `formation.c`'s holonomic spring field computes a target X/Y point
@@ -32,8 +32,8 @@ positioning alone.
    see "Safety layer" below. Battery-critical landing is handled inside
    `cf21bl_stabilizer.c` itself, also independently per drone.
 
-**Units**: positions in this example are metres in the lighthouse world
-frame, NOT the abstract 0–100 logical-unit space `collective-formation`
+**Units**: positions in this example are meters in the lighthouse world
+frame, NOT the abstract 0–100 logical-unit space `cutebot-formation`
 uses — see the comment block at the top of `src/formation.h`.
 
 ## Requirements
@@ -42,7 +42,7 @@ uses — see the comment block at the top of `src/formation.h`.
   poses and OOTX calibration (`src/main.c`'s `BS0`/`BS1`/`BS0_CALIB`/
   `BS1_CALIB`) — gossiped positions are only comparable in a shared frame.
   Current values come from the single shared header
-  `examples/lighthouse_cal_office_260706.h` (generated from the YAML next
+  `examples/lighthouse_cal.h` (generated from the YAML next
   to it) — if the room is recalibrated, update that ONE file.
 - Each drone needs its own lighthouse deck (USART3, PC10/PC11 — see
   `cf21bl_lighthouse.c`) and a working BMP390 baro for altitude hold.
@@ -58,9 +58,9 @@ Flash: `cfloader flash build/zephyr/zephyr.bin stm32-dfu`
 
 Console: CRTP radio only — the lighthouse deck takes USART3.
 `python3 ~/code/tapestry/read_console.py`. With 3 drones transmitting on the
-same nRF51 radio config there is no per-drone channel plan yet (see Phase D
-below); treat concurrent consoles as best-effort, or build one drone at a
-time with `-DCONFIG_LOG=n` to quiet the others.
+same nRF51 radio config note the id of each drone in the log and 
+treat concurrent consoles as best-effort, or build using the compiler
+flag `-DCONFIG_LOG=n` to quiet all but one drone.
 
 Gossip-only bench test (no motors): add `-DCONFIG_PWM=n` — runs the L4
 gossip/transport/lighthouse stack against `substrate_null.c`, useful for
@@ -106,14 +106,6 @@ Ground placement (world frame, all noses along +X, tape-mark these):
 | id=1  | (0.50, 0.67) | Near the triangle's north apex (true apex is y=0.87; the springs nudge it the last 0.2 m on climb) |
 | id=2  | (1.00, 0.00) | East end of the line |
 
-Verified against the 2026-07-06 calibration: every boot spot, cruise
-position, and the full rotation sweep stay inside both stations' optical
-FOV; max distance from origin during rotation is 1.15 m (geofence 2.0 m);
-worst BS1 grazing angle is 13.1° (transient, north of the circle at
-z=0.70). Placement tolerance is loose (±10 cm shifts the formation,
-breaks nothing). If the room is ever recalibrated, re-derive before
-trusting these marks.
-
 Approximate timeline from simultaneous power-on: line by ~25 s; id=1 airborne
 ~32 s and triangle forms; rotation through ~60 s; id=1 lands and goes silent
 ~62 s; line re-forms ~67 s; id=0/id=2 land ~88 s.
@@ -129,7 +121,7 @@ Approximate timeline from simultaneous power-on: line by ~25 s; id=1 airborne
 | Minimum separation violated | `formation.c` (extra repulsion below `DEMO_MIN_SEP_M`) | Stronger repulsion force + a logged warning in `main.c`; not a landing trigger |
 
 Every trigger above is per-drone local state — one drone landing never
-affects another's flight, per the project's Phase E requirement.
+affects another's flight.
 
 ## Flight checklist
 
@@ -148,23 +140,27 @@ affects another's flight, per the project's Phase E requirement.
 5. After `MISSION_DURATION_S` (60 s default), every drone lands and
    disarms independently.
 
-## Fleet bring-up (Phase D — do this once per new drone before flying it here)
+## Fleet bring-up (do this once per new drone before flying it here)
 
+0. **ESC firmware** (once per new airframe): this project's motor path
+   (RC PWM 400 Hz or OneShot125 through the STM32 timer, PC15 reset
+   sequencing in `crazyflie21bl.c`) requires the ESCs to run **BLHeli_S
+   with input-protocol auto-detect**. Validated configuration: BLHeli_S
+   16.7, flashed/configured via Betaflight passthrough + ESC Configurator
+   (esc-configurator.com — the target reads "O-H-10 - BLHeli_S, 16.7").
+   While connected, verify the **PPM min/max throttle endpoints are
+   identical on all four ESCs** (1000/2000).
 1. Flash + confirm: ESC RC-PWM (or OneShot125) auto-detect arms cleanly,
    gyro calibration completes without warnings, lighthouse deck attached
    and reading (`examples/lighthouse-test` is a good bench check in
    isolation), battery telemetry flowing (`examples/altitude-hold-tether`
    with `CONFIG_CF21BL_PM=y` is a good bench check).
-2. BLHeli_S "PWM Frequency" check via ESC Configurator on **every** motor
-   of the new drone — avoid 24 kHz (Bitcraze warning, flagged since
-   2026-06-09, never actually confirmed on any unit including drone 1; do
-   all three while ESCs are on the bench for this campaign).
-3. Confirm this drone's `CONFIG_TAPESTRY_ELEMENT_ID` is unique in the fleet.
-4. Bench-test the syslink P2P transport alone first: build two units with
+2. Confirm this drone's `CONFIG_TAPESTRY_ELEMENT_ID` is unique in the fleet.
+3. Bench-test the syslink P2P transport alone first: build two units with
    `-DCONFIG_PWM=n` (gossip-only) and confirm each sees the other's
    `element_id` in the world model over radio before ever arming motors.
 
-## Staged flight test campaign (Phase F)
+## Staged flight test campaign
 
 Run in order; do not advance until the current stage passes.
 
@@ -183,19 +179,12 @@ Run in order; do not advance until the current stage passes.
 4. **3 drones, static formation hold** — `CONFIG_TAPESTRY_ELEMENT_COUNT=3`.
 5. **3 drones, formation maneuver** — perturb one drone (nudge or briefly
    override its target) and confirm the others react, analogous to
-   `examples/collective-formation`'s remove/rejoin test.
+   `examples/cutebot-formation`'s remove/rejoin test.
 
 **Pass criteria per stage**: all drones hold their assigned spacing within
 the single-drone error envelope (~±0.5 m, self-recovering — see project
 memory's single-drone flight history), no separation violations logged, and
 every drone reaches a clean scheduled or triggered landing.
-
-**Known risk carried into this campaign**: the single-drone lighthouse work
-found recurring phantom/reflection fixes in this room, all successfully
-gated (see `cf21bl_lighthouse.c`). With multiple drones the base stations
-can now also be occluded by another DRONE (not just furniture) — watch for
-correlated fix loss between drones that are physically between each other
-and a base station.
 
 ## Tuning constants
 
@@ -204,23 +193,15 @@ parameters). Override at build time with `-- -D<CONSTANT>=<value>`.
 
 | Constant | Default | Meaning |
 |---|---|---|
-| `DEMO_TARGET_SPACING_M` | 1.0 | Desired peer spacing at equilibrium, metres |
+| `DEMO_TARGET_SPACING_M` | 1.0 | Desired peer spacing at equilibrium, meters |
 | `DEMO_MAX_SPEED_MPS` | 0.3 | Max commanded approach speed |
 | `DEMO_MIN_SEP_M` | 0.5 | Hard-floor separation — extra repulsion below this |
 | `GEOFENCE_RADIUS_M` (main.c) | 2.0 | Distance from lighthouse origin before individual landing |
 | `MISSION_DURATION_S` (main.c) | 60 | Per-drone flight duration before landing |
 | `ALT_BASE_M` / `ALT_STEP_PER_ID_M` (main.c) | 0.30 / 0.25 | Per-ID cruise altitude stagger |
 
-None of the mission-parameter defaults above are hardware-validated yet —
-they're conservative starting points for the Phase F campaign, same
-convention as the single-drone gains before their own tether validation.
-
 ## Known limitations
 
 - No wireless "land now" command — mission duration is the only
   coordinated stop; a real abort still means power-cycling or physically
   intervening (same as every single-drone example in this project).
-- Altitude stagger (`ALT_STEP_PER_ID_M`) is a guess, not validated against
-  real downwash interaction at this arena's spacing.
-- No 3-drone CRTP console channel plan (Phase D item, deferred) — expect
-  console output from multiple drones to interleave or drop on one radio.

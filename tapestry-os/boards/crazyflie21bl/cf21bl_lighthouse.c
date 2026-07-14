@@ -286,8 +286,8 @@ static bool           g_pos_valid;
  * fit to the OLD placement ("legit extreme −26.8°, phantom −43.7°, split
  * the gap").  The 2026-07-06 recalibrations moved and retilted both
  * stations; nobody re-derived the bound.  Replaying this driver's own
- * az/el math over the current calibration (lighthouse_cal_office_260706
- * .yaml) shows legitimate flight-volume elevations reach −44.6° on BS0
+ * az/el math over the current calibration (lighthouse_cal.yaml)
+ * shows legitimate flight-volume elevations reach −44.6° on BS0
  * (the calibration origin itself sits at −35.3°, already outside the old
  * floor), and the flight-4 "reject implausible angles ch=0 el=−38..−42,
  * az=−11..+7" burst maps exactly onto real room positions ~0.3–0.5 m from
@@ -927,7 +927,7 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
 
     /* ── Jump gate ─────────────────────────────────────────────────────────
      * LH2 wrong-geometry solutions (wrong rotor pair / sweep pairing) can
-     * survive the median filter for over a second and land metres away from
+     * survive the median filter for over a second and land meters away from
      * the true position — flight test 2026-07-03 saw a 1.76 m X teleport
      * sustained ~1.7 s that drove position hold into a phantom correction on
      * the ground, and a z=2.8 m burst that tripped the app's climb ceiling.

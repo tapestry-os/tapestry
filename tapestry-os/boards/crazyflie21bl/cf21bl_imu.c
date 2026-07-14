@@ -136,7 +136,7 @@ static float g_accel_scale = 1.0f;
  *   Accel scale (processAccScale):
  *     Average |a_vec| over 200 samples to measure the absolute scale factor.
  *     Divides subsequent accel readings by this value so 1 g → 1.0 exactly.
- *     (The Mahony filter normalises the accel vector, so this only matters
+ *     (The Mahony filter normalizes the accel vector, so this only matters
  *     for altitude-from-accel which we don't currently use — but it matches
  *     stock and costs nothing.)
  *

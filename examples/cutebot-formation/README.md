@@ -1,4 +1,4 @@
-# Demo — Collective Formation
+# Demo — Cutebot Collective Formation
 
 BBC micro:bit V2 + Cutebot Mini robots self-organize into a regular formation
 using the Tapestry L4 world model and BLE gossip. No central controller.
@@ -39,7 +39,7 @@ One binary runs on all robots — no per-robot build flags needed.
 Run from the workspace root (`tapestry-workspace/`):
 
 ```sh
-west build -b bbc_microbit_v2 tapestry/examples/collective-formation
+west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation
 ```
 
 The hex is written to `build/zephyr/zephyr.hex`.

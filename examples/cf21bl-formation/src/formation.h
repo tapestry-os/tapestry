@@ -5,11 +5,11 @@
  * position, not dead reckoning.
  *
  * Units: element_state_t.position (and everything in this file) is in
- * METRES, home-relative in the shared lighthouse world frame — NOT the
+ * METERS, home-relative in the shared lighthouse world frame — NOT the
  * abstract [0,100] WORLD_SIZE convention csm.h's other constants
  * (MIN_SEPARATION, REPULSION_RADIUS, GOSSIP_RADIUS) assume.  Those CSM
  * constants are unused by this example for exactly that reason; formation.c
- * and main.c define their own metre-scale thresholds instead.
+ * and main.c define their own meter-scale thresholds instead.
  *
  * REQUIRES all drones to share the SAME lighthouse base-station poses and
  * OOTX calibration (main.c) — gossiped positions are only comparable if
@@ -37,7 +37,7 @@
 #include <tapestry/csm.h>
 #include <tapestry/substrate.h>
 
-/* Desired peer spacing at equilibrium, metres. */
+/* Desired peer spacing at equilibrium, meters. */
 #ifndef DEMO_TARGET_SPACING_M
 #define DEMO_TARGET_SPACING_M  1.0f
 #endif
@@ -47,10 +47,10 @@
 #define DEMO_MAX_SPEED_MPS     0.3f
 #endif
 
-/* Spring constant — force per metre of spacing error. */
+/* Spring constant — force per meter of spacing error. */
 #define SPRING_K            1.0f
 
-/* Hard-floor separation, metres — below this an extra repulsion term (on
+/* Hard-floor separation, meters — below this an extra repulsion term (on
  * top of the smooth spring) reacts faster than SPRING_K alone would.
  * 0.5 m is a props-clearance margin, not a contact distance. */
 #define DEMO_MIN_SEP_M      0.5f
@@ -144,8 +144,8 @@
 /* ── Formation target state ──────────────────────────────────────────────── */
 
 typedef struct {
-    float x;   /* commanded X setpoint, metres, home-relative */
-    float y;   /* commanded Y setpoint, metres, home-relative */
+    float x;   /* commanded X setpoint, meters, home-relative */
+    float y;   /* commanded Y setpoint, meters, home-relative */
     bool  moving;
 } demo_setpoint_t;
 
@@ -153,7 +153,7 @@ void demo_setpoint_init(demo_setpoint_t *sp, float x, float y);
 
 /* Advance *target toward the spring-field equilibrium by dt_ms, using
  * REAL peer positions from wm and this drone's REAL position (own_pos_m,
- * metres) for the force calculation.  Also returns the minimum distance
+ * meters) for the force calculation.  Also returns the minimum distance
  * observed to any fresh peer this call (for main.c's separation warning),
  * or -1.0f if no fresh peers were found.  own_id is only used to tag the
  * LOG_DBG line — with multiple drones sharing one radio channel (no

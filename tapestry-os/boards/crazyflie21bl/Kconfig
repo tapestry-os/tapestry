@@ -217,19 +217,19 @@ config CF21BL_LIGHTHOUSE_POS_HOLD
 	help
 	  When the lighthouse has a valid fix, the stabilizer adds a
 	  position PID loop: linear.x/y in substrate_move() become X/Y
-	  position setpoints in metres relative to the lighthouse origin
+	  position setpoints in meters relative to the lighthouse origin
 	  (range ±CF21BL_POS_MAX_M, default ±5 m, mapped from [-1, +1]).
 
 	  When the fix is lost, the stabilizer falls back to the standard
-	  angle-mode behaviour (linear.x/y = velocity feedforward).
+	  angle-mode behavior (linear.x/y = velocity feedforward).
 
 config CF21BL_POS_MAX_M
-	int "Maximum XY position setpoint range in metres (half-range)"
+	int "Maximum XY position setpoint range in meters (half-range)"
 	depends on CF21BL_LIGHTHOUSE_POS_HOLD
 	default 5
 	range 1 20
 	help
-	  linear.x/y = ±1.0 maps to ±CF21BL_POS_MAX_M metres from the
+	  linear.x/y = ±1.0 maps to ±CF21BL_POS_MAX_M meters from the
 	  lighthouse origin.  Default 5 m gives a 10 m × 10 m arena.
 
 config CF21BL_POS_TRIM_X_CDEG

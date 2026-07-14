@@ -3,7 +3,7 @@
  *
  * Three Crazyflie 2.1 brushless drones flying a spring-field formation using
  * REAL lighthouse position (not dead reckoning) for both peer gossip and
- * the stabilizer's own X/Y position hold.  See formation.h for the metres
+ * the stabilizer's own X/Y position hold.  See formation.h for the meters
  * unit convention and the shared-calibration requirement.
  *
  * Architecture:
@@ -101,7 +101,7 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
  * procedure).  MUST match the physical base-station placement at flight
  * time and MUST be identical across all drones — gossiped positions are
  * only comparable in a shared frame. */
-#include "../../lighthouse_cal_office_260706.h"
+#include "../../lighthouse_cal.h"
 
 /* ── Mission parameters ───────────────────────────────────────────────────── */
 
@@ -244,7 +244,7 @@ int main(void)
     world_model_t wm;
     wm_init(&wm, element_id, &own_state, 0.0f);
 
-    /* Target is absolute world-frame, metres. Initialized from this drone's
+    /* Target is absolute world-frame, meters. Initialized from this drone's
      * own first fix (below, in the flight loop) rather than world (0,0) —
      * with zero fresh peers demo_compute_drive() never moves the target, so
      * seeding it at the origin would command a translation to wherever
@@ -261,7 +261,7 @@ int main(void)
     uint32_t gossip_accum = GOSSIP_INTERVAL_MS;
 
     /* Convergence hold: wait until all expected peers are fresh (proceeds
-     * anyway after the grace period — matches the old demo's behaviour). */
+     * anyway after the grace period — matches the old demo's behavior). */
 #define DEMO_SYNC_GRACE_MS 5000
     for (uint32_t waited = 0; waited < DEMO_SYNC_GRACE_MS; waited += WM_CYCLE_MS) {
         transport_drain(&wm, element_id);

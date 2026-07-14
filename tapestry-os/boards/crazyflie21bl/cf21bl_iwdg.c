@@ -11,7 +11,7 @@
  *
  * Bug 1: the original while(IWDG_SR & 0x3) loop hung forever because LSI
  * was not running.  Writes to IWDG_PR/RLR set PVU/RVU, which only clear
- * once LSI synchronises the new values.  Fix: force LSI on (write 0xCCCC to
+ * once LSI synchronizes the new values.  Fix: force LSI on (write 0xCCCC to
  * IWDG_KR, which RM0090 §21.3 guarantees forces LSI on, then set LSION and
  * wait for LSIRDY with a bail-out).
  *

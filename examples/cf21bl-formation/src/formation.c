@@ -1,8 +1,8 @@
 /*
  * formation.c — CF21BL holonomic spring-field formation control
  *
- * See formation.h for the metres-based unit convention and why this
- * differs from examples/collective-formation's dead-reckoning approach.
+ * See formation.h for the meters-based unit convention and why this
+ * differs from examples/cutebot-formation's dead-reckoning approach.
  */
 
 #include "formation.h"

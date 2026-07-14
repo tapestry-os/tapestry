@@ -18,8 +18,8 @@
 
 LOG_MODULE_REGISTER(baro_test, LOG_LEVEL_INF);
 
-/* 11.77 Pa per metre at sea level (standard atmosphere linear approximation).
- * Accurate to ±1% for altitude changes up to a few hundred metres. */
+/* 11.77 Pa per meter at sea level (standard atmosphere linear approximation).
+ * Accurate to ±1% for altitude changes up to a few hundred meters. */
 #define PA_PER_M   11.77f
 
 /* Number of readings averaged to establish the home baseline. */

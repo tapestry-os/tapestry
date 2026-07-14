@@ -44,7 +44,7 @@ LOG_MODULE_REGISTER(lh2_test, LOG_LEVEL_INF);
  * see that header's comment for the recalibration procedure.  This example
  * is the verification tool for it: after any recalibration, a drone on the
  * floor at the calibration spot must read ≈ (0, 0, 0). */
-#include "../../lighthouse_cal_office_260706.h"
+#include "../../lighthouse_cal.h"
 
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 

@@ -105,15 +105,15 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 
 /* Position hold (CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD) */
 #ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
-/* linear.x/y ∈ [-1,+1] → setpoint in [−POS_MAX, +POS_MAX] metres from origin */
+/* linear.x/y ∈ [-1,+1] → setpoint in [−POS_MAX, +POS_MAX] meters from origin */
 #define CF21BL_POS_MAX_M       ((float)CONFIG_CF21BL_POS_MAX_M)
-/* Position P gain: metres error → angle correction.
+/* Position P gain: meters error → angle correction.
  * 0.08 rad/m → 4.6°/m.  Raised from 0.05 after the 2026-07-05 flight: a
  * small level-reference bias needs pos error ≈ bias/KP to cancel, and at
  * 0.05 the equilibrium offset (~0.3+ m for ~1° bias) sat near the old
  * error gate.  With saturation at 0.75 m the max correction is
  * 0.08 × 0.75 ≈ 3.4°, well inside the 10° limit. */
-#define CF21BL_POS_KP          0.08f   /* rad/m  — converts metres error to rad */
+#define CF21BL_POS_KP          0.08f   /* rad/m  — converts meters error to rad */
 /* Velocity damping: tilt θ produces accel ≈ g·θ, so the closed loop is
  * s² + g·Kd·s + g·Kp; at Kp=0.08, ωn=√(g·Kp)≈0.89 rad/s and ζ≈0.7 needs
  * Kd = 2·ζ·ωn/g ≈ 0.13.  Set slightly above (ζ≈0.78 nominal) because the
@@ -172,7 +172,7 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
 
 /* Altitude hold (CONFIG_CF21BL_ALTITUDE_HOLD) */
 #define CF21BL_BARO_POLL_DIV   20      /* poll every 20 loop iters ≈ 50 Hz           */
-#define CF21BL_PA_PER_M        12.01f  /* Pa per metre = ρ·g at 15 °C sea level      */
+#define CF21BL_PA_PER_M        12.01f  /* Pa per meter = ρ·g at 15 °C sea level      */
 /* Hover collective, referenced to CF21BL_PM_VREF (3.7 V).  Tether flight
  * 2026-07-03 (fresh pack, ~4.0 V loaded) sustained hover at T≈0.41–0.42;
  * converting that through the ESC throttle fraction to 3.7 V gives ≈0.46.
@@ -443,7 +443,7 @@ static float wrap180f(float a)
 #endif
 
 #ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
-/* Home position captured at first valid lighthouse fix (metres, world frame).
+/* Home position captured at first valid lighthouse fix (meters, world frame).
  * Position setpoints are offsets from this origin. */
 static float    g_pos_home_x;
 static float    g_pos_home_y;
