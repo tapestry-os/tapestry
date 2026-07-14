@@ -37,6 +37,10 @@
 #include "transceiver_ble.h"
 #endif
 
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_SYSLINK
+#include "transceiver_syslink_p2p.h"
+#endif
+
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -75,6 +79,10 @@ int transport_init(void)
 
 #ifdef CONFIG_BT
     active[n_active++] = &transceiver_ble;
+#endif
+
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_SYSLINK
+    active[n_active++] = &transceiver_syslink_p2p;
 #endif
 
 

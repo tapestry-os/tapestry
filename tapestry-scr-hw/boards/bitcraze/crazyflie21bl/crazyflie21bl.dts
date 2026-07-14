@@ -1,0 +1,181 @@
+/*
+ * crazyflie21bl.dts — Zephyr board DTS for Bitcraze Crazyflie 2.1 Brushless
+ *
+ * MCU:   STM32F405RGT6 (Cortex-M4F, 168 MHz, 1 MB flash, 192 KB SRAM)
+ * Clock: 8 MHz HSE crystal → PLL (M=8,N=336,P=2,Q=7) → 168 MHz SYSCLK / 48 MHz USB
+ *
+ * Console: USART3 on PC10 (TX) / PC11 (RX), 115200 baud.
+ * Connect a 3.3 V USB-serial adapter: white (adapter RX) → PC10, green (adapter TX) → PC11, GND.
+ *
+ * Motor PWM and the nRF51 HCI UART are configured in the app overlay
+ * (tapestry-os/boards/crazyflie21bl/crazyflie21bl.overlay).
+ */
+
+/dts-v1/;
+#include <st/f4/stm32f405Xg.dtsi>
+#include <st/f4/stm32f405rgtx-pinctrl.dtsi>
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+/ {
+	model = "Bitcraze Crazyflie 2.1 Brushless";
+	compatible = "bitcraze,crazyflie21bl";
+
+	chosen {
+		zephyr,sram           = &sram0;
+		zephyr,flash          = &flash0;
+		zephyr,ccm            = &ccm0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,console        = &usart3;
+		zephyr,shell-uart     = &usart3;
+	};
+
+	aliases {
+		led0 = &status_led;
+	};
+
+	/*
+	 * PD2 = LED_BLUE_L — M2 arm blue LED, active-high (STM32 sources current).
+	 * This is the only STM32-GPIO-controlled LED visible to the user on the
+	 * CF2.1 brushless; there are no LEDs on the main board.
+	 *
+	 * Main board net names for reference (not routed to visible LEDs):
+	 *   LED_RED_L=PC0, LED_GREEN_L=PC1, LED_GREEN_R=PC2, LED_RED_R=PC3.
+	 */
+	leds {
+		compatible = "gpio-leds";
+		status_led: status_led_0 {
+			gpios = <&gpiod 2 GPIO_ACTIVE_HIGH>;
+			label = "M2 Blue LED";
+		};
+	};
+};
+
+/* ── Clocks ──────────────────────────────────────────────────────────────── */
+
+&clk_hse {
+	/*
+	 * 8 MHz HSE crystal (not bypassed) — matches the stock Bitcraze
+	 * firmware's HSE_VALUE=8000000 / PLL_M=8 (system_stm32f4xx.c), which
+	 * also explicitly clears HSEBYP before enabling HSE.  No "TCXO"/"40 MHz"
+	 * reference exists anywhere in that firmware tree; the previous 40 MHz
+	 * bypass assumption produced a ~0.2 MHz PLL input, far outside the
+	 * STM32F405's valid 0.95-2.1 MHz PLL input range.
+	 *
+	 * PLL: VCO_in = 8/8 = 1 MHz, VCO_out = 336 MHz
+	 *      SYSCLK = 336/2 = 168 MHz, USB = 336/7 = 48 MHz
+	 */
+	clock-frequency = <DT_FREQ_M(8)>;
+	status = "okay";
+};
+
+&pll {
+	div-m = <8>;
+	mul-n = <336>;
+	div-p = <2>;
+	div-q = <7>;
+	clocks = <&clk_hse>;
+	status = "okay";
+};
+
+&rcc {
+	clocks        = <&pll>;
+	clock-frequency = <DT_FREQ_M(168)>;
+	ahb-prescaler = <1>;
+	/* Canonical STM32F405 168 MHz tree (matches stock firmware): APB1 max
+	 * 42 MHz needs /4, APB2 max 84 MHz needs /2.  Earlier debugging set
+	 * these to <1>/<1> while chasing a clock mismatch that turned out to
+	 * be the wrong &clk_hse frequency (see &clk_hse comment) — with that
+	 * fixed, the textbook /4 and /2 prescalers should produce correct
+	 * UART baud rates again. */
+	apb1-prescaler = <4>;   /* APB1 = 168/4 = 42 MHz */
+	apb2-prescaler = <2>;   /* APB2 = 168/2 = 84 MHz */
+};
+
+/* ── Console UART ────────────────────────────────────────────────────────── */
+
+/*
+ * USART3 on PC10 (TX) / PC11 (RX), 115200 baud.
+ * Connect a 3.3 V USB-serial adapter: white (RX) → PC10, green (TX) → PC11, GND.
+ */
+&usart3 {
+	pinctrl-0 = <&usart3_tx_pc10 &usart3_rx_pc11>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
+/* ── nRF51822 BLE radio co-processor ────────────────────────────────────── */
+
+/*
+ * The nRF51822 is connected to the STM32F405 via USART6 (PC6/PC7).
+ * PC6 = STM32 TX (NRF_RX net), PC7 = STM32 RX (NRF_TX net).
+ * Pin assignment verified against CF2.1 Brushless schematic Rev.G.
+ *
+ * Enabled here so that all builds (app and tests) can use USART6 for
+ * CRTP syslink console output (cf21bl_crtp_log.c).  The nRF51 factory
+ * firmware forwards CRTP console packets over 2.4 GHz radio to
+ * crazyradio2; read_console.py receives them on the host.
+ *
+ * When the nRF51 is reflashed with HCI firmware for BLE, uncomment
+ * CONFIG_BT_HCI_UART in tapestry-scr-hw/boards/crazyflie21bl.conf and
+ * disable cf21bl_crtp_log.c (the two uses of USART6 are mutually exclusive).
+ */
+/* Raise PC6 (USART6_TX) slew rate from Zephyr's default 2 MHz low-speed to
+ * very-high-speed (100 MHz).  The CF firmware uses GPIO_Speed_25MHz; without
+ * at least medium speed, the 1 Mbps USART transitions take ~250 ns (25% of a
+ * bit period) and the nRF51 cannot reliably detect the start bit. */
+&usart6_tx_pc6 {
+	slew-rate = "very-high-speed";
+};
+
+&usart6 {
+	pinctrl-0 = <&usart6_tx_pc6 &usart6_rx_pc7>;
+	pinctrl-names = "default";
+	current-speed = <1000000>;
+	status = "okay";
+};
+
+/* ── GPIO banks ───────────────────────────────────────────────────────────── */
+
+&gpioa { status = "okay"; };
+&gpiob { status = "okay"; };
+&gpioc { status = "okay"; };
+&gpiod { status = "okay"; };
+
+/* ── Flash partitions ─────────────────────────────────────────────────────── */
+
+/*
+ * The Bitcraze CF2.1 brushless bootloader occupies the first 16 KB
+ * (0x08000000–0x08003FFF).  cfloader/crazyradio2 writes application images
+ * starting at 0x08004000 (start_page=16 in the bootloader's flash info).
+ *
+ * Confirmed from the CF2.1 firmware linker script: FLASH ORIGIN = 0x8004000
+ * and _estack = 0x2001FFFF.  Run "cfloader info" and look for "Start page: 16"
+ * to verify.  If "Start page: 64" is reported instead, change partition@4000
+ * to partition@10000 and boot_partition size to 0x10000.
+ */
+&flash0 {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		boot_partition: partition@0 {
+			label = "bootloader";
+			reg = <0x00000000 0x00004000>;   /* 16 KB Bitcraze bootloader */
+			read-only;
+		};
+
+		slot0_partition: partition@4000 {
+			label = "image-0";
+			reg = <0x00004000 0x000FC000>;   /* 1008 KB application */
+		};
+	};
+};

@@ -9,6 +9,7 @@
 source "Kconfig.zephyr"
 rsource "../tapestry-os/subsys/runtime/Kconfig"
 rsource "../tapestry-os/subsys/transport/Kconfig"
+rsource "../tapestry-os/boards/crazyflie21bl/Kconfig"
 
 config TAPESTRY_ELEMENT_ID
 	int "Element ID [0..4]"

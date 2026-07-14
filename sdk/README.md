@@ -101,7 +101,7 @@ const tapestry_bse_directive_t *d = choreo_get_directive();
 
 ## Directory layout
 
-The SDK contains only interface artefacts; implementations live in `tapestry-os/`:
+The SDK contains only interface artifacts; implementations live in `tapestry-os/`:
 
 ```
 sdk/

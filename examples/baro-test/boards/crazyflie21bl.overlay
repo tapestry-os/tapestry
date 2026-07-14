@@ -1,0 +1,31 @@
+/*
+ * baro-test board overlay — I2C3 + BMP388 only.
+ *
+ * Deliberately excludes the BMI088 nodes that appear in the shared
+ * crazyflie21bl.overlay.  Including them here would cause Zephyr to
+ * auto-enable the bmi08x driver, which hits a compile bug in Zephyr
+ * 4.4.0-rc1 (BMI08X_CREATE_INST references .rtio_bus unconditionally
+ * but the field only exists when CONFIG_SENSOR_ASYNC_API=y).
+ * The baro-test has no need for the IMU driver at all.
+ *
+ * Pin assignments confirmed against CF2.1 brushless schematic Rev.G:
+ *   I2C3 SCL = PA8 (IMU_SCL), SDA = PC9 (IMU_SDA)
+ *   BMP388 SDO = GND → I2C address 0x76.
+ *   If first boot says "not ready", try reg = <0x77> (SDO pulled high).
+ */
+
+&i2c3 {
+	pinctrl-0 = <&i2c3_scl_pa8 &i2c3_sda_pc9>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	status = "okay";
+
+	bmp388_baro: bmp390@77 {
+		compatible = "bosch,bmp390";
+		reg = <0x77>;
+		odr = "50";
+		osr-press = <8>;
+		osr-temp = <1>;
+		iir-filter = <3>;
+	};
+};

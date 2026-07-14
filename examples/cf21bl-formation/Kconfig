@@ -1,0 +1,66 @@
+mainmenu "Tapestry cf21bl-formation"
+
+source "Kconfig.zephyr"
+rsource "../../tapestry-os/boards/crazyflie21bl/Kconfig"
+rsource "../../tapestry-os/subsys/runtime/Kconfig"
+rsource "../../tapestry-os/subsys/transport/Kconfig"
+
+config TAPESTRY_ELEMENT_ID
+	int "Element ID [0..4]"
+	range 0 4
+	default 0
+	help
+	  Unique identity for this drone.  Override at build time:
+	    west build ... -- -DCONFIG_TAPESTRY_ELEMENT_ID=1
+
+config TAPESTRY_ELEMENT_COUNT
+	int "Number of drones in the formation"
+	range 2 5
+	default 3
+	help
+	  Sets n_total for the formation demo.  The sync window waits until
+	  (n_total - 1) peers are fresh before arming and flying.
+	    2 drones: -DCONFIG_TAPESTRY_ELEMENT_COUNT=2
+	    3 drones: -DCONFIG_TAPESTRY_ELEMENT_COUNT=3  (default)
+
+config DEMO_MISSION_DURATION_S
+	int "Seconds from arming until this drone lands itself"
+	range 10 600
+	default 60
+	help
+	  Per-drone mission length.  Give one drone a shorter duration to
+	  choreograph an early departure (it lands, goes gossip-silent, and
+	  the survivors re-form without it):
+	    west build ... -- -DCONFIG_DEMO_MISSION_DURATION_S=30
+
+config DEMO_START_DELAY_S
+	int "Ground hold before the arming countdown (staggered join)"
+	range 0 300
+	default 0
+	help
+	  Extra seconds this drone waits on the ground (after lighthouse fix,
+	  before the arming countdown, not yet gossiping) so it can visibly
+	  join an already-flying formation:
+	    west build ... -- -DCONFIG_DEMO_START_DELAY_S=15
+
+config DEMO_HOLD_STATION
+	bool "Pinned member: hold the seeded position, ignore formation forces"
+	default n
+	help
+	  This drone holds station at its first-fix seed for the whole
+	  mission.  It still gossips, so peers keep their spacing from it
+	  and the formation forms AROUND it; it still runs the full safety
+	  layer (geofence, fix-loss, separation warning).  Useful for a
+	  mechanically weak airframe whose trim converges well against a
+	  static setpoint but is continuously re-excited by a moving one:
+	    west build ... -- -DCONFIG_DEMO_HOLD_STATION=y
+
+config TAPESTRY_QUORUM_MIN
+	int "Minimum fresh peers for DEGRADED state"
+	range 0 4
+	default 1
+
+config TAPESTRY_QUORUM_TARGET
+	int "Minimum fresh peers for HEALTHY state"
+	range 0 4
+	default 1

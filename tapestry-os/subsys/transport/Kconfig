@@ -45,6 +45,35 @@ config TAPESTRY_AUTO_ID_WINDOW_MS
 	  elements to miss peers' nonce beacons (symptom: duplicate IDs at startup).
 	  Decrease on faster hardware where 4 s of idle startup is undesirable.
 
+config TAPESTRY_TRANSCEIVER_SYSLINK
+	bool "Syslink P2P transceiver (Crazyflie 2.1 BL nRF51 radio)"
+	depends on UART_INTERRUPT_DRIVEN
+	default n
+	help
+	  Drone-to-drone gossip over the nRF51822 co-processor's existing
+	  SYSLINK_RADIO_P2P_BROADCAST (0x0A) channel.  No nRF51 reflash required.
+	  The stock Bitcraze firmware (PLATFORM=cf21bl) ships this capability.
+
+	  All three drones must use the same radio channel (TAPESTRY_P2P_CHANNEL,
+	  default 80 = 2480 MHz).  The transceiver sends SYSLINK_RADIO_CHANNEL at
+	  init to activate the nRF51 link and lock the channel simultaneously.
+
+	  cf21bl_crtp_log.c (CRTP console) may be compiled alongside this
+	  transceiver — both share cf21bl_syslink_tx_mutex (cf21bl_syslink_tx.c)
+	  to serialize USART6 TX.  Simultaneous consoles from multiple drones
+	  still share one nRF51 radio config; verify a channel/timing plan
+	  before relying on 3 consoles at once.
+
+config TAPESTRY_P2P_CHANNEL
+	int "nRF51 ESB P2P radio channel (0-125, maps to 2400+N MHz)"
+	depends on TAPESTRY_TRANSCEIVER_SYSLINK
+	range 0 125
+	default 80
+	help
+	  Radio channel shared by all drones for P2P broadcast gossip.
+	  Default 80 = 2480 MHz (standard Crazyflie CRTP channel).
+	  Change to avoid interference when a crazyradio2 host is also active.
+
 config TAPESTRY_MESH_RELAY
 	bool "Two-hop opportunistic relay forwarding (BATMAN-inspired mesh)"
 	default n
@@ -63,4 +92,4 @@ config TAPESTRY_MESH_RELAY
 
 	  Relay logic (ring buffer, last-relayed clock table, flush timer) is
 	  compiled out when this option is disabled, preserving identical
-	  single-hop broadcast behaviour on memory-constrained targets.
+	  single-hop broadcast behavior on memory-constrained targets.
