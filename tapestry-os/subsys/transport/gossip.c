@@ -209,6 +209,48 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
     return total;
 }
 
+/* ── Auto-ID discovery primitives ────────────────────────────────────────── */
+
+void gossip_send_discovery(uint32_t nonce)
+{
+    tapestry_gossip_frame_t f = {0};
+
+    f.id         = ELEMENT_ID_INVALID;
+    f.update_seq = nonce;
+    tx_frame(&f);
+}
+
+int gossip_drain_discovery(uint32_t *nonces_out, int max_nonces,
+                           bool *claimed_out, int max_id)
+{
+    uint8_t buf[TAPESTRY_GOSSIP_WIRE_SIZE];
+    int n_nonces = 0;
+
+    for (int i = 0; i < g_n; i++) {
+        int len;
+        while ((len = g_transceivers[i]->rx(buf, sizeof(buf))) > 0) {
+            if (len < (int)sizeof(tapestry_gossip_frame_t)) {
+                continue;
+            }
+            /* Auth tags are not verified during the discovery window: the
+             * outcome (an ID ordering) is validated by the collective's
+             * subsequent authenticated gossip anyway. */
+            const tapestry_gossip_frame_t *g =
+                (const tapestry_gossip_frame_t *)buf;
+
+            if (g->id == ELEMENT_ID_INVALID) {
+                if (n_nonces < max_nonces) {
+                    nonces_out[n_nonces++] = g->update_seq;
+                }
+            } else if (claimed_out != NULL && g->id < (uint8_t)max_id) {
+                claimed_out[g->id] = true;
+            }
+        }
+    }
+
+    return n_nonces;
+}
+
 /* ── gossip_relay_flush ──────────────────────────────────────────────────── */
 
 void gossip_relay_flush(void)

@@ -295,4 +295,234 @@ ZTEST(formation_field, test_anchor_recenters_formation)
                  "anchor translation distorted spacing to %.2f m", (double)sep);
 }
 
+/* ── demo_choreo_track (choreo-mode target tracking) ──────────────────────── */
+
+ZTEST(formation_field, test_choreo_track_converges_onto_cmd)
+{
+    wm_reset();
+    position_t own = { 0.0f, 0.0f };
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+    for (int i = 0; i < 100; i++) {         /* 10 s at 0.3 m/s: plenty */
+        (void)demo_choreo_track(&wm, &own, &tgt, 0.5f, 0.2f, DT_MS, 0);
+        own = (position_t){ tgt.x, tgt.y }; /* perfect tracking (leash) */
+    }
+    zassert_within(tgt.x, 0.5f, 0.01f, "target x did not converge (%.3f)",
+                   (double)tgt.x);
+    zassert_within(tgt.y, 0.2f, 0.01f, "target y did not converge (%.3f)",
+                   (double)tgt.y);
+}
+
+ZTEST(formation_field, test_choreo_track_repulsion_and_min_dist)
+{
+    wm_reset();
+    wm_set_peer(1, 0.25f, 0.0f, false);     /* inside DEMO_MIN_SEP_M */
+
+    position_t own = { 0.0f, 0.0f };
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0);
+    zassert_within(d, 0.25f, EPS, "min_d must report the close peer");
+    zassert_true(tgt.x < 0.0f,
+                 "target must be pushed away from a too-close peer");
+}
+
+ZTEST(formation_field, test_choreo_track_leash_bounds_target)
+{
+    wm_reset();
+    position_t own = { 0.0f, 0.0f };        /* body pinned */
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+    for (int i = 0; i < 200; i++) {         /* chase an unreachable cmd */
+        (void)demo_choreo_track(&wm, &own, &tgt, 2.5f, 0.0f, DT_MS, 0);
+        float detach = dist2d(tgt.x, tgt.y, own.x, own.y);
+        zassert_true(detach <= DEMO_TARGET_LEASH_M + EPS,
+                     "target detached %.2f m > leash", (double)detach);
+    }
+}
+
 ZTEST_SUITE(formation_field, NULL, NULL, NULL, NULL, NULL);
+
+/* ── Choreo script (L6 BSE + L7 Choreographer, singleton per process) ─────── */
+/*
+ * These mirror the flight script in ../src/main.c: hold → exchange → hold
+ * (bow) → quiescence.  bse.c/choreo.c are per-element singletons, so the
+ * "partner" is emulated by mirroring this element's body through the
+ * formation centroid — exactly the symmetric arc a real second drone flies
+ * (both run the same CCW rule, so the pair stays antipodal).
+ */
+
+#include <tapestry/choreo.h>
+
+static void wm_set_self(int slot, element_id_t id, float x, float y)
+{
+    wm.entries[slot].is_active        = true;
+    wm.entries[slot].is_self          = true;
+    wm.entries[slot].is_stale         = false;
+    wm.entries[slot].state.id         = id;
+    wm.entries[slot].state.position.x = x;
+    wm.entries[slot].state.position.y = y;
+}
+
+ZTEST(choreo_script, test_swap_script_end_to_end)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 2000 },
+        { .goal = { .type = CHOREO_GOAL_EXCHANGE,
+                    .achieve_eps = 0.25f, .achieve_hold_ms = 1000 },
+          .max_duration_ms = 45000, .advance_on_achieved = true },
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 2000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 3), 0, "submit failed");
+
+    position_t  body = { 0.0f, 0.0f };      /* partner starts at (1, 0)   */
+    const float cx = 0.5f, cy = 0.0f;       /* pair centroid              */
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    float min_sep = 1e9f;
+    int   ticks   = 0;
+    while (ticks < 4000 && !choreo_script_complete()) {
+        ticks++;
+        wm_reset();
+        wm_set_self(0, 0, body.x, body.y);
+        wm_set_peer(1, 2.0f * cx - body.x, 2.0f * cy - body.y, false);
+
+        choreo_tick(&wm, &scr);
+        const tapestry_bse_directive_t *d = choreo_get_directive();
+        if (d->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
+            body.x = d->target.x;           /* perfect tracking */
+            body.y = d->target.y;
+        }
+        if (choreo_script_step() == 1) {
+            float sep = dist2d(body.x, body.y,
+                               2.0f * cx - body.x, 2.0f * cy - body.y);
+            if (sep < min_sep) { min_sep = sep; }
+        }
+    }
+
+    zassert_true(choreo_script_complete(),
+                 "script did not complete in %d ticks", ticks);
+    /* 20 hold + ~210 arc + 10 achievement hold + 20 bow ≈ 260 ticks */
+    zassert_true(ticks >= 240 && ticks <= 320,
+                 "unexpected script length %d ticks", ticks);
+    zassert_within(body.x, 1.0f, 0.02f,
+                   "did not end on partner station: x=%.3f", (double)body.x);
+    zassert_within(body.y, 0.0f, 0.02f,
+                   "did not end on partner station: y=%.3f", (double)body.y);
+    zassert_true(min_sep > 0.9f,
+                 "separation dipped to %.2f m during exchange (arc must "
+                 "preserve it)", (double)min_sep);
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_IDLE,
+                  "script completion must leave the quiescence directive");
+}
+
+ZTEST(choreo_script, test_exchange_waits_for_peer_snapshot)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_EXCHANGE },
+          .max_duration_ms = 60000, .advance_on_achieved = true },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    /* No fresh peer: the snapshot cannot be captured — directive HOLD. */
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    for (int i = 0; i < 10; i++) {
+        choreo_tick(&wm, &scr);
+        zassert_equal(choreo_get_directive()->type,
+                      TAPESTRY_BSE_DIRECTIVE_HOLD,
+                      "exchange without a peer must HOLD");
+    }
+
+    /* Peer appears → capture succeeds on the next tick. */
+    wm_set_peer(1, 1.0f, 0.0f, false);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_get_directive()->type,
+                  TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "exchange must engage once a peer is fresh");
+}
+
+ZTEST(choreo_script, test_suspension_freezes_step_timer)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 1000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    /* 5 s of quorum LOST — five times the step duration.  A frozen timer
+     * must not advance the script. */
+    for (int i = 0; i < 50; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_false(choreo_script_complete(),
+                  "suspended script must not time its steps out");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "quorum loss must suspend");
+
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    for (int i = 0; i < 12; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "script must resume and complete after quorum recovery");
+}
+
+ZTEST(choreo_script, test_unadvanceable_step_rejected)
+{
+    static const choreo_step_t stall[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD } },   /* no exit condition */
+    };
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(stall, 1), -1,
+                  "a step with no exit condition must be rejected");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_IDLE,
+                  "rejected script must leave the lifecycle in IDLE");
+}
+
+ZTEST(choreo_script, test_hold_is_coordinate_free)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.37f, -0.21f);      /* arbitrary current station */
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "hold must station-keep, not idle");
+    zassert_within(d->target.x, 0.37f, EPS, "hold station x");
+    zassert_within(d->target.y, -0.21f, EPS, "hold station y");
+    zassert_true(choreo_goal_achieved(),
+                 "hold is trivially achieved (duration governs)");
+}
+
+ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

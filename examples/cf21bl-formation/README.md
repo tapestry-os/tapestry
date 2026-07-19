@@ -1,10 +1,20 @@
 # Demo — CF2.1 Brushless Collective Formation
 
-Three Crazyflie 2.1 Brushless quadrotors self-organize into a spring-field
-formation using the Tapestry L4 world model, REAL lighthouse position (not
-dead reckoning), and gossip over the nRF51822's syslink P2P radio channel.
-No central controller, no L5 SCR — formation is a pure L4 emergent behavior,
-same philosophy as `examples/cutebot-formation` for Cutebots.
+Crazyflie 2.1 Brushless quadrotors coordinating via the Tapestry stack,
+REAL lighthouse position (not dead reckoning), and gossip over the
+nRF51822's syslink P2P radio channel.  Two build modes (Kconfig choice
+`DEMO_MODE`):
+
+- **Choreo mode (default)** — the first flight of the L6/L7 layers: a
+  declarative L7 Choreo script ("hold stations → exchange places → rest")
+  drives the drones through the L6 Behavior Synthesis Engine.  **One
+  binary for every drone** — element IDs are negotiated at boot over the
+  radio (same auto-ID protocol as `examples/cutebot-formation`).  See
+  "Choreo demo" below.
+- **Showcase mode** (`-DCONFIG_DEMO_MODE_SHOWCASE=y`) — the
+  flight-validated 2026-07 L4 spring-field showcase (line → rotating
+  triangle → member departs → line), per-drone builds.  See "Showcase
+  demo" below.
 
 This is the multi-drone follow-on to the flight-validated single-drone
 stack (lighthouse XY position hold + baro altitude hold in
@@ -12,7 +22,126 @@ stack (lighthouse XY position hold + baro altitude hold in
 exercises the altitude loop alone and `examples/lighthouse-test` the
 positioning alone.
 
-## How it works
+## Choreo demo (default mode) — swap places
+
+The entire application-level "program" is **`choreo.toml`** in this
+directory — a three-step, coordinate-free script a non-programmer can
+edit cold:
+
+```toml
+choreo = "change-partners"
+
+[[steps]]
+hold = { duration = "30s", requires = ["locomotion"] }
+
+[[steps]]
+[steps.exchange]
+until    = "achieved"
+timeout  = "45s"
+eps      = "25cm"
+settle   = "3s"
+requires = ["locomotion"]
+
+[[steps]]
+hold = { duration = "8s", requires = ["locomotion"] }   # bow
+```
+
+The firmware consumes a committed generated header
+(`src/choreo_script.h`, same pattern as `examples/lighthouse_cal.h`).
+After editing the TOML, regenerate and rebuild:
+
+```sh
+python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cf21bl-formation/choreo.toml
+```
+
+`choreoc` is standard-library-only Python (>= 3.11, system python3 — no
+venv, nothing to install) and validates the script before emitting
+anything: every step must be time-bounded (the timeout is the robustness
+net that keeps a script from stalling in flight — stricter than the C
+API on purpose), coordinate goals must have coordinates, and hold /
+exchange must NOT (they reference the collective's own configuration).
+The Python SDK reads the same file directly, no generation step:
+`choreo.submit_script(tapestry.script_toml.load_steps("choreo.toml"))`.
+
+What the steps mean:
+
+1. `hold` (30 s) — each drone station-keeps at its own position.
+2. `exchange` — swap places: each drone takes its partner's station.
+   Stations are frozen snapshots of peer positions at step activation
+   (from the L4 world model — nothing is prescribed); the commanded
+   target travels an ARC about the formation centroid, every drone
+   rotating the same direction, so mutual separation is preserved by
+   construction (~1.0 m throughout a two-drone swap; ~21 s at the
+   default arc rate).  Advances on the L6 achievement predicate (within
+   `DEMO_CHOREO_ACHIEVE_EPS_CM` of the destination for 3 s), with a 45 s
+   timeout as the robustness net — if lighthouse jitter keeps achievement
+   from ever firing, the show still ends cleanly.
+3. `hold` (8 s, the "bow") — settle on the new stations.  Achievement is
+   per-drone, so this beat keeps the first finisher airborne (and
+   gossiping) until its partner also finishes.
+
+The script never says "take off", "land", or any altitude: script
+completion → directive IDLE → **quiescence**, which this platform maps to
+landing in place and disarming.  Takeoff is the same mapping in reverse —
+a parked drone holding a MOVE directive activates.  Altitude staggering
+(0.30/0.50/... m by negotiated ID) is a platform deconfliction rule the
+Choreo never sees, and it is also what makes the swap trivially safe in
+the vertical dimension.
+
+Safety layers are unchanged from the showcase (see "Safety layer" below);
+the mission-duration backstop in choreo mode is derived from the script
+(hold + exchange timeout + bow + 40 s margin) and only fires if the
+script stalls, e.g. the partner is lost mid-show (quorum loss suspends
+the script — frozen timers — and freezes the target).
+
+### Build + fly (2 drones, ONE build for both)
+
+```sh
+west build -p always -b crazyflie21bl tapestry/examples/cf21bl-formation
+cfloader flash build/zephyr/zephyr.bin stm32-dfu     # same binary, both drones
+```
+
+Before the first flight, bench-test auto-ID over the radio with motors
+disabled (`-- -DCONFIG_PWM=n`, or props off): power both drones on
+together and confirm unique `auto_id:` ids and `n_total=2` on both
+consoles.  This is new radio behavior (discovery beacons over syslink
+P2P) — validate it before anything spins.
+
+1. Place both drones ~1 m apart (e.g. on the (0,0) and (1,0) marks),
+   noses along lighthouse world +X, inside base-station coverage.
+2. Power both on **within ~4 s of each other** — the 6 s auto-ID windows
+   must overlap.  Watch the consoles for the `auto_id:` lines: each drone
+   must report a **unique id** and `n_total=2` before flight.  A drone
+   that heard nobody claims id=0 and will fly a solo script — if
+   `n_total` is wrong, power-cycle both and retry.
+3. Each drone waits for its lighthouse fix, counts down 5 s, arms, ramps
+   to its ID-staggered altitude, and the script runs: ~30 s of station
+   hold, ~21 s arc swap, 8 s bow, then both land in place — each on its
+   partner's original mark — and disarm.
+
+Console log markers: `choreo "change-partners" loaded`,
+`choreo step 0/1/2`, `achieved`, and `choreo complete — resting`.
+
+Tuning lives in `choreo.toml` (edit → re-run `choreoc` → rebuild), not in
+build flags.  Three or more drones work unmodified — `exchange` becomes
+"everyone move one seat around the ring" (stations rotate by one
+position CCW).
+
+### Choreo unit tests (native_sim)
+
+The `tests/` suite now also covers the script engine end-to-end: the
+hold→exchange→bow script with a perfect-tracking mirrored partner (swap
+completes in ~26 s, separation never below 0.9 m, final station exact,
+IDLE directive at completion), suspension freezing step timers,
+exchange's hold-until-snapshot behavior, and rejection of unadvanceable
+steps.
+
+```sh
+west build -p always -b native_sim tapestry/examples/cf21bl-formation/tests
+./build/zephyr/zephyr.exe
+```
+
+## How it works (both modes)
 
 1. Each drone reads its own absolute position from the lighthouse deck
    (meters, home-relative to the shared calibration origin) and gossips it.
@@ -47,11 +176,15 @@ uses — see the comment block at the top of `src/formation.h`.
 - Each drone needs its own lighthouse deck (USART3, PC10/PC11 — see
   `cf21bl_lighthouse.c`) and a working BMP390 baro for altitude hold.
 
-## Build (one per drone)
+## Build — showcase mode (one build per drone)
+
+Choreo mode (default) needs no per-drone flags — see "Choreo demo" above.
+Showcase mode keeps the per-drone build workflow:
 
 ```sh
 west build -p always -b crazyflie21bl tapestry/examples/cf21bl-formation \
-  -- -DCONFIG_TAPESTRY_ELEMENT_ID=0   # 1, 2 for the other two drones
+  -- -DCONFIG_DEMO_MODE_SHOWCASE=y \
+     -DCONFIG_TAPESTRY_ELEMENT_ID=0   # 1, 2 for the other two drones
 ```
 
 Flash: `cfloader flash build/zephyr/zephyr.bin stm32-dfu`
@@ -68,8 +201,11 @@ verifying multi-drone position exchange before arming anyone.
 
 ## Showcase demo (line → rotating triangle → member departs → line)
 
-The formation phase is a pure function of how many fresh peers each drone
-sees — no leader, no phase timers, no uplink:
+Legacy L4-only mode — build every command below with
+`-DCONFIG_DEMO_MODE_SHOWCASE=y` (the per-drone flags `DEMO_START_DELAY_S`,
+`DEMO_MISSION_DURATION_S`, and `DEMO_HOLD_STATION` only exist in this
+mode).  The formation phase is a pure function of how many fresh peers
+each drone sees — no leader, no phase timers, no uplink:
 
 - **1 fresh peer** → pair phase: springs hold 1 m spacing, the alignment
   term (`DEMO_ALIGN_ROT_RADPS`) rotates the pair about its centroid until

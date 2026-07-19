@@ -53,10 +53,14 @@ int transport_drain(world_model_t *wm, element_id_t own_id);
 
 /*
  * Negotiate a unique element ID autonomously.  Call once after transport_init()
- * before using any other transport function.
+ * before using any other transport function.  Medium-agnostic: works over
+ * BLE advertising, syslink P2P, and UDP broadcast alike (discovery beacons
+ * are ordinary gossip frames with id=ELEMENT_ID_INVALID; on one-shot media
+ * they are re-sent every GOSSIP_INTERVAL_MS during the window).
  *
  * Runs the full auto-ID protocol:
- *   1. Reads the board's hardware nonce (FICR on nRF; uptime-salted fallback).
+ *   1. Reads the board's hardware nonce (CONFIG_HWINFO device ID — nRF FICR,
+ *      STM32 unique ID; uptime-salted fallback without it).
  *   2. Broadcasts a discovery beacon (id=ELEMENT_ID_INVALID + nonce) for
  *      CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS while collecting peer nonces and
  *      already-running element IDs from normal gossip.
@@ -71,8 +75,9 @@ element_id_t transport_negotiate_id(int *n_total_out);
  * Retained for testing and alternative boot sequences. */
 
 /* Advertise a discovery beacon (gossip frame with id=ELEMENT_ID_INVALID,
- * hardware nonce in update_seq).  Call during the boot window before
- * element_id is known.  transport_send() switches back to normal gossip. */
+ * hardware nonce in update_seq) via every registered transceiver.  Call
+ * during the boot window before element_id is known; re-send periodically
+ * on one-shot media.  transport_send() switches back to normal gossip. */
 void transport_advertise_nonce(uint32_t nonce);
 
 /* Drain hardware nonces collected from co-booting peers into out[0..max-1].

@@ -35,6 +35,18 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c
 )
 
+# L6 BSE + L7 Choreographer — the choreo demo mode's target source.
+# (No L5 SCR: main.c synthesizes the quorum signal from L4 freshness.)
+if(CONFIG_DEMO_MODE_CHOREO)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_ROOT}/subsys/bse/bse.c
+        ${TAPESTRY_OS_ROOT}/subsys/choreo/choreo.c
+    )
+    target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/include   # <tapestry/choreo.h>
+    )
+endif()
+
 # CRTP radio console — safe to combine with the syslink P2P transport since
 # both now serialize USART6 TX through cf21bl_syslink_tx_mutex (previously
 # excluded here; see git history).  USART3 is not available as a wired

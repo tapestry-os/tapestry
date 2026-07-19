@@ -1,10 +1,32 @@
 /*
- * main.c — CF21BL collective formation demo (L4 CSM + lighthouse + syslink P2P)
+ * main.c — CF21BL collective formation demo (lighthouse + syslink P2P)
  *
- * Three Crazyflie 2.1 brushless drones flying a spring-field formation using
- * REAL lighthouse position (not dead reckoning) for both peer gossip and
- * the stabilizer's own X/Y position hold.  See formation.h for the meters
- * unit convention and the shared-calibration requirement.
+ * Two build modes (Kconfig choice DEMO_MODE):
+ *
+ *   DEMO_MODE_CHOREO (default) — the L6/L7 path.  ONE BINARY for all
+ *     drones: element IDs are negotiated at boot (transport_negotiate_id,
+ *     same auto-ID protocol as cutebot-formation).  A declarative L7
+ *     Choreo script drives the flight through the L6 BSE:
+ *       1. hold  — station-keep at the current position (coordinate-free)
+ *       2. exchange — swap places: each drone takes its partner's station
+ *          via the BSE's centroid-arc maneuver (snapshot targets, mutual
+ *          separation preserved by construction), advancing on the L6
+ *          achievement predicate
+ *       3. hold (bow) — settle on the new stations so both drones finish
+ *          their scripts while the collective is still fresh (achievement
+ *          is per-element; without this beat the first finisher would land
+ *          and suspend its partner mid-maneuver)
+ *     Script completion → directive IDLE → quiescence: this platform maps
+ *     it to landing in place and disarming.  The Choreo never says "take
+ *     off" or "land" — those words don't exist at L7.
+ *
+ *   DEMO_MODE_SHOWCASE — the flight-validated 2026-07 spring-field
+ *     showcase (L4 only, per-drone builds): line → rotating triangle →
+ *     member departs → line re-forms.
+ *
+ * Both modes use REAL lighthouse position (not dead reckoning) for peer
+ * gossip and the stabilizer's own X/Y position hold.  See formation.h for
+ * the meters unit convention and the shared-calibration requirement.
  *
  * Architecture:
  *   Attitude:    BMI088 rate + angle loops (cf21bl_stabilizer.c, unchanged)
@@ -85,6 +107,13 @@
 #include <tapestry/csm.h>
 #include <tapestry/transport.h>
 #include <tapestry/substrate.h>
+#ifdef CONFIG_DEMO_MODE_CHOREO
+#include <tapestry/scr.h>      /* scr_state_t for the synthetic quorum */
+#include <tapestry/choreo.h>
+/* The show itself.  GENERATED from ../choreo.toml (the file to edit) by
+ * sdk/tools/choreoc.py — see the regeneration command in its banner. */
+#include "choreo_script.h"
+#endif
 
 #include "cf21bl_lighthouse.h"
 #include "cf21bl_stabilizer.h"
@@ -133,12 +162,21 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
 #define GEOFENCE_RADIUS_M    2.0f
 
 /* Every drone lands independently after this long from its own arm time —
- * the closest thing to a "coordinated" land without a wireless uplink.
- * Per-build (Kconfig) so one drone can leave the formation early: it lands,
- * goes gossip-silent (see the FLIGHT_LANDED gate at the send site), peers
- * expire it after WM_EXPIRE_THRESHOLD_MS, and the field re-forms without
- * it — the demo's "member departs, formation heals" beat. */
+ * a pure safety backstop in choreo mode (the script normally ends the
+ * flight well before it), and the "coordinated" land in showcase mode.
+ * Showcase keeps it per-build (Kconfig) so one drone can leave the
+ * formation early: it lands, goes gossip-silent (see the FLIGHT_LANDED
+ * gate at the send site), peers expire it after WM_EXPIRE_THRESHOLD_MS,
+ * and the field re-forms without it. */
+#ifdef CONFIG_DEMO_MODE_CHOREO
+/* The script's own total time bound (choreoc requires every step to be
+ * time-bounded, so this is a hard ceiling) + margin for ramp and descent.
+ * Reached only if the script stalls (e.g. partner lost mid-show →
+ * SUSPENDED). */
+#define MISSION_DURATION_S   (CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u + 40u)
+#else
 #define MISSION_DURATION_S   CONFIG_DEMO_MISSION_DURATION_S
+#endif
 
 #define LOOP_DT_S  ((float)WM_CYCLE_MS * 0.001f)
 
@@ -190,14 +228,51 @@ int main(void)
                 (unsigned)CONFIG_TAPESTRY_ELEMENT_ID);
     }
 
+#ifdef CONFIG_DEMO_MODE_CHOREO
+    /* One binary for every drone: identity is negotiated over the radio in
+     * a boot window (nonce = STM32 unique device ID; see transport.h).
+     * Power all drones on within a few seconds of each other so their
+     * windows overlap.  VERIFY in the logs that every drone reports the
+     * expected n_total and a unique id before flight — a drone that heard
+     * nobody claims id=0 and will fly a solo script. */
+    int n_total;
+    const element_id_t element_id = transport_negotiate_id(&n_total);
+#else
     const element_id_t element_id = (element_id_t)CONFIG_TAPESTRY_ELEMENT_ID;
     const int n_total = CONFIG_TAPESTRY_ELEMENT_COUNT;
+#endif
     const float cruise_alt_m = ALT_BASE_M + (float)element_id * ALT_STEP_PER_ID_M;
 
     LOG_INF("CF21BL formation — element %u  n_total=%d  cruise_alt=%.2fm  "
             "target_spacing=%.2fm",
             (unsigned)element_id, n_total, (double)cruise_alt_m,
             (double)DEMO_TARGET_SPACING_M);
+
+#ifdef CONFIG_DEMO_MODE_CHOREO
+    choreo_init(element_id);
+    /* k_choreo_script comes from the generated choreo_script.h — the
+     * authored script is ../choreo.toml (coordinate-free: hold references
+     * each drone's own station, exchange references the partner's; no
+     * takeoff/landing/altitude anywhere — quiescence at script end maps
+     * to land-in-place below, and altitude staggering is a platform
+     * deconfliction rule the Choreo never sees).
+     * No L5 SCR on this platform — no scr registered, so the capability
+     * check passes by default; the synthetic quorum below still gives the
+     * lifecycle machine its RUNNING/SUSPENDED signal. */
+    if (choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN) != 0) {
+        LOG_ERR("id=%u choreo script rejected — staying grounded",
+                (unsigned)element_id);
+        substrate_set_power(SUBSTRATE_POWER_SLEEP);
+        return -1;
+    }
+    LOG_INF("id=%u choreo \"%s\" loaded — %u steps, time bound %u s",
+            (unsigned)element_id, CHOREO_NAME,
+            (unsigned)CHOREO_SCRIPT_LEN,
+            (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
+    scr_state_t scr_synth = { 0 };
+    scr_synth.own_id       = element_id;
+    scr_synth.quorum_state = SCR_QUORUM_LOST;   /* until peers are fresh */
+#endif
 
     LOG_INF("id=%u Waiting for lighthouse fix (up to 30 s) ...", (unsigned)element_id);
     {
@@ -214,7 +289,7 @@ int main(void)
     }
     LOG_INF("id=%u Fix acquired", (unsigned)element_id);
 
-#if CONFIG_DEMO_START_DELAY_S > 0
+#if defined(CONFIG_DEMO_START_DELAY_S) && (CONFIG_DEMO_START_DELAY_S > 0)
     /* Staggered join: hold on the ground BEFORE the arming countdown.  Not
      * gossiping yet, so already-flying peers don't count this drone until
      * it enters the flight loop — it then joins the formation visibly.
@@ -423,6 +498,62 @@ int main(void)
                 break;
             }
 
+#ifdef CONFIG_DEMO_MODE_CHOREO
+            /* Synthetic L5 quorum from L4 freshness (no SCR on this
+             * platform): any fresh peer → HEALTHY; none → LOST, which
+             * suspends the Choreo (frozen script timers, frozen BSE) and
+             * freezes the target below — the same hold-on-stale discipline
+             * the spring field uses, expressed through the L7 lifecycle. */
+            int fresh_peers = 0;
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                const wm_entry_t *e = &wm.entries[i];
+                if (e->is_active && !e->is_self && !e->is_stale) {
+                    fresh_peers++;
+                }
+            }
+            scr_synth.fresh_count  = (uint8_t)fresh_peers;
+            scr_synth.quorum_state = fresh_peers >= 1 ? SCR_QUORUM_HEALTHY
+                                                      : SCR_QUORUM_LOST;
+
+            choreo_tick(&wm, &scr_synth);
+
+            static int last_step = -2;
+            if (choreo_script_step() != last_step) {
+                last_step = choreo_script_step();
+                LOG_INF("id=%u choreo step %d %s", (unsigned)element_id,
+                        last_step,
+                        choreo_goal_status() == CHOREO_STATE_SUSPENDED
+                            ? "(suspended)" : "");
+            }
+
+            if (choreo_script_complete()) {
+                /* Quiescence: the script is done and the directive is IDLE.
+                 * This platform's inactive posture is "on the ground,
+                 * disarmed" — land in place. */
+                LOG_INF("id=%u choreo complete — resting: landing in place "
+                        "at (%.2f, %.2f)", (unsigned)element_id,
+                        (double)own_pos_m.x, (double)own_pos_m.y);
+                state = FLIGHT_LANDING;
+                land_hold_x = own_pos_m.x;
+                land_hold_y = own_pos_m.y;
+                land_hold_valid = true;
+                landing_alt_m = alt_cmd_m;
+                sp.linear.z = alt_cmd_m - 1.0f;
+                break;
+            }
+
+            float min_dist_m = -1.0f;
+            const tapestry_bse_directive_t *dir = choreo_get_directive();
+            if (scr_synth.quorum_state != SCR_QUORUM_LOST &&
+                dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
+                min_dist_m = demo_choreo_track(&wm, &own_pos_m, &target,
+                                               dir->target.x, dir->target.y,
+                                               WM_CYCLE_MS, element_id);
+            }
+            /* else: quorum LOST (choreo SUSPENDED) or directive HOLD
+             * (exchange awaiting its snapshot) — target frozen where it
+             * is; the stabilizer keeps station on it. */
+#else /* DEMO_MODE_SHOWCASE */
             float min_dist_m = demo_compute_drive(&wm, &own_pos_m, &target, WM_CYCLE_MS,
                                                   element_id);
 #ifdef CONFIG_DEMO_HOLD_STATION
@@ -433,6 +564,7 @@ int main(void)
              * not obeyed.  Peers still see this drone and form around it. */
             demo_setpoint_init(&target, seed_x, seed_y);
 #endif
+#endif /* CONFIG_DEMO_MODE_CHOREO */
             if (min_dist_m >= 0.0f && min_dist_m < DEMO_MIN_SEP_M) {
                 static int sep_log_div;
                 if (++sep_log_div >= 20) {   /* ~2 Hz at WM_CYCLE_MS=100 */
@@ -512,12 +644,23 @@ int main(void)
                     if (!e->is_stale) { fresh++; }
                 }
             }
+#ifdef CONFIG_DEMO_MODE_CHOREO
+            LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
+                    "cmd_z=%.2f step=%d%s",
+                    (unsigned)element_id, flight_state_name(state), fresh, active,
+                    (double)own_pos_m.x, (double)own_pos_m.y,
+                    (double)target.x, (double)target.y,
+                    (double)alt_cmd_m, (double)sp.linear.z,
+                    choreo_script_step(),
+                    choreo_goal_achieved() ? " achieved" : "");
+#else
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
                     "cmd_z=%.2f",
                     (unsigned)element_id, flight_state_name(state), fresh, active,
                     (double)own_pos_m.x, (double)own_pos_m.y,
                     (double)target.x, (double)target.y,
                     (double)alt_cmd_m, (double)sp.linear.z);
+#endif
         }
 
         gossip_accum += WM_CYCLE_MS;

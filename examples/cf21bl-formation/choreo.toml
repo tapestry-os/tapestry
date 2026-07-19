@@ -1,0 +1,37 @@
+# choreo.toml — the "change-partners" show, and the ONLY file to edit to
+# change it.  Regenerate the committed header afterwards:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cf21bl-formation/choreo.toml
+#
+# The script is deliberately coordinate-free: hold references each drone's
+# own current station, exchange references its partner's.  There is no
+# "take off", no "land", and no altitude anywhere below — script completion
+# means quiescence, which this platform maps to landing in place; altitude
+# staggering is a platform deconfliction rule the Choreo never sees.
+
+choreo = "change-partners"
+
+# Stay at the current stations.
+[[steps]]
+hold = { duration = "30s", requires = ["locomotion"] }
+
+# Swap places: each drone takes its partner's station (stations are frozen
+# snapshots at step start; travel is an arc about the formation centroid,
+# so separation is preserved).  Advances as soon as the drone has settled
+# within eps of its destination for the settle time; the timeout is the
+# robustness net if achievement never fires.
+[[steps]]
+[steps.exchange]
+until    = "achieved"
+timeout  = "45s"
+eps      = "25cm"
+settle   = "3s"
+requires = ["locomotion"]
+
+# Bow: settle on the new stations.  Achievement is per-drone, so this beat
+# keeps the first finisher airborne (and gossiping) until its partner also
+# finishes — without it, the early finisher would rest and suspend its
+# partner mid-maneuver via quorum loss.
+[[steps]]
+hold = { duration = "8s", requires = ["locomotion"] }

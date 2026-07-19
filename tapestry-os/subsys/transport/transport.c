@@ -22,7 +22,7 @@
 #include <tapestry/csm.h>
 #include "gossip.h"
 
-#ifdef CONFIG_BT
+#ifdef CONFIG_HWINFO
 #include <zephyr/drivers/hwinfo.h>
 #endif
 
@@ -130,7 +130,7 @@ int transport_drain(world_model_t *wm, element_id_t own_id)
 
 static uint32_t hw_nonce(void)
 {
-#ifdef CONFIG_BT
+#ifdef CONFIG_HWINFO
     uint8_t buf[4] = {0};
     if (hwinfo_get_device_id(buf, sizeof(buf)) >= (ssize_t)sizeof(buf)) {
         uint32_t n = 0;
@@ -148,11 +148,11 @@ element_id_t transport_negotiate_id(int *n_total_out)
     uint32_t peer_nonces[MAX_ELEMENTS];
     bool     claimed[MAX_ELEMENTS];
     int      n_peers = 0;
+    uint32_t beacon_accum_ms = GOSSIP_INTERVAL_MS;   /* send on first cycle */
 
     memset(peer_nonces, 0, sizeof(peer_nonces));
     memset(claimed,     0, sizeof(claimed));
 
-    transport_advertise_nonce(own_nonce);
     LOG_INF("auto_id: nonce=0x%08x  window=%u ms",
             own_nonce, CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS);
 
@@ -160,8 +160,27 @@ element_id_t transport_negotiate_id(int *n_total_out)
          elapsed < CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS;
          elapsed += WM_CYCLE_MS) {
 
+        /* Re-send the beacon each gossip interval: one-shot media (syslink
+         * P2P, UDP broadcast) transmit a single packet per send, so a peer
+         * whose window opens later would otherwise never hear us.  On BLE
+         * the beacon additionally persists in the advertising payload. */
+        beacon_accum_ms += WM_CYCLE_MS;
+        if (beacon_accum_ms >= GOSSIP_INTERVAL_MS) {
+            gossip_send_discovery(own_nonce);
+            beacon_accum_ms = 0;
+        }
+
         uint32_t batch[8];
-        int got = transport_drain_nonces(batch, ARRAY_SIZE(batch));
+        int got = gossip_drain_discovery(batch, ARRAY_SIZE(batch),
+                                         claimed, MAX_ELEMENTS);
+#ifdef CONFIG_BT
+        /* The BLE scan callback pre-sorts frames into its own queues; the
+         * generic drain above only sees what reaches the BLE rx queue
+         * (claimed frames), so merge the BLE-side nonce queue too. */
+        got += ble_transceiver_drain_nonces(batch + got,
+                                            (int)ARRAY_SIZE(batch) - got);
+        transport_drain_claimed(claimed, MAX_ELEMENTS);
+#endif
         for (int i = 0; i < got; i++) {
             if (batch[i] == own_nonce) {
                 continue;   /* own echo — nRF RPA does not suppress self-rx */
@@ -175,7 +194,6 @@ element_id_t transport_negotiate_id(int *n_total_out)
             }
         }
 
-        transport_drain_claimed(claimed, MAX_ELEMENTS);
         k_msleep(WM_CYCLE_MS);
     }
 
@@ -204,15 +222,15 @@ element_id_t transport_negotiate_id(int *n_total_out)
     return id;
 }
 
-/* ── Auto-ID (BLE discovery window) ─────────────────────────────────────── */
+/* ── Auto-ID lower-level primitives ─────────────────────────────────────── */
 
 void transport_advertise_nonce(uint32_t nonce)
 {
-#ifdef CONFIG_BT
-    ble_transceiver_advertise_nonce(nonce);
-#else
-    ARG_UNUSED(nonce);
-#endif
+    /* Medium-agnostic: the discovery beacon is an ordinary gossip frame
+     * (id=ELEMENT_ID_INVALID, nonce in update_seq), so tx via every
+     * registered transceiver.  On BLE this lands in the advertising
+     * payload, replicating the old ble_transceiver_advertise_nonce path. */
+    gossip_send_discovery(nonce);
 }
 
 int transport_drain_nonces(uint32_t *out, int max)

@@ -5,26 +5,58 @@ rsource "../../tapestry-os/boards/crazyflie21bl/Kconfig"
 rsource "../../tapestry-os/subsys/runtime/Kconfig"
 rsource "../../tapestry-os/subsys/transport/Kconfig"
 
+choice DEMO_MODE
+	prompt "Demo mode"
+	default DEMO_MODE_CHOREO
+
+config DEMO_MODE_CHOREO
+	bool "Choreo script (L6/L7): hold stations, exchange places, rest"
+	help
+	  The drones execute a declarative L7 Choreo script through the L6
+	  BSE.  The script is authored in choreo.toml (this directory) and
+	  compiled to src/choreo_script.h by sdk/tools/choreoc.py — edit the
+	  TOML, re-run the tool, rebuild.  Default show: hold stations,
+	  exchange places (stations rotate via the BSE's arc maneuver), bow,
+	  then rest — script completion maps to landing in place.
+
+	  ONE BINARY for all drones: element IDs are negotiated at boot over
+	  the radio (transport_negotiate_id — same auto-ID protocol as
+	  cutebot-formation), so no per-drone build flags are needed.
+
+config DEMO_MODE_SHOWCASE
+	bool "Legacy showcase (L4 spring field, per-drone builds)"
+	help
+	  The flight-validated 2026-07 showcase: spring-field formation with
+	  phase choreography keyed off fresh-peer count (line → rotating
+	  triangle → member departs → line).  Uses per-drone build flags
+	  (TAPESTRY_ELEMENT_ID, DEMO_START_DELAY_S, DEMO_MISSION_DURATION_S,
+	  DEMO_HOLD_STATION).
+
+endchoice
+
 config TAPESTRY_ELEMENT_ID
-	int "Element ID [0..4]"
+	int "Element ID [0..4] (showcase mode only)"
 	range 0 4
 	default 0
 	help
-	  Unique identity for this drone.  Override at build time:
+	  Unique identity for this drone in showcase mode.  Choreo mode
+	  ignores this and negotiates IDs at boot.  Override at build time:
 	    west build ... -- -DCONFIG_TAPESTRY_ELEMENT_ID=1
 
 config TAPESTRY_ELEMENT_COUNT
-	int "Number of drones in the formation"
+	int "Number of drones in the formation (showcase mode only)"
 	range 2 5
 	default 3
 	help
-	  Sets n_total for the formation demo.  The sync window waits until
-	  (n_total - 1) peers are fresh before arming and flying.
+	  Sets n_total for the showcase demo.  Choreo mode ignores this and
+	  takes the count from auto-ID negotiation.  The sync window waits
+	  until (n_total - 1) peers are fresh before arming and flying.
 	    2 drones: -DCONFIG_TAPESTRY_ELEMENT_COUNT=2
 	    3 drones: -DCONFIG_TAPESTRY_ELEMENT_COUNT=3  (default)
 
 config DEMO_MISSION_DURATION_S
 	int "Seconds from arming until this drone lands itself"
+	depends on DEMO_MODE_SHOWCASE
 	range 10 600
 	default 60
 	help
@@ -35,6 +67,7 @@ config DEMO_MISSION_DURATION_S
 
 config DEMO_START_DELAY_S
 	int "Ground hold before the arming countdown (staggered join)"
+	depends on DEMO_MODE_SHOWCASE
 	range 0 300
 	default 0
 	help
@@ -45,6 +78,7 @@ config DEMO_START_DELAY_S
 
 config DEMO_HOLD_STATION
 	bool "Pinned member: hold the seeded position, ignore formation forces"
+	depends on DEMO_MODE_SHOWCASE
 	default n
 	help
 	  This drone holds station at its first-fix seed for the whole
