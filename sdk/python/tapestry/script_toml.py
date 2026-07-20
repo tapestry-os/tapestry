@@ -92,7 +92,7 @@ SHAPES = {
 _KNOWN_PARAMS = {
     "hold":     {"duration", "timeout", "until", "eps", "settle", "requires"},
     "exchange": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "shift"},
+                 "shift", "path"},
     "form":     {"duration", "timeout", "until", "eps", "settle", "requires",
                  "target", "radius", "shape"},
     "move":     {"duration", "timeout", "until", "eps", "settle", "requires",
@@ -115,6 +115,7 @@ class NormalizedStep:
     max_duration_ms:     int
     advance_on_achieved: bool = False
     slot_shift:          Optional[int] = None
+    direct_path:         bool = False
     achieve_eps:         Optional[float] = None
     achieve_hold_ms:     Optional[int] = None
     target:              Optional[Tuple[float, float]] = None
@@ -235,6 +236,13 @@ def _parse_step(index: int, table: dict) -> NormalizedStep:
         if not isinstance(shift, int) or isinstance(shift, bool) or shift < 1:
             raise ScriptError(f"{where}: shift must be a positive integer")
         step.slot_shift = shift
+    if "path" in params:
+        if params["path"] not in ("arc", "direct"):
+            raise ScriptError(f"{where}: path must be \"arc\" (default — "
+                              f"preserves XY separation) or \"direct\" "
+                              f"(beeline; safe when deconfliction is "
+                              f"vertical, e.g. ID-staggered altitudes)")
+        step.direct_path = params["path"] == "direct"
 
     if "requires" in params:
         reqs = params["requires"]
@@ -313,6 +321,7 @@ def to_choreo_steps(script: ChoreoScript) -> List[ChoreoStep]:
             goal.shape = SHAPES[s.shape]
         if s.slot_shift is not None:
             goal.slot_shift = s.slot_shift
+        goal.direct_path = s.direct_path
         if s.achieve_eps is not None:
             goal.achieve_eps = s.achieve_eps
         if s.achieve_hold_ms is not None:

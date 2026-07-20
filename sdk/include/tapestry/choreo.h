@@ -44,9 +44,12 @@
  *               Corresponds to the paper's "install + configure" stage.
  *   RUNNING     BSE ticking; quorum is DEGRADED or HEALTHY.
  *               Corresponds to the paper's "deploy + monitor" stage.
- *   SUSPENDED   Quorum dropped to LOST while RUNNING; goal is preserved.
- *               The BSE is NOT ticked and script step timers are frozen —
- *               a partition pauses the show rather than timing it out.
+ *   SUSPENDED   Quorum dropped to LOST while RUNNING; goal is preserved
+ *               and script step timers are frozen — a partition pauses the
+ *               show rather than timing it out.  Per-goal quorum: SELF-
+ *               referential goals (HOLD) still tick the BSE while
+ *               suspended (station capture and station-keeping need no
+ *               peers); PEER-referential goals (EXCHANGE) are frozen.
  *               Resumes automatically to RUNNING when quorum recovers.
  *   TERMINATED  choreo_terminate() called; goal cleared.  Transitions
  *               immediately back to IDLE — callers polling goal_status()
@@ -129,6 +132,8 @@ typedef struct {
     choreo_capabilities_t required_caps; /* capabilities this goal requires       */
 
     uint8_t               slot_shift;    /* EXCHANGE ring rotation (0 → 1)        */
+    bool                  direct_path;   /* EXCHANGE beeline vs centroid arc
+                                            (see bse.h; arc is the default)      */
     float                 achieve_eps;   /* achievement radius (0 → BSE default)  */
     uint32_t              achieve_hold_ms; /* sustain time (0 → BSE default)      */
 } choreo_goal_t;
@@ -260,6 +265,15 @@ void choreo_cancel_goal(void);
  * choreo_goal_status — Return the current lifecycle state.
  */
 choreo_state_t choreo_goal_status(void);
+
+/*
+ * choreo_current_goal_type — The goal currently executing (RUNNING or
+ * SUSPENDED), or CHOREO_GOAL_NONE otherwise.  Lets the platform layer
+ * apply per-goal quorum semantics: a HOLD directive may be tracked even
+ * with quorum lost (it references only this element), while peer-
+ * referential directives should be frozen.
+ */
+choreo_goal_type_t choreo_current_goal_type(void);
 
 /*
  * choreo_tick — Drive L6 decomposition for this cycle.

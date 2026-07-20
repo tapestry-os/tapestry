@@ -81,6 +81,7 @@ static tapestry_bse_intent_t goal_to_intent(const choreo_goal_t *goal)
     intent.radius          = goal->radius;
     intent.shape           = goal->shape;
     intent.slot_shift      = goal->slot_shift;
+    intent.direct_path     = goal->direct_path;
     intent.achieve_eps     = goal->achieve_eps;
     intent.achieve_hold_ms = goal->achieve_hold_ms;
     return intent;
@@ -236,6 +237,14 @@ choreo_state_t choreo_goal_status(void)
     return s_state;
 }
 
+choreo_goal_type_t choreo_current_goal_type(void)
+{
+    if (s_state == CHOREO_STATE_RUNNING || s_state == CHOREO_STATE_SUSPENDED) {
+        return s_goal.type;
+    }
+    return CHOREO_GOAL_NONE;
+}
+
 /* Advance the script if the current step's exit condition is met. */
 static void script_advance(void)
 {
@@ -289,9 +298,18 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
         break;
 
     case CHOREO_STATE_SUSPENDED:
-        /* Frozen: no BSE tick, no script timers — a partition pauses the
-         * show rather than timing it out.  (The platform layer is expected
-         * to hold position independently while suspended.) */
+        /* Script timers frozen — a partition pauses the show rather than
+         * timing it out.  Per-goal quorum: a SELF-referential goal (HOLD —
+         * it references only this element's own position) still ticks the
+         * BSE, so its station is captured as soon as a position is
+         * available and station-keeping stays live; deferring the capture
+         * to quorum recovery would capture whatever position the element
+         * has drifted to by then (2026-07-19 flight finding).  PEER-
+         * referential goals (EXCHANGE) stay frozen: their snapshots are
+         * meaningless without fresh peers. */
+        if (s_goal.type == CHOREO_GOAL_HOLD) {
+            bse_tick(wm, scr);
+        }
         if (scr->quorum_state != SCR_QUORUM_LOST) {
             s_state = CHOREO_STATE_RUNNING;
         }

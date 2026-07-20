@@ -55,6 +55,8 @@ WM_CYCLE_MS = 100   # mirrors csm.h — tick() integrates time on this period
 ACHIEVE_EPS_DEFAULT     = 0.5
 ACHIEVE_HOLD_MS_DEFAULT = 3000
 EXCHANGE_OMEGA_RADPS    = 0.15
+EXCHANGE_OCCUPIED_M     = 0.35   # dest occupied while a fresh peer is this close
+EXCHANGE_STANDOFF_M     = 0.5    # hold here on the approach line meanwhile
 
 
 # ── Enumerations ──────────────────────────────────────────────────────────────
@@ -91,6 +93,7 @@ class BSEIntent:
     radius: float = 30.0
     shape:  BSEShape = BSEShape.CIRCLE
     slot_shift: int = 0            # EXCHANGE ring rotation (0 → 1)
+    direct_path: bool = False      # EXCHANGE beeline vs centroid arc
     achieve_eps: float = 0.0       # 0 → ACHIEVE_EPS_DEFAULT
     achieve_hold_ms: int = 0       # 0 → ACHIEVE_HOLD_MS_DEFAULT
 
@@ -243,6 +246,27 @@ class BSE:
         if ex['dtheta'] <= 0.0 or ex['progress'] >= ex['dtheta']:
             self._goal_pt = ex['dest']
 
+        # Occupied destination (step-skew defense — mirrors bse.c): hold a
+        # standoff point on the approach line and defer achievement while a
+        # fresh peer still sits on the station.
+        dest = ex['dest']
+        occupied = any(
+            not e.get('is_self', False)
+            and e.get('is_active') and not e.get('is_stale')
+            and math.hypot(float(e.get('x', 0.0)) - dest[0],
+                           float(e.get('y', 0.0)) - dest[1])
+                < EXCHANGE_OCCUPIED_M
+            for e in wm_entries)
+        if occupied:
+            own = self._own_position(wm_entries)
+            if own is not None:
+                d = math.hypot(own[0] - dest[0], own[1] - dest[1])
+                if d > 1e-3:
+                    self._directive.target = (
+                        dest[0] + (own[0] - dest[0]) / d * EXCHANGE_STANDOFF_M,
+                        dest[1] + (own[1] - dest[1]) / d * EXCHANGE_STANDOFF_M)
+            self._goal_pt = None
+
     def _exchange_capture(self, wm_entries: List[dict]) -> bool:
         """Freeze the snapshot: stations + own arc about the centroid.
 
@@ -273,6 +297,10 @@ class BSE:
         while dtheta <= 0.0:
             dtheta += 2.0 * math.pi
         if dest_i == rank:
+            dtheta = 0.0
+        # Direct path: no arc — target is the destination from tick one
+        # (safe when deconfliction is vertical; see bse.h).
+        if self._intent.direct_path:
             dtheta = 0.0
 
         self._ex = {

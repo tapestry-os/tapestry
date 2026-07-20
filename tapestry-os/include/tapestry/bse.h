@@ -106,6 +106,25 @@ typedef enum {
 #define TAPESTRY_BSE_EXCHANGE_OMEGA_RADPS     0.15f
 #endif
 
+/* EXCHANGE occupied-destination handling (step-skew defense): element
+ * scripts advance on per-element clocks, so one element can reach its
+ * destination station while its (slower) previous owner still occupies it
+ * — 2026-07-19 flight 11: a beeline into an occupied station collapsed
+ * separation to 0.09 m, the platform repulsion shoved targets sideways,
+ * and achievement fired mid-scrum.  While any fresh peer sits within
+ * OCCUPIED_M of the destination, the commanded target holds a STANDOFF_M
+ * point on the approach line and achievement is deferred; when the owner
+ * vacates (its own exchange moves it), the approach completes.  The step
+ * timeout still bounds the wait if the owner never leaves.  For a 1 m
+ * swap, OCCUPIED_M must stay below half the station spacing or two
+ * synchronized elements crossing at the midpoint would stall each other. */
+#ifndef TAPESTRY_BSE_EXCHANGE_OCCUPIED_M
+#define TAPESTRY_BSE_EXCHANGE_OCCUPIED_M      0.35f
+#endif
+#ifndef TAPESTRY_BSE_EXCHANGE_STANDOFF_M
+#define TAPESTRY_BSE_EXCHANGE_STANDOFF_M      0.5f
+#endif
+
 typedef struct {
     tapestry_bse_intent_type_t type;
     tapestry_position_t        target;   /* MOVE / CONVERGE destination    */
@@ -115,6 +134,14 @@ typedef struct {
     /* EXCHANGE: ring rotation amount.  0 is treated as 1 (the common case)
      * so a zero-initialized intent still swaps. */
     uint8_t                    slot_shift;
+
+    /* EXCHANGE: beeline straight to the destination station instead of the
+     * centroid arc.  For platforms whose deconfliction is VERTICAL
+     * (ID-staggered altitudes — cf21bl) the direct path is safe and far
+     * faster (~1 m at the tracker's speed limit vs ~21 s of arc).  The arc
+     * stays the default because it preserves XY separation on platforms
+     * with no vertical dimension (ground robots). */
+    bool                       direct_path;
 
     /* Achievement predicate parameters (0 → the defaults above).
      * A goal is "achieved" when own position stays within achieve_eps of

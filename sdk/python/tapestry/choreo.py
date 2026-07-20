@@ -92,6 +92,7 @@ class Goal:
     shape:         GoalShape = GoalShape.CIRCLE
     required_caps: int = ChoreoCapabilities.NONE  # ChoreoCapabilities bitmask
     slot_shift:      int = 0     # EXCHANGE ring rotation (0 → 1)
+    direct_path:     bool = False  # EXCHANGE beeline vs arc (see bse.py)
     achieve_eps:     float = 0.0 # achievement radius (0 → BSE default)
     achieve_hold_ms: int = 0     # sustain time, ms (0 → BSE default)
 
@@ -291,6 +292,18 @@ class Choreo:
         """Return the current lifecycle state."""
         return self._state
 
+    def current_goal_type(self) -> GoalType:
+        """The goal currently executing (RUNNING or SUSPENDED), else NONE.
+
+        Lets the platform layer apply per-goal quorum semantics: a HOLD
+        directive may be tracked even with quorum lost (it references only
+        this element), while peer-referential directives should be frozen.
+        """
+        if self._state in (ChoreoState.RUNNING, ChoreoState.SUSPENDED) \
+                and self._goal is not None:
+            return self._goal.type
+        return GoalType.NONE
+
     # ── Per-cycle ─────────────────────────────────────────────────────────────
 
     def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
@@ -309,6 +322,13 @@ class Choreo:
                     scr_state.get('quorum_state', 2) == self.QUORUM_LOST):
                 self._state = ChoreoState.SUSPENDED
         elif self._state == ChoreoState.SUSPENDED:
+            # Per-goal quorum: a SELF-referential goal (HOLD) still ticks
+            # the BSE while suspended — station capture and station-keeping
+            # need no peers, and deferring the capture to quorum recovery
+            # would capture a drifted position.  Peer-referential goals
+            # (EXCHANGE) stay frozen.  Script timers stay frozen either way.
+            if self._goal is not None and self._goal.type == GoalType.HOLD:
+                self._bse.tick(wm_entries, scr_state)
             if scr_state.get('quorum_state', 2) != self.QUORUM_LOST:
                 self._state = ChoreoState.RUNNING
 
@@ -378,6 +398,7 @@ class Choreo:
             radius = goal.radius,
             shape  = BSEShape(goal.shape),
             slot_shift      = goal.slot_shift,
+            direct_path     = goal.direct_path,
             achieve_eps     = goal.achieve_eps,
             achieve_hold_ms = goal.achieve_hold_ms,
         )

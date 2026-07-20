@@ -183,6 +183,14 @@ static bool exchange_capture(const world_model_t *wm)
     if (dest == own_rank) {
         dtheta = 0.0f;
     }
+    /* Direct path: skip the arc entirely — the commanded target is the
+     * destination from the first tick (see the intent field's comment for
+     * when that is safe).  dtheta = 0 also makes the achievement gate
+     * active immediately, which is correct here: with a stationary
+     * target, "within eps, sustained" measures real arrival. */
+    if (s_intent.direct_path) {
+        dtheta = 0.0f;
+    }
 
     s_ex_dtheta   = dtheta;
     s_ex_progress = 0.0f;
@@ -297,6 +305,41 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
         s_goal_pt          = s_ex_dest;
         s_goal_pt_valid    = (s_ex_dtheta <= 0.0f
                               || s_ex_progress >= s_ex_dtheta);
+
+        /* Occupied destination (see the OCCUPIED_M/STANDOFF_M rationale in
+         * bse.h): hold a standoff point on the approach line and defer
+         * achievement while a fresh peer still sits on the station. */
+        {
+            bool occupied = false;
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                const wm_entry_t *e = &wm->entries[i];
+                if (!e->is_active || e->is_self || e->is_stale) {
+                    continue;
+                }
+                float dx = e->state.position.x - s_ex_dest.x;
+                float dy = e->state.position.y - s_ex_dest.y;
+                if (sqrtf(dx * dx + dy * dy)
+                        < TAPESTRY_BSE_EXCHANGE_OCCUPIED_M) {
+                    occupied = true;
+                    break;
+                }
+            }
+            if (occupied) {
+                tapestry_position_t own;
+                if (own_position(wm, &own)) {
+                    float dx = own.x - s_ex_dest.x;
+                    float dy = own.y - s_ex_dest.y;
+                    float d  = sqrtf(dx * dx + dy * dy);
+                    if (d > 1e-3f) {
+                        s_directive.target.x = s_ex_dest.x
+                            + dx / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
+                        s_directive.target.y = s_ex_dest.y
+                            + dy / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
+                    }
+                }
+                s_goal_pt_valid = false;
+            }
+        }
         break;
     }
 

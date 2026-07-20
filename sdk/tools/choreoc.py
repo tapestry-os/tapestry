@@ -81,6 +81,8 @@ def emit_step(s: NormalizedStep) -> str:
         goal_fields.append(f".required_caps = {caps_expr(s.required_caps)}")
     if s.slot_shift is not None:
         goal_fields.append(f".slot_shift = {s.slot_shift}u")
+    if s.direct_path:
+        goal_fields.append(".direct_path = true")
     if s.achieve_eps is not None:
         goal_fields.append(f".achieve_eps = {c_float(s.achieve_eps)}")
     if s.achieve_hold_ms is not None:
