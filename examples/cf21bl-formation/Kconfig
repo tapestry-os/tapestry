@@ -34,6 +34,17 @@ config DEMO_MODE_SHOWCASE
 
 endchoice
 
+config DEMO_ALLOW_SOLO
+	bool "Choreo: allow arming with no peers heard (n_total=1)"
+	depends on DEMO_MODE_CHOREO
+	default n
+	help
+	  By default a drone whose auto-ID window heard NO peers refuses to
+	  arm and becomes a grounded radio-diagnostic station (a swap needs
+	  two drones, and flying solo after failed negotiation is how
+	  duplicate-ID flights happen).  Enable only for deliberate
+	  single-drone testing of the choreo stack.
+
 config TAPESTRY_ELEMENT_ID
 	int "Element ID [0..4] (showcase mode only)"
 	range 0 4

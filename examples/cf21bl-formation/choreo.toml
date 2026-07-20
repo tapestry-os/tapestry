@@ -14,17 +14,21 @@ choreo = "change-partners"
 
 # Stay at the current stations.
 [[steps]]
-hold = { duration = "30s", requires = ["locomotion"] }
+hold = { duration = "10s", requires = ["locomotion"] }
 
 # Swap places: each drone takes its partner's station (stations are frozen
-# snapshots at step start; travel is an arc about the formation centroid,
-# so separation is preserved).  Advances as soon as the drone has settled
-# within eps of its destination for the settle time; the timeout is the
-# robustness net if achievement never fires.
+# snapshots at step start).  path="direct" beelines straight over — safe on
+# this platform because deconfliction is VERTICAL (ID-staggered altitudes),
+# and much faster than the default centroid arc (~4 s vs ~21 s for a 1 m
+# swap).  Keep the default arc on platforms with no vertical dimension.
+# Advances as soon as the drone has settled within eps of its destination
+# for the settle time; the timeout is the robustness net if achievement
+# never fires.
 [[steps]]
 [steps.exchange]
 until    = "achieved"
-timeout  = "45s"
+timeout  = "30s"
+path     = "direct"
 eps      = "25cm"
 settle   = "3s"
 requires = ["locomotion"]

@@ -110,6 +110,7 @@
 #ifdef CONFIG_DEMO_MODE_CHOREO
 #include <tapestry/scr.h>      /* scr_state_t for the synthetic quorum */
 #include <tapestry/choreo.h>
+#include "gossip.h"            /* gossip_own_id_frames — duplicate-ID diag */
 /* The show itself.  GENERATED from ../choreo.toml (the file to edit) by
  * sdk/tools/choreoc.py — see the regeneration command in its banner. */
 #include "choreo_script.h"
@@ -151,6 +152,14 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
 /* Individual landing ramp (walk the altitude target down, settle, disarm). */
 #define LAND_RATE_MPS        0.30f
 #define LAND_SETTLE_MS       2000
+/* Touchdown gate: the walked-down TARGET reaching zero says nothing about
+ * the airframe (2026-07-19 flight 10: a drone cut its motors mid-air, the
+ * long-flagged disarm-on-target bug).  Require the measured lighthouse
+ * altitude to agree before the settle timer runs; if the fix is invalid
+ * (or z is biased high) LAND_FORCE_DISARM_MS bounds the wait — by then
+ * the zero-target thrust has had ample time to put the airframe down. */
+#define LAND_TOUCHDOWN_Z_M   0.08f
+#define LAND_FORCE_DISARM_MS 10000
 
 /* Sustained lighthouse fix loss before an individual landing — brief blips
  * just zero X/Y and hold; see the flight_state_t machine below. */
@@ -179,6 +188,20 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
 #endif
 
 #define LOOP_DT_S  ((float)WM_CYCLE_MS * 0.001f)
+
+/* Own-state gossip cadence.  Choreo mode sends at 5 Hz instead of the L4
+ * default 2 Hz: measured syslink P2P delivery under load is ~20-35%
+ * (2026-07-19 runs), and at 2 Hz the peer entry goes stale
+ * (WM_STALE_THRESHOLD_MS) in ~half of all windows — the debounced quorum
+ * then almost never comes up and the script stays SUSPENDED.  At 5 Hz the
+ * same loss rate keeps the stale threshold fed ~85% of the time.  Airtime
+ * cost is trivial (~100 B/s).  Showcase mode keeps the flight-validated
+ * default. */
+#ifdef CONFIG_DEMO_MODE_CHOREO
+#define DEMO_GOSSIP_MS 200u
+#else
+#define DEMO_GOSSIP_MS GOSSIP_INTERVAL_MS
+#endif
 
 /* ── Flight state machine ─────────────────────────────────────────────────── */
 
@@ -235,8 +258,135 @@ int main(void)
      * windows overlap.  VERIFY in the logs that every drone reports the
      * expected n_total and a unique id before flight — a drone that heard
      * nobody claims id=0 and will fly a solo script. */
+    /* Let the nRF51 radio finish its cold start before opening the
+     * discovery window: every 2026-07-19 run showed near-zero P2P delivery
+     * in the first seconds (run 11: 2 of 60 frames during the window, and
+     * even the Crazyradio got no ACKs until ~t=5 s) with the link
+     * recovering to ~25-35% afterwards.  Beaconing into a deaf radio
+     * wastes the window and forces the self-heal path (and its script
+     * skew). */
+    k_msleep(2500);
+
     int n_total;
-    const element_id_t element_id = transport_negotiate_id(&n_total);
+    element_id_t element_id = transport_negotiate_id(&n_total);
+
+#ifndef CONFIG_DEMO_ALLOW_SOLO
+    if (n_total < 2) {
+        /* Auto-ID heard nobody.  A swap needs two drones, and flying solo
+         * after a failed negotiation is how duplicate-ID flights happen
+         * (both drones alone-in-their-own-mind at id=0, mutually
+         * invisible, hovering until the backstop — 2026-07-19 flight 4).
+         * Ground as a SELF-HEALING radio-diagnostic station instead:
+         * gossip + listen, re-log the retained window outcome and the
+         * duplicate-ID evidence every 2 s, and recover WITHOUT a
+         * power-cycle by either
+         *   (a) renegotiating at a jittered interval — if the peer is
+         *       meanwhile gossiping (grounded like us, or flying), its
+         *       claimed ID resolves the collision (run 8: gossip flowed
+         *       at ~35% while both sat deaf-mute at id=0), or
+         *   (b) seeing a fresh peer directly (IDs already differ).
+         * Deliberate solo flights: -DCONFIG_DEMO_ALLOW_SOLO=y. */
+        LOG_ERR("id=%u auto-ID heard NO peers — NOT ARMING; grounded "
+                "self-healing diagnostic mode (renegotiates until a peer "
+                "is found)", (unsigned)element_id);
+
+        element_state_t diag_state = { 0 };
+        diag_state.id = element_id;
+        world_model_t diag_wm;
+        wm_init(&diag_wm, element_id, &diag_state, 0.0f);
+
+        uint32_t diag_gossip_ms = DEMO_GOSSIP_MS;
+        uint32_t diag_log_ms    = 0;
+        uint32_t reneg_in_ms    = 15000u + (k_cycle_get_32() % 30000u);
+        substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);
+
+        for (bool recovered = false; !recovered; k_msleep(WM_CYCLE_MS)) {
+            transport_drain(&diag_wm, element_id);
+            wm_tick(&diag_wm, WM_CYCLE_MS);
+
+            lh2_position_t dp;
+            if (cf21bl_lighthouse_is_valid() &&
+                cf21bl_lighthouse_get_position(&dp) == 0) {
+                diag_state.position.x = dp.x;
+                diag_state.position.y = dp.y;
+            }
+            wm_update_self(&diag_wm, &diag_state);
+
+            int fresh = 0, active = 0;
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                const wm_entry_t *e = &diag_wm.entries[i];
+                if (e->is_active && !e->is_self) {
+                    active++;
+                    if (!e->is_stale) { fresh++; }
+                }
+            }
+
+            if (fresh > 0) {
+                /* A distinct-ID peer is visible — radio and identities are
+                 * fine; adopt the visible collective size and proceed. */
+                n_total = 1 + active;
+                LOG_WRN("id=%u recovered: peer VISIBLE (fresh=%d) — "
+                        "n_total=%d, proceeding to flight prep",
+                        (unsigned)element_id, fresh, n_total);
+                substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+                recovered = true;
+                continue;
+            }
+
+            diag_log_ms += WM_CYCLE_MS;
+            if (diag_log_ms >= 2000u) {
+                diag_log_ms = 0;
+                uint32_t btx, nonces, running;
+                transport_get_negotiation_stats(&btx, &nonces, &running);
+                uint32_t dup = gossip_own_id_frames();
+                if (dup > 0u) {
+                    LOG_ERR("id=%u GROUNDED-DIAG: DUPLICATE ID — %u frames "
+                            "from another element also claiming id=%u; "
+                            "renegotiating in %u s",
+                            (unsigned)element_id, dup,
+                            (unsigned)element_id, reneg_in_ms / 1000u);
+                } else {
+                    LOG_INF("id=%u GROUNDED-DIAG: peers fresh=0 active=%d "
+                            "window(beacons=%u nonces=%u running=%u) "
+                            "own_id_frames=0",
+                            (unsigned)element_id, active,
+                            btx, nonces, running);
+                }
+            }
+
+            diag_gossip_ms += WM_CYCLE_MS;
+            if (diag_gossip_ms >= DEMO_GOSSIP_MS) {
+                diag_gossip_ms = 0;
+                diag_state.update_seq++;
+                transport_send(&diag_state, TAPESTRY_QOS_SOFT_RT);
+            }
+
+            if (reneg_in_ms <= WM_CYCLE_MS) {
+                LOG_INF("id=%u re-running auto-ID negotiation ...",
+                        (unsigned)element_id);
+                int nt;
+                element_id_t nid = transport_negotiate_id(&nt);
+                if (nt >= 2) {
+                    element_id    = nid;
+                    n_total       = nt;
+                    diag_state.id = nid;
+                    LOG_WRN("id=%u recovered via renegotiation: n_total=%d, "
+                            "proceeding to flight prep",
+                            (unsigned)element_id, n_total);
+                    substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+                    recovered = true;
+                } else {
+                    reneg_in_ms = 15000u + (k_cycle_get_32() % 30000u);
+                    LOG_INF("id=%u still alone after renegotiation — next "
+                            "retry in %u s", (unsigned)element_id,
+                            reneg_in_ms / 1000u);
+                }
+            } else {
+                reneg_in_ms -= WM_CYCLE_MS;
+            }
+        }
+    }
+#endif /* !CONFIG_DEMO_ALLOW_SOLO */
 #else
     const element_id_t element_id = (element_id_t)CONFIG_TAPESTRY_ELEMENT_ID;
     const int n_total = CONFIG_TAPESTRY_ELEMENT_COUNT;
@@ -333,7 +483,7 @@ int main(void)
     float           seed_y = 0.0f;
 #endif
 
-    uint32_t gossip_accum = GOSSIP_INTERVAL_MS;
+    uint32_t gossip_accum = DEMO_GOSSIP_MS;
 
     /* Convergence hold: wait until all expected peers are fresh (proceeds
      * anyway after the grace period — matches the old demo's behavior). */
@@ -354,7 +504,7 @@ int main(void)
         }
 
         gossip_accum += WM_CYCLE_MS;
-        if (gossip_accum >= GOSSIP_INTERVAL_MS) {
+        if (gossip_accum >= DEMO_GOSSIP_MS) {
             own_state.update_seq++;
             transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
             gossip_accum = 0;
@@ -432,6 +582,9 @@ int main(void)
         wm_update_self(&wm, &own_state);
 
         substrate_twist_t sp = { 0 };
+#ifdef CONFIG_DEMO_MODE_CHOREO
+        bool log_quorum_up = false;   /* debounced quorum, set in FLYING */
+#endif
 
         switch (state) {
         case FLIGHT_RAMPING:
@@ -500,20 +653,62 @@ int main(void)
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
             /* Synthetic L5 quorum from L4 freshness (no SCR on this
-             * platform): any fresh peer → HEALTHY; none → LOST, which
-             * suspends the Choreo (frozen script timers, frozen BSE) and
-             * freezes the target below — the same hold-on-stale discipline
-             * the spring field uses, expressed through the L7 lifecycle. */
-            int fresh_peers = 0;
+             * platform), DEBOUNCED on the way up: a single lucky gossip
+             * frame keeps a peer "fresh" for WM_STALE_THRESHOLD_MS
+             * (1500 ms), so gating on instantaneous freshness let lone
+             * packets flicker the Choreo awake for a second at a time —
+             * each flicker ran the tracker briefly and its leash ratcheted
+             * the target toward a (possibly corrupt) position estimate
+             * (2026-07-19 flight 2).  Requiring ≥ QUORUM_UP_MS of
+             * SUSTAINED freshness means at least two consecutive gossip
+             * frames: real contact, not a lucky packet.  Loss is
+             * immediate. */
+#define QUORUM_UP_MS 2000
+            int   fresh_peers = 0;
+            float nearest_m   = -1.0f;
             for (int i = 0; i < MAX_ELEMENTS; i++) {
                 const wm_entry_t *e = &wm.entries[i];
                 if (e->is_active && !e->is_self && !e->is_stale) {
                     fresh_peers++;
+                    float dx = e->state.position.x - own_pos_m.x;
+                    float dy = e->state.position.y - own_pos_m.y;
+                    float d  = sqrtf(dx * dx + dy * dy);
+                    if (nearest_m < 0.0f || d < nearest_m) {
+                        nearest_m = d;
+                    }
                 }
             }
+            static uint32_t fresh_streak_ms;
+            if (fresh_peers >= 1) {
+                if (fresh_streak_ms < QUORUM_UP_MS) {
+                    fresh_streak_ms += WM_CYCLE_MS;
+                }
+            } else {
+                fresh_streak_ms = 0;
+            }
+            bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
+            log_quorum_up = quorum_up;
             scr_synth.fresh_count  = (uint8_t)fresh_peers;
-            scr_synth.quorum_state = fresh_peers >= 1 ? SCR_QUORUM_HEALTHY
-                                                      : SCR_QUORUM_LOST;
+            scr_synth.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY
+                                               : SCR_QUORUM_LOST;
+
+            /* Station-compatibility check, once per contact: stations
+             * closer than ~2× the separation floor mean station-keeping
+             * and the exchange will fight the emergency repulsion the
+             * whole flight — a placement (or lighthouse-bias) problem no
+             * amount of choreography survives. */
+            static bool was_up;
+            if (quorum_up && !was_up && nearest_m >= 0.0f &&
+                nearest_m < 2.0f * DEMO_MIN_SEP_M) {
+                LOG_WRN("id=%u peers only %.2f m apart (floor %.2f m) — "
+                        "station-keeping will fight separation repulsion; "
+                        "place drones >= %.1f m apart (or suspect a biased "
+                        "lighthouse frame)",
+                        (unsigned)element_id, (double)nearest_m,
+                        (double)DEMO_MIN_SEP_M,
+                        (double)(2.0f * DEMO_MIN_SEP_M));
+            }
+            was_up = quorum_up;
 
             choreo_tick(&wm, &scr_synth);
 
@@ -544,15 +739,22 @@ int main(void)
 
             float min_dist_m = -1.0f;
             const tapestry_bse_directive_t *dir = choreo_get_directive();
-            if (scr_synth.quorum_state != SCR_QUORUM_LOST &&
+            /* Per-goal quorum at the tracking layer too: a HOLD directive
+             * references only this drone's own station, so it is tracked
+             * even with quorum lost (a solo drone station-keeps properly);
+             * peer-referential directives are frozen while LOST. */
+            bool self_referential =
+                choreo_current_goal_type() == CHOREO_GOAL_HOLD;
+            if ((quorum_up || self_referential) &&
                 dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
                 min_dist_m = demo_choreo_track(&wm, &own_pos_m, &target,
                                                dir->target.x, dir->target.y,
                                                WM_CYCLE_MS, element_id);
             }
-            /* else: quorum LOST (choreo SUSPENDED) or directive HOLD
-             * (exchange awaiting its snapshot) — target frozen where it
-             * is; the stabilizer keeps station on it. */
+            /* else: quorum LOST on a peer-referential goal (choreo
+             * SUSPENDED) or directive HOLD (exchange awaiting its
+             * snapshot) — target frozen where it is; the stabilizer keeps
+             * station on it. */
 #else /* DEMO_MODE_SHOWCASE */
             float min_dist_m = demo_compute_drive(&wm, &own_pos_m, &target, WM_CYCLE_MS,
                                                   element_id);
@@ -611,10 +813,30 @@ int main(void)
 #endif
             sp.linear.z = landing_alt_m - 1.0f;
             if (landing_alt_m <= 0.02f) {
-                land_settle_ms += WM_CYCLE_MS;
+                /* Touchdown gate (see LAND_TOUCHDOWN_Z_M): only run the
+                 * settle timer once the MEASURED altitude agrees the
+                 * airframe is down; a lagging altitude loop no longer gets
+                 * its motors cut mid-air.  land_zero_ms bounds the wait
+                 * when the fix is unavailable or z-biased. */
+                static uint32_t land_zero_ms;
+                land_zero_ms += WM_CYCLE_MS;
+
+                bool down = true;
+                lh2_position_t lz;
+                if (cf21bl_lighthouse_is_valid() &&
+                    cf21bl_lighthouse_get_position(&lz) == 0) {
+                    down = lz.z <= LAND_TOUCHDOWN_Z_M;
+                }
+                if (down || land_zero_ms >= LAND_FORCE_DISARM_MS) {
+                    land_settle_ms += WM_CYCLE_MS;
+                } else {
+                    land_settle_ms = 0;
+                }
                 if (land_settle_ms >= LAND_SETTLE_MS) {
                     state = FLIGHT_LANDED;
-                    LOG_INF("id=%u landed — disarming", (unsigned)element_id);
+                    LOG_INF("id=%u landed — disarming (z gate %s)",
+                            (unsigned)element_id,
+                            down ? "confirmed" : "timed out");
                 }
             } else {
                 land_settle_ms = 0;
@@ -645,13 +867,17 @@ int main(void)
                 }
             }
 #ifdef CONFIG_DEMO_MODE_CHOREO
+            /* q=H/L is the DEBOUNCED quorum; (susp) = choreo SUSPENDED.
+             * Flight 2 hid the flicker story because neither was logged. */
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
-                    "cmd_z=%.2f step=%d%s",
+                    "cmd_z=%.2f step=%d q=%c%s%s",
                     (unsigned)element_id, flight_state_name(state), fresh, active,
                     (double)own_pos_m.x, (double)own_pos_m.y,
                     (double)target.x, (double)target.y,
                     (double)alt_cmd_m, (double)sp.linear.z,
                     choreo_script_step(),
+                    log_quorum_up ? 'H' : 'L',
+                    choreo_goal_status() == CHOREO_STATE_SUSPENDED ? "(susp)" : "",
                     choreo_goal_achieved() ? " achieved" : "");
 #else
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
@@ -664,14 +890,39 @@ int main(void)
         }
 
         gossip_accum += WM_CYCLE_MS;
-        /* A LANDED drone goes gossip-silent: it has left the collective, and
-         * peers must be able to expire it (WM_EXPIRE_THRESHOLD_MS) so the
-         * formation heals around the survivors.  Without this gate a landed
-         * drone broadcast its ground position forever and the others held
-         * formation around a parked airframe.  LANDING (still airborne,
-         * descending) keeps gossiping — peers should make room for it until
-         * it is actually down. */
-        if (state != FLIGHT_LANDED && gossip_accum >= GOSSIP_INTERVAL_MS) {
+#ifdef CONFIG_DEMO_MODE_CHOREO
+        /* Choreo mode: keep gossiping after landing — see the deadlock this
+         * fixes below.  DEMO_MIN_SEP_M repulsion also still sees this
+         * drone as a real physical obstacle, which is wanted: a landed
+         * airframe is a genuine collision hazard for a still-active
+         * partner's beeline. */
+        bool keep_gossiping = true;
+#else
+        /* Showcase mode: a LANDED drone goes gossip-silent — it has left
+         * the collective, and peers must be able to expire it
+         * (WM_EXPIRE_THRESHOLD_MS) so the formation heals around the
+         * survivors (the "member departs" beat).  LANDING (still airborne,
+         * descending) keeps gossiping — peers should make room for it
+         * until it is actually down. */
+        bool keep_gossiping = (state != FLIGHT_LANDED);
+#endif
+        /*
+         * Why choreo mode differs (2026-07-19 flight 12 deadlock): a
+         * 2-element script has no "departs and is healed around" beat —
+         * both elements are expected to finish.  If the first finisher
+         * went silent on landing, its partner's world-model entry for it
+         * ages past WM_STALE_THRESHOLD_MS, the debounced quorum drops to
+         * LOST (the partner's only peer just vanished), and choreo
+         * SUSPENDS.  EXCHANGE is peer-referential, so it freezes on
+         * suspension — INCLUDING its own step timeout, which only counts
+         * while RUNNING.  With no live peer to ever restore quorum, the
+         * partner is stuck hovering, frozen mid-exchange, rescued only by
+         * the unconditional MISSION_DURATION_S backstop tens of seconds
+         * later.  Keeping the landed element's gossip alive keeps its
+         * peer's quorum up, so the exchange step's own (much tighter)
+         * timeout governs the wait instead.
+         */
+        if (keep_gossiping && gossip_accum >= DEMO_GOSSIP_MS) {
             own_state.update_seq++;
             transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
             gossip_accum = 0;

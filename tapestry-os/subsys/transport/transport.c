@@ -63,6 +63,14 @@ static int n_active;
 static uint32_t serial_metric_accum_ms;
 #endif
 
+/* Outcome of the most recent auto-ID window, retained so it can be
+ * re-logged long after the window (console-less boots lose the live log). */
+static struct {
+    uint32_t beacons_tx;
+    uint32_t nonces_heard;
+    uint32_t ids_running;
+} s_neg;
+
 /* ── transport_init ──────────────────────────────────────────────────────── */
 
 int transport_init(void)
@@ -144,11 +152,21 @@ static uint32_t hw_nonce(void)
 
 element_id_t transport_negotiate_id(int *n_total_out)
 {
+    /* Discovery beacons are re-sent far faster than normal gossip: on
+     * one-shot media each send is a single unacknowledged RF packet, and
+     * measured syslink P2P delivery under load is ~35% (2026-07-19 runs) —
+     * at 2 Hz a 6 s window carries only 12 tries and can plausibly miss
+     * entirely; at ~7 Hz it carries ~40 (miss probability ~0.65^40 ≈ 0).
+     * BLE ignores the extra sends (they just refresh the adv payload the
+     * controller is already re-broadcasting ~every 100 ms).  Boot-window
+     * only, so the airtime cost is irrelevant. */
+#define AUTO_ID_BEACON_MS 150u
+
     uint32_t own_nonce = hw_nonce();
     uint32_t peer_nonces[MAX_ELEMENTS];
     bool     claimed[MAX_ELEMENTS];
     int      n_peers = 0;
-    uint32_t beacon_accum_ms = GOSSIP_INTERVAL_MS;   /* send on first cycle */
+    uint32_t beacon_accum_ms = AUTO_ID_BEACON_MS;    /* send on first cycle */
 
     memset(peer_nonces, 0, sizeof(peer_nonces));
     memset(claimed,     0, sizeof(claimed));
@@ -156,18 +174,37 @@ element_id_t transport_negotiate_id(int *n_total_out)
     LOG_INF("auto_id: nonce=0x%08x  window=%u ms",
             own_nonce, CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS);
 
+    uint32_t beacons_sent = 0;
+    uint32_t diag_accum_ms = 0;
+
     for (uint32_t elapsed = 0;
          elapsed < CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS;
          elapsed += WM_CYCLE_MS) {
 
-        /* Re-send the beacon each gossip interval: one-shot media (syslink
-         * P2P, UDP broadcast) transmit a single packet per send, so a peer
-         * whose window opens later would otherwise never hear us.  On BLE
-         * the beacon additionally persists in the advertising payload. */
+        /* Re-send the beacon each AUTO_ID_BEACON_MS (see the rationale at
+         * the top of this function): one-shot media transmit a single
+         * packet per send, so redundancy must come from repetition here. */
         beacon_accum_ms += WM_CYCLE_MS;
-        if (beacon_accum_ms >= GOSSIP_INTERVAL_MS) {
+        if (beacon_accum_ms >= AUTO_ID_BEACON_MS) {
             gossip_send_discovery(own_nonce);
+            beacons_sent++;
             beacon_accum_ms = 0;
+        }
+
+        /* Once-per-second progress line: a healthy two-element negotiation
+         * shows nonces=1 within a second or two of window overlap.  Watching
+         * this stay at 0 on both consoles while beacons_tx climbs is the
+         * radio-blackout signature (see also the syslink p2p counter log). */
+        diag_accum_ms += WM_CYCLE_MS;
+        if (diag_accum_ms >= 1000u) {
+            diag_accum_ms = 0;
+            int n_running = 0;
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                if (claimed[i]) { n_running++; }
+            }
+            LOG_INF("auto_id: t=%u ms  beacons_tx=%u  nonces_heard=%d  "
+                    "ids_running=%d",
+                    elapsed, beacons_sent, n_peers, n_running);
         }
 
         uint32_t batch[8];
@@ -219,7 +256,23 @@ element_id_t transport_negotiate_id(int *n_total_out)
     *n_total_out = n_peers + 1 + n_running;
     LOG_INF("auto_id: rank=%d co_booting=%d running=%d -> id=%u n_total=%d",
             own_rank, n_peers, n_running, (unsigned)id, *n_total_out);
+
+    /* Retain the window's outcome: a console attached AFTER a console-less
+     * boot can still learn what the (long gone) discovery window saw —
+     * the application re-logs this via transport_get_negotiation_stats(). */
+    s_neg.beacons_tx   = beacons_sent;
+    s_neg.nonces_heard = (uint32_t)n_peers;
+    s_neg.ids_running  = (uint32_t)n_running;
     return id;
+}
+
+void transport_get_negotiation_stats(uint32_t *beacons_tx,
+                                     uint32_t *nonces_heard,
+                                     uint32_t *ids_running)
+{
+    *beacons_tx   = s_neg.beacons_tx;
+    *nonces_heard = s_neg.nonces_heard;
+    *ids_running  = s_neg.ids_running;
 }
 
 /* ── Auto-ID lower-level primitives ─────────────────────────────────────── */

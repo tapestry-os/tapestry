@@ -455,6 +455,61 @@ ZTEST(choreo_script, test_exchange_waits_for_peer_snapshot)
                   "exchange must engage once a peer is fresh");
 }
 
+/* direct_path exchange: the commanded target must be the destination
+ * station from the first tick (no arc), and achievement must be measurable
+ * immediately — body at dest + settle time → achieved. */
+ZTEST(choreo_script, test_exchange_direct_path_beelines)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_EXCHANGE,
+                    .direct_path = true,
+                    .achieve_eps = 0.25f, .achieve_hold_ms = 1000 },
+          .max_duration_ms = 30000, .advance_on_achieved = true },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 1.0f, 0.0f, false);
+
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT, "no move");
+    /* The peer still sits ON the destination — the occupied-dest standoff
+     * must command the approach-line point short of it, not the station. */
+    zassert_within(d->target.x,
+                   1.0f - TAPESTRY_BSE_EXCHANGE_STANDOFF_M, EPS,
+                   "occupied dest must command the standoff point "
+                   "(got %.3f)", (double)d->target.x);
+    zassert_false(choreo_goal_achieved(),
+                  "must not achieve onto an occupied station");
+
+    /* Peer vacates (its own exchange moved it): beeline completes and
+     * achievement runs after the 1 s settle. */
+    wm_reset();
+    wm_set_self(0, 0, 0.5f, 0.0f);
+    wm_set_peer(1, 0.0f, 0.0f, false);
+    choreo_tick(&wm, &scr);
+    d = choreo_get_directive();
+    zassert_within(d->target.x, 1.0f, EPS,
+                   "vacated dest must be commanded directly (got %.3f)",
+                   (double)d->target.x);
+
+    for (int i = 0; i < 12; i++) {
+        wm_reset();
+        wm_set_self(0, 0, 1.0f, 0.0f);
+        wm_set_peer(1, 0.0f, 0.0f, false);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "direct swap must complete in ~settle time");
+}
+
 ZTEST(choreo_script, test_suspension_freezes_step_timer)
 {
     static const choreo_step_t script[] = {
@@ -498,6 +553,46 @@ ZTEST(choreo_script, test_unadvanceable_step_rejected)
                   "a step with no exit condition must be rejected");
     zassert_equal(choreo_goal_status(), CHOREO_STATE_IDLE,
                   "rejected script must leave the lifecycle in IDLE");
+}
+
+/* Regression (2026-07-19 flight 2 class): a HOLD activating while the
+ * Choreo is SUSPENDED must capture its station as soon as a position is
+ * available — NOT deferred to quorum recovery, by which time the element
+ * may have drifted and would bake the drifted position in as its station. */
+ZTEST(choreo_script, test_hold_captures_station_while_suspended)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    /* First tick: no self position yet — capture cannot happen; the
+     * lifecycle suspends on quorum loss. */
+    wm_reset();
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "quorum loss must suspend");
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
+                  "no position yet — directive must be HOLD");
+
+    /* Position becomes available while STILL suspended: self-referential
+     * goals don't need quorum — the station must be captured now. */
+    wm_set_self(0, 0, 0.41f, 0.13f);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "still suspended (timers frozen)");
+    zassert_equal(choreo_get_directive()->type,
+                  TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "station capture must not wait for quorum");
+    zassert_within(choreo_get_directive()->target.x, 0.41f, EPS, "station x");
+    zassert_within(choreo_get_directive()->target.y, 0.13f, EPS, "station y");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "current goal type accessor");
 }
 
 ZTEST(choreo_script, test_hold_is_coordinate_free)

@@ -95,9 +95,13 @@ tapestry/
 │   │   └── choreo.h               L7 SDK API header (Goal / lifecycle / directive)
 │   ├── python/tapestry/
 │   │   ├── choreo.py              L7 Python mirror
-│   │   └── bse.py                 L6 Python stub
-│   └── examples/
-│       └── hello_swarm.py         Minimal worked example (no sim required)
+│   │   ├── bse.py                 L6 Python stub
+│   │   └── script_toml.py         Choreo script (TOML) parser/validator
+│   ├── tools/
+│   │   └── choreoc.py             Choreo script compiler: TOML -> C header
+│   ├── examples/
+│   │   └── hello_swarm.py         Minimal worked example (no sim required)
+│   └── CHOREO_SCRIPTS.md          Script authoring + compilation guide
 │
 ├── tapestry-os/                   Tapestry OS framework
 │   ├── include/tapestry/
@@ -266,6 +270,13 @@ The L4/L5 stack has been validated on physical hardware in two phases:
   partition detection (~1.5 s), autonomous leader election, and recovery with no simulation broker.
 
 See [`tapestry-scr-hw/README.md`](tapestry-scr-hw/README.md) for build, flash, and telemetry instructions.
+
+L6/L7 (BSE + Choreographer) is separately under active hardware flight-testing: a two-drone
+Crazyflie station-swap script — authored in TOML and compiled via `sdk/tools/choreoc.py` — driving
+real aerial elements through hold/exchange/rest. Iterative flights have found and fixed real bugs
+in identity negotiation, gossip delivery, and the exchange/landing interaction; this is a single
+script on a single platform, not yet validated as broadly as L4/L5 above. See
+[`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md) for the current state.
 
 ## License
 

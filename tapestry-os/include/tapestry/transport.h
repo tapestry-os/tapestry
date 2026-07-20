@@ -71,6 +71,14 @@ int transport_drain(world_model_t *wm, element_id_t own_id);
  */
 element_id_t transport_negotiate_id(int *n_total_out);
 
+/* Outcome of the most recent transport_negotiate_id() window: beacons
+ * transmitted, peer nonces heard, already-running IDs seen.  Retained so an
+ * application can re-log it any time — a console attached after a
+ * console-less boot still learns what the discovery window saw. */
+void transport_get_negotiation_stats(uint32_t *beacons_tx,
+                                     uint32_t *nonces_heard,
+                                     uint32_t *ids_running);
+
 /* Lower-level auto-ID primitives — use transport_negotiate_id() in preference.
  * Retained for testing and alternative boot sequences. */
 

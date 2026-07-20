@@ -32,12 +32,13 @@ edit cold:
 choreo = "change-partners"
 
 [[steps]]
-hold = { duration = "30s", requires = ["locomotion"] }
+hold = { duration = "10s", requires = ["locomotion"] }
 
 [[steps]]
 [steps.exchange]
 until    = "achieved"
-timeout  = "45s"
+timeout  = "30s"
+path     = "direct"    # beeline — safe here: deconfliction is vertical
 eps      = "25cm"
 settle   = "3s"
 requires = ["locomotion"]
@@ -45,6 +46,12 @@ requires = ["locomotion"]
 [[steps]]
 hold = { duration = "8s", requires = ["locomotion"] }   # bow
 ```
+
+`path = "direct"` beelines each drone straight to its destination (~4 s
+for a 1 m swap at the tracker speed limit) — safe on this platform
+because the ID-staggered altitudes deconflict the crossing.  Omit it (or
+`path = "arc"`) to get the default centroid-arc maneuver, which preserves
+XY separation for platforms with no vertical dimension (ground robots).
 
 The firmware consumes a committed generated header
 (`src/choreo_script.h`, same pattern as `examples/lighthouse_cal.h`).
@@ -65,17 +72,16 @@ The Python SDK reads the same file directly, no generation step:
 
 What the steps mean:
 
-1. `hold` (30 s) — each drone station-keeps at its own position.
+1. `hold` (10 s) — each drone station-keeps at its own position.
 2. `exchange` — swap places: each drone takes its partner's station.
    Stations are frozen snapshots of peer positions at step activation
-   (from the L4 world model — nothing is prescribed); the commanded
-   target travels an ARC about the formation centroid, every drone
-   rotating the same direction, so mutual separation is preserved by
-   construction (~1.0 m throughout a two-drone swap; ~21 s at the
-   default arc rate).  Advances on the L6 achievement predicate (within
-   `DEMO_CHOREO_ACHIEVE_EPS_CM` of the destination for 3 s), with a 45 s
-   timeout as the robustness net — if lighthouse jitter keeps achievement
-   from ever firing, the show still ends cleanly.
+   (from the L4 world model — nothing is prescribed); with `path =
+   "direct"` the commanded target beelines straight to the destination
+   (~4 s for a 1 m swap), safe here because altitude staggering
+   deconflicts the crossing vertically.  Advances on the L6 achievement
+   predicate (within `eps` of the destination for `settle` — 25 cm / 3 s
+   by default), with a 30 s timeout as the robustness net — if lighthouse
+   jitter keeps achievement from ever firing, the show still ends cleanly.
 3. `hold` (8 s, the "bow") — settle on the new stations.  Achievement is
    per-drone, so this beat keeps the first finisher airborne (and
    gossiping) until its partner also finishes.
@@ -107,20 +113,60 @@ together and confirm unique `auto_id:` ids and `n_total=2` on both
 consoles.  This is new radio behavior (discovery beacons over syslink
 P2P) — validate it before anything spins.
 
-1. Place both drones ~1 m apart (e.g. on the (0,0) and (1,0) marks),
-   noses along lighthouse world +X, inside base-station coverage.
+### Radio triage (when auto-ID hears nobody)
+
+A drone whose window heard no peers refuses to arm and becomes a
+**self-healing** grounded diagnostic station (override:
+`-DCONFIG_DEMO_ALLOW_SOLO=y`): it keeps gossiping and listening, and
+recovers WITHOUT a power-cycle — either by spotting a distinct-ID peer
+directly, or by renegotiating at a jittered 15–45 s interval (a
+duplicate-ID peer's gossip claims the contested id during the window,
+so the renegotiator takes the next free one).  Both drones then proceed
+to flight on their own.  The diagnostic log streams, per drone:
+
+| Log line | Meaning |
+|---|---|
+| `auto_id: t=... beacons_tx=N nonces_heard=0` | transmitting beacons but hearing none (live, 1 Hz during the window) |
+| `GROUNDED-DIAG: ... window(beacons= nonces= running=)` | the retained outcome of the (possibly console-less) boot window, re-logged every 2 s |
+| `GROUNDED-DIAG: DUPLICATE ID — N frames ...` | another element also holds this id; its gossip is arriving but was invisible to the world model — renegotiation will resolve it |
+| `recovered: peer VISIBLE` / `recovered via renegotiation` | self-heal succeeded; the drone continues to flight prep |
+| `p2p: tx=N rx_frames=M ...` (every 2 s, cumulative) | N = frames handed to the nRF51; M = valid P2P frames received.  `tx>0, rx_frames=0` here with `rx_frames>0` on the OTHER console = one dead link direction — suspect that TX antenna/nRF51 or this RX |
+| `ck_fail` / `short` / `q_drop` climbing | syslink frames dying in the STM32 parser (byte loss under USART6 load) — the P2P gossip embedded in the same stream dies with them |
+
+Counters and the window summary are cumulative, so a console attached
+minutes after a console-less boot still tells the whole story.
+
+1. Place both drones **at least 1 m apart** (e.g. on the (0,0) and (1,0)
+   marks), noses along lighthouse world +X, **well inside** base-station
+   coverage.  1 m = 2× `DEMO_MIN_SEP_M` — closer than that and
+   station-keeping fights the separation repulsion for the whole flight
+   (the firmware logs a warning at first contact if the peers are closer
+   than 1 m in the shared frame; that warning also fires if a biased
+   lighthouse frame merely *believes* they are close — either way, do not
+   fly the script through it).
 2. Power both on **within ~4 s of each other** — the 6 s auto-ID windows
    must overlap.  Watch the consoles for the `auto_id:` lines: each drone
    must report a **unique id** and `n_total=2` before flight.  A drone
    that heard nobody claims id=0 and will fly a solo script — if
    `n_total` is wrong, power-cycle both and retry.
 3. Each drone waits for its lighthouse fix, counts down 5 s, arms, ramps
-   to its ID-staggered altitude, and the script runs: ~30 s of station
-   hold, ~21 s arc swap, 8 s bow, then both land in place — each on its
-   partner's original mark — and disarm.
+   to its ID-staggered altitude, and the script runs: 10 s of station
+   hold, ~4 s direct-path swap, 8 s bow, then both land in place — each on
+   its partner's original mark — and disarm.
+
+The synthetic quorum is **debounced upward**: a peer only counts as
+contact after ~2 s of sustained freshness (≥ 2 consecutive gossip
+frames).  A single lucky packet through a bad radio window used to wake
+the Choreo for a second at a time, letting the tracker's leash ratchet
+the target toward whatever the (possibly corrupt) position estimate said
+— sustained contact is required before anything moves.  Loss is still
+immediate.  Per-goal quorum: `hold` steps station-keep even with zero
+peers (they reference only the drone itself); `exchange` freezes without
+quorum.
 
 Console log markers: `choreo "change-partners" loaded`,
-`choreo step 0/1/2`, `achieved`, and `choreo complete — resting`.
+`choreo step 0/1/2`, `achieved`, `q=H` / `q=L(susp)` (debounced quorum /
+suspended), and `choreo complete — resting`.
 
 Tuning lives in `choreo.toml` (edit → re-run `choreoc` → rebuild), not in
 build flags.  Three or more drones work unmodified — `exchange` becomes
@@ -334,7 +380,7 @@ parameters). Override at build time with `-- -D<CONSTANT>=<value>`.
 | `DEMO_MIN_SEP_M` | 0.5 | Hard-floor separation — extra repulsion below this |
 | `GEOFENCE_RADIUS_M` (main.c) | 2.0 | Distance from lighthouse origin before individual landing |
 | `MISSION_DURATION_S` (main.c) | 60 | Per-drone flight duration before landing |
-| `ALT_BASE_M` / `ALT_STEP_PER_ID_M` (main.c) | 0.30 / 0.25 | Per-ID cruise altitude stagger |
+| `ALT_BASE_M` / `ALT_STEP_PER_ID_M` (main.c) | 0.30 / 0.20 | Per-ID cruise altitude stagger |
 
 ## Known limitations
 

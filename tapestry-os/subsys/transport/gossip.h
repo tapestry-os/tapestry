@@ -49,6 +49,12 @@ void gossip_relay_flush(void);
 /* Transmit one discovery beacon carrying nonce via all transceivers. */
 void gossip_send_discovery(uint32_t nonce);
 
+/* Number of received frames that carried our OWN element id.  On non-BLE
+ * media a node cannot hear its own transmission, so a nonzero count means
+ * another element shares our identity (auto-ID collision) — its gossip is
+ * being silently dropped by the self-echo filter.  Monotonic since boot. */
+uint32_t gossip_own_id_frames(void);
+
 /* Drain all transceiver rx queues without a world model, splitting frames:
  * discovery beacons (id == ELEMENT_ID_INVALID) append their nonce to
  * nonces_out[0..max_nonces-1]; normal gossip frames mark claimed_out[id]

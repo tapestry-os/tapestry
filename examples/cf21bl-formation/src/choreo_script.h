@@ -17,19 +17,20 @@
 
 #define CHOREO_NAME                    "change-partners"
 #define CHOREO_SCRIPT_LEN              3u
-#define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS 83000u
+#define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS 48000u
 
 static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {
     { .goal = { .type = CHOREO_GOAL_HOLD,
                 .required_caps = CHOREO_CAP_LOCOMOTION },
-      .max_duration_ms = 30000u,
+      .max_duration_ms = 10000u,
       .advance_on_achieved = false },
 
     { .goal = { .type = CHOREO_GOAL_EXCHANGE,
                 .required_caps = CHOREO_CAP_LOCOMOTION,
+                .direct_path = true,
                 .achieve_eps = 0.25f,
                 .achieve_hold_ms = 3000u },
-      .max_duration_ms = 45000u,
+      .max_duration_ms = 30000u,
       .advance_on_achieved = true },
 
     { .goal = { .type = CHOREO_GOAL_HOLD,

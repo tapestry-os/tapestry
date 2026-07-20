@@ -21,10 +21,16 @@
  * ║  The stub backing (tapestry-os/subsys/choreo/choreo.c) delegates to      ║
  * ║  tapestry-os/subsys/bse/bse.c.                                           ║
  * ║  Implemented: single goals, linear goal SCRIPTS (choreo_submit_script)  ║
- * ║  with per-step timeout / advance-on-achieved, and the minimal L6        ║
- * ║  achievement predicate (choreo_goal_achieved).                          ║
- * ║  Absent: priority queues, preemption, multi-Choreo arbitration, the     ║
- * ║  install/monitor lifecycle stages, developer tooling.                   ║
+ * ║  with per-step timeout / advance-on-achieved, the minimal L6             ║
+ * ║  achievement predicate (choreo_goal_achieved), the install/configure/    ║
+ * ║  deploy/terminate lifecycle stages (choreo_state_t below), and a TOML    ║
+ * ║  script authoring/compiler toolchain (sdk/tools/choreoc.py — see         ║
+ * ║  sdk/CHOREO_SCRIPTS.md).                                                 ║
+ * ║  Absent: priority queues, preemption across goals, multi-Choreo          ║
+ * ║  arbitration, the monitor stage's telemetry export (step/achieved state  ║
+ * ║  is queryable locally but not published), and a simulation/replay        ║
+ * ║  bridge beyond the Python engine's ad hoc tick-parity checks against     ║
+ * ║  the C engine.                                                          ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 

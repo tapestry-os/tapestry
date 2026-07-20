@@ -70,6 +70,15 @@ static bool hmac4_verify(const uint8_t *data, size_t data_len,
 static const tapestry_transceiver_t * const *g_transceivers;
 static int g_n;
 
+/* Frames received carrying our OWN element id (non-BLE: duplicate-ID
+ * evidence — see the check in gossip_drain). */
+static uint32_t g_own_id_frames;
+
+uint32_t gossip_own_id_frames(void)
+{
+    return g_own_id_frames;
+}
+
 void gossip_register_transceivers(const tapestry_transceiver_t * const *t,
                                   int n)
 {
@@ -177,6 +186,24 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
                 (const tapestry_gossip_frame_t *)buf;
 
             if (g->id == own_id) {
+#ifndef CONFIG_BT
+                /* On BLE, hearing your own id is a normal self-echo (RPA
+                 * does not suppress self-rx).  On every other medium a
+                 * node cannot receive its own transmission — an own-id
+                 * frame here means ANOTHER element holds our ID (auto-ID
+                 * collision: both negotiated the same identity, so they
+                 * silently drop each other's gossip and fly blind).
+                 * 2026-07-19 flight 4 failed exactly this way; counted
+                 * via gossip_own_id_frames() so the application can react
+                 * (grounded renegotiation) instead of relying on this log
+                 * line surviving console loss. */
+                g_own_id_frames++;
+                if ((g_own_id_frames % 20u) == 1u) {
+                    LOG_ERR("received OWN id %u from the network — duplicate "
+                            "element ID (auto-ID collision) (%u frames)",
+                            own_id, g_own_id_frames);
+                }
+#endif
                 continue;
             }
 
