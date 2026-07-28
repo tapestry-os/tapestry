@@ -27,25 +27,32 @@ Each step table has exactly one goal key:
     disperse  spread out                           radius
 
 Common parameters:
-    duration | timeout   step time bound — "30s", "500ms", or a bare
-                         number of seconds.  REQUIRED on every step: this
-                         parser is the flight-authoring surface, and the
-                         time bound is the robustness net, so it is
-                         stricter than the C API (which allows unbounded
-                         achievement-only steps).
+    duration | timeout   step time bound — "30s", "500ms", "45min", "2h",
+                         or a bare number of seconds.  REQUIRED on every
+                         step: this parser is the flight-authoring
+                         surface, and the time bound is the robustness
+                         net, so it is stricter than the C API (which
+                         allows unbounded achievement-only steps).
     until = "achieved"   advance when the L6 achievement predicate fires
-                         (before the time bound).
+                         (before the time bound).  Not allowed on hold:
+                         hold is trivially achieved in the current
+                         runtime, so hold steps are duration-governed
+                         (until/eps/settle on hold are reserved for the
+                         scoped-achievement semantics of design doc v0.2
+                         §8.5 and rejected until those land).
     eps                  achievement radius — "25cm", "0.25m", "250mm",
-                         or bare meters.
+                         "500um", or bare meters.
     settle               achievement sustain time — duration syntax.
     requires             list of capability names:
                          ["locomotion", "bonding", "sensing", "signaling"]
 
 Goal-specific parameters:
     exchange:  shift = N          ring rotation (default 1)
-    form:      target = [x, y], radius, shape = "circle"|"line"|"grid"
+    form:      target = [x, y], radius (both REQUIRED — radius 0 would
+               send every element to the same vertex),
+               shape = "circle"|"line"|"grid"
     move/converge:  target = [x, y]
-    disperse:  radius
+    disperse:  radius (REQUIRED — minimum spacing)
 
 hold and exchange reject coordinates by design — they reference the
 collective's own configuration (see choreo.h).
@@ -58,6 +65,7 @@ Consumers:
           choreo.submit_script(load_steps("choreo.toml"))
 """
 
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -135,7 +143,7 @@ class ChoreoScript:
 
 
 def parse_duration_ms(value, where: str) -> int:
-    """"30s", "500ms", or a bare number of seconds → milliseconds."""
+    """"30s", "500ms", "45min", "2h", or a bare number of seconds → ms."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         ms = value * 1000.0
     elif isinstance(value, str):
@@ -143,13 +151,18 @@ def parse_duration_ms(value, where: str) -> int:
         try:
             if v.endswith("ms"):
                 ms = float(v[:-2])
+            elif v.endswith("min"):
+                ms = float(v[:-3]) * 60_000.0
+            elif v.endswith("h"):
+                ms = float(v[:-1]) * 3_600_000.0
             elif v.endswith("s"):
                 ms = float(v[:-1]) * 1000.0
             else:
                 ms = float(v) * 1000.0
         except ValueError:
             raise ScriptError(f"{where}: cannot parse duration {value!r} "
-                              f"(use e.g. \"30s\", \"500ms\", or seconds)")
+                              f"(use e.g. \"30s\", \"500ms\", \"45min\", "
+                              f"\"2h\", or seconds)")
     else:
         raise ScriptError(f"{where}: cannot parse duration {value!r}")
     if ms <= 0:
@@ -158,13 +171,15 @@ def parse_duration_ms(value, where: str) -> int:
 
 
 def parse_length_m(value, where: str) -> float:
-    """"25cm", "250mm", "0.25m", or bare meters → meters."""
+    """"25cm", "250mm", "500um", "0.25m", or bare meters → meters."""
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         m = float(value)
     elif isinstance(value, str):
         v = value.strip().lower()
         try:
-            if v.endswith("mm"):
+            if v.endswith("um"):
+                m = float(v[:-2]) * 1e-6
+            elif v.endswith("mm"):
                 m = float(v[:-2]) * 0.001
             elif v.endswith("cm"):
                 m = float(v[:-2]) * 0.01
@@ -174,7 +189,8 @@ def parse_length_m(value, where: str) -> float:
                 m = float(v)
         except ValueError:
             raise ScriptError(f"{where}: cannot parse length {value!r} "
-                              f"(use e.g. \"25cm\", \"0.25m\", or meters)")
+                              f"(use e.g. \"25cm\", \"0.25m\", \"500um\", "
+                              f"or meters)")
     else:
         raise ScriptError(f"{where}: cannot parse length {value!r}")
     if m <= 0:
@@ -207,6 +223,23 @@ def _parse_step(index: int, table: dict) -> NormalizedStep:
         raise ScriptError(f"{where}: unknown parameter(s) {sorted(unknown)} "
                           f"for '{goal}' (allowed: "
                           f"{sorted(_KNOWN_PARAMS[goal])})")
+    if goal == "hold":
+        reserved = {"until", "eps", "settle"} & set(params)
+        if reserved:
+            raise ScriptError(
+                f"{where}: {sorted(reserved)} not allowed on 'hold' — hold "
+                f"is trivially achieved in the current runtime (a hold step "
+                f"with until = \"achieved\" would advance on the first "
+                f"tick), so hold steps are duration-governed; these "
+                f"parameters are reserved for scoped achievement "
+                f"(design doc v0.2 §8.5)")
+    if goal == "move":
+        print(f"warning: {where}: 'move' currently behaves identically to "
+              f"'converge' (all elements to the target, no formation-offset "
+              f"preservation); its semantics will change to offset-"
+              f"preserving translation (design doc v0.2 §4) — use "
+              f"'converge' if gathering at the target is what is intended",
+              file=sys.stderr)
     if "duration" in params and "timeout" in params:
         raise ScriptError(f"{where}: give either 'duration' or 'timeout', "
                           f"not both (they are the same time bound)")
@@ -273,6 +306,13 @@ def _parse_step(index: int, table: dict) -> NormalizedStep:
         elif goal == "disperse":
             raise ScriptError(f"{where}: 'disperse' needs a radius "
                               f"(minimum spacing)")
+        elif goal == "form":
+            raise ScriptError(
+                f"{where}: 'form' needs a radius — with radius 0 the BSE "
+                f"assigns every element the SAME vertex (target + "
+                f"radius·[cos,sin]), sending the whole collective to "
+                f"one point with only platform deconfliction between "
+                f"airframes")
         if "shape" in params:
             if params["shape"] not in SHAPES:
                 raise ScriptError(f"{where}: unknown shape "

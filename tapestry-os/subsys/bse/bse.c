@@ -18,7 +18,10 @@
  *   - Feedback controller (minimal): achievement predicate — own position
  *     within achieve_eps of the goal point for achieve_hold_ms.
  *   - For MOVE / CONVERGE: emits MOVE_TO_POINT to intent.target for all
- *     elements (no formation-relative offset; stub limitation).
+ *     elements (no formation-relative offset; stub limitation).  Do not
+ *     build on MOVE ≡ CONVERGE: per SDK design v0.2 §4, MOVE becomes
+ *     offset-preserving translation of the current configuration
+ *     (shape + drift), not all-to-point.
  *   - For DISPERSE: emits MAINTAIN_SPRING with intent.radius as spacing.
  *   - For IDLE / unknown: emits IDLE.
  *

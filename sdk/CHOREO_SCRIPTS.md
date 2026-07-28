@@ -58,7 +58,7 @@ hold = { duration = "8s", requires = ["locomotion"] }
 |---|---|---|
 | `hold` | the element's own current station (coordinate-free) | — |
 | `exchange` | participants' own stations, rotated (coordinate-free) | `shift` (ring rotation, default 1), `path` |
-| `form` | an absolute point + shape | `target = [x, y]`, `radius`, `shape` |
+| `form` | an absolute point + shape | `target = [x, y]`, `radius` (both required — radius 0 would send every element to the same vertex), `shape` |
 | `move` | an absolute point | `target = [x, y]` |
 | `converge` | an absolute point | `target = [x, y]` |
 | `disperse` | current positions, spread apart | `radius` (required — minimum spacing) |
@@ -83,13 +83,28 @@ worked case.
 | Key | Meaning |
 |---|---|
 | `duration` / `timeout` | step time bound. **Required on every step** — this is the robustness net that keeps a script from stalling; give exactly one of the two names (they're the same field). |
-| `until = "achieved"` | advance as soon as the L6 achievement predicate fires, instead of waiting out the full duration. The timeout still applies as a fallback. |
+| `until = "achieved"` | advance as soon as the L6 achievement predicate fires, instead of waiting out the full duration. The timeout still applies as a fallback. Not allowed on `hold` — hold is trivially achieved, so hold steps are duration-governed (`until`/`eps`/`settle` on hold are rejected; reserved for future scoped-achievement semantics). |
 | `eps` | achievement radius (default: BSE default if omitted). |
 | `settle` | how long the error must stay within `eps` before achievement fires (default: BSE default). |
 | `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
 
-**Duration syntax**: `"30s"`, `"500ms"`, or a bare number (seconds).
-**Length syntax**: `"25cm"`, `"250mm"`, `"0.25m"`, or a bare number (meters).
+**Duration syntax**: `"30s"`, `"500ms"`, `"45min"`, `"2h"`, or a bare
+number (seconds).
+**Length syntax**: `"25cm"`, `"250mm"`, `"500um"`, `"0.25m"`, or a bare
+number (meters).
+
+> **Unit footgun (TOML vs. C):** bare numbers mean different things on
+> the two authoring surfaces. In TOML, `duration = 2` is **2 seconds**;
+> in a hand-written `choreo_step_t`, `.max_duration_ms = 2` is
+> **2 milliseconds** (the field names carry the unit: `max_duration_ms`,
+> `achieve_hold_ms`). `choreoc` converts between them — one more reason
+> to author in TOML and never edit the generated header.
+
+Note on `move`: in the current runtime it behaves identically to
+`converge` (all elements to the target, no formation-offset
+preservation); the parser warns on use. Its semantics will change to
+offset-preserving translation of the current configuration — prefer
+`converge` when gathering is what you mean.
 
 ## Validation
 
@@ -99,6 +114,9 @@ surface:
 
 - Every step must carry a time bound — the C API alone permits an
   achievement-only step with no timeout; the parser refuses to author one.
+- `hold` must not carry `until`/`eps`/`settle` — trivially-achieved
+  semantics would make such a step advance on the first tick, and the
+  parameters are reserved for future scoped achievement.
 - `hold`/`exchange` must not carry coordinates; `form`/`move`/`converge`
   must; `disperse` must carry a `radius`.
 - Unknown goal keys, unknown parameters, and unknown capability/shape names
