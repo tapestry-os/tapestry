@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-choreoc — Tapestry Choreo script compiler: choreo.toml → C header.
+choreoc — Tapestry Choreo script compiler: <name>.choreo.toml → C header.
 
 Turns a declarative Choreo script (TOML, see sdk/python/tapestry/
 script_toml.py for the schema) into a committed C header containing the
@@ -11,15 +11,19 @@ install.  The generated header is committed next to the consuming source
 (same pattern as examples/lighthouse_cal.h), so firmware builds and CI
 never need Python.
 
+Naming convention: a script file is named <name>.choreo.toml, where
+<name> matches its own "choreo = " key (e.g. change-partners.choreo.toml
+for choreo = "change-partners") — see sdk/CHOREO_SCRIPTS.md.
+
 Usage:
-    python3 sdk/tools/choreoc.py <script.toml> [-o <out.h>]
+    python3 sdk/tools/choreoc.py <name.choreo.toml> [-o <out.h>]
 
 With no -o, the header is written next to the script as
 src/choreo_script.h if src/ exists, else choreo_script.h alongside it.
 
 The Python SDK reads the SAME file directly — no generation step:
     from tapestry.script_toml import load_steps
-    choreo.submit_script(load_steps("choreo.toml"))
+    choreo.submit_script(load_steps("change-partners.choreo.toml"))
 """
 
 import argparse

@@ -111,8 +111,9 @@
 #include <tapestry/scr.h>      /* scr_state_t for the synthetic quorum */
 #include <tapestry/choreo.h>
 #include "gossip.h"            /* gossip_own_id_frames — duplicate-ID diag */
-/* The show itself.  GENERATED from ../choreo.toml (the file to edit) by
- * sdk/tools/choreoc.py — see the regeneration command in its banner. */
+/* The show itself.  GENERATED from ../change-partners.choreo.toml (the
+ * file to edit) by sdk/tools/choreoc.py — see the regeneration command
+ * in its banner. */
 #include "choreo_script.h"
 #endif
 
@@ -401,11 +402,11 @@ int main(void)
 #ifdef CONFIG_DEMO_MODE_CHOREO
     choreo_init(element_id);
     /* k_choreo_script comes from the generated choreo_script.h — the
-     * authored script is ../choreo.toml (coordinate-free: hold references
-     * each drone's own station, exchange references the partner's; no
-     * takeoff/landing/altitude anywhere — quiescence at script end maps
-     * to land-in-place below, and altitude staggering is a platform
-     * deconfliction rule the Choreo never sees).
+     * authored script is ../change-partners.choreo.toml (coordinate-free:
+     * hold references each drone's own station, exchange references the
+     * partner's; no takeoff/landing/altitude anywhere — quiescence at
+     * script end maps to land-in-place below, and altitude staggering is
+     * a platform deconfliction rule the Choreo never sees).
      * No L5 SCR on this platform — no scr registered, so the capability
      * check passes by default; the synthetic quorum below still gives the
      * lifecycle machine its RUNNING/SUSPENDED signal. */

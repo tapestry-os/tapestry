@@ -24,9 +24,12 @@ positioning alone.
 
 ## Choreo demo (default mode) — swap places
 
-The entire application-level "program" is **`choreo.toml`** in this
-directory — a three-step, coordinate-free script a non-programmer can
-edit cold:
+The entire application-level "program" is
+**`change-partners.choreo.toml`** in this directory — a three-step,
+coordinate-free script a non-programmer can edit cold. (The
+`<name>.choreo.toml` naming — name matching the script's own
+`choreo = "<name>"` key — is the project-wide convention for Choreo
+scripts; see `sdk/CHOREO_SCRIPTS.md`.)
 
 ```toml
 choreo = "change-partners"
@@ -58,7 +61,7 @@ The firmware consumes a committed generated header
 After editing the TOML, regenerate and rebuild:
 
 ```sh
-python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cf21bl-formation/choreo.toml
+python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cf21bl-formation/change-partners.choreo.toml
 ```
 
 `choreoc` is standard-library-only Python (>= 3.11, system python3 — no
@@ -68,7 +71,7 @@ net that keeps a script from stalling in flight — stricter than the C
 API on purpose), coordinate goals must have coordinates, and hold /
 exchange must NOT (they reference the collective's own configuration).
 The Python SDK reads the same file directly, no generation step:
-`choreo.submit_script(tapestry.script_toml.load_steps("choreo.toml"))`.
+`choreo.submit_script(tapestry.script_toml.load_steps("change-partners.choreo.toml"))`.
 
 What the steps mean:
 
@@ -168,8 +171,9 @@ Console log markers: `choreo "change-partners" loaded`,
 `choreo step 0/1/2`, `achieved`, `q=H` / `q=L(susp)` (debounced quorum /
 suspended), and `choreo complete — resting`.
 
-Tuning lives in `choreo.toml` (edit → re-run `choreoc` → rebuild), not in
-build flags.  Three or more drones work unmodified — `exchange` becomes
+Tuning lives in `change-partners.choreo.toml` (edit → re-run `choreoc` →
+rebuild), not in build flags.  Three or more drones work unmodified —
+`exchange` becomes
 "everyone move one seat around the ring" (stations rotate by one
 position CCW).
 

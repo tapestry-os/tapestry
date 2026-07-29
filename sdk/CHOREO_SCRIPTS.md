@@ -19,6 +19,14 @@ you target:
 Both consume the identical `.toml` file and produce identical
 `choreo_step_t` / `ChoreoStep` sequences — there is one script, two runtimes.
 
+## Naming convention
+
+A Choreo script file is named `<name>.choreo.toml`, where `<name>` matches
+the script's own `choreo = "<name>"` key (e.g. `change-partners.choreo.toml`
+for `choreo = "change-partners"`). The double extension makes the file kind
+self-identifying wherever it appears (a directory listing, a diff, a CI
+glob) and scales cleanly once a project holds more than one script.
+
 ## The file format
 
 ```toml
@@ -75,8 +83,8 @@ a moving peer); `shift = 1` with two elements is a swap. `path = "arc"`
 separation by construction — use this on platforms with no vertical
 dimension. `path = "direct"` beelines straight to the destination — only
 safe if something else deconflicts the crossing (e.g. altitude staggering
-on an aerial platform); see `examples/cf21bl-formation/choreo.toml` for a
-worked case.
+on an aerial platform); see
+`examples/cf21bl-formation/change-partners.choreo.toml` for a worked case.
 
 ## Common parameters (every goal)
 
@@ -126,9 +134,9 @@ surface:
 Errors look like:
 
 ```
-choreoc: choreo.toml: steps[1]: 'exchange' has no time bound — every step
-needs 'duration' (or 'timeout'); the bound is the robustness net that keeps
-a script from stalling in flight
+choreoc: <name>.choreo.toml: steps[1]: 'exchange' has no time bound — every
+step needs 'duration' (or 'timeout'); the bound is the robustness net that
+keeps a script from stalling in flight
 ```
 
 If it parses, it is guaranteed compilable and (for the reasons above)
@@ -141,7 +149,7 @@ Compile the TOML into a committed C header — same pattern as
 Python:
 
 ```sh
-python3 sdk/tools/choreoc.py path/to/choreo.toml
+python3 sdk/tools/choreoc.py path/to/<name>.choreo.toml
 ```
 
 Standard-library-only (Python ≥ 3.11 for `tomllib`) — no venv, nothing to
@@ -152,7 +160,7 @@ script if a `src/` directory exists there, else `choreo_script.h` alongside
 it. Override with `-o <path>`:
 
 ```sh
-python3 sdk/tools/choreoc.py path/to/choreo.toml -o path/to/src/choreo_script.h
+python3 sdk/tools/choreoc.py path/to/<name>.choreo.toml -o path/to/src/choreo_script.h
 ```
 
 The generated header carries its own regeneration command in a banner
@@ -217,7 +225,7 @@ from tapestry.choreo import Choreo
 from tapestry.script_toml import load_steps
 
 choreo = Choreo(element_id=0)
-choreo.submit_script(load_steps("path/to/choreo.toml"))
+choreo.submit_script(load_steps("path/to/<name>.choreo.toml"))
 
 # each simulation cycle:
 choreo.tick(wm_entries, scr_state)
@@ -242,9 +250,9 @@ before ever compiling it for hardware.
 
 ## Regeneration workflow
 
-1. Edit `choreo.toml`.
-2. `python3 sdk/tools/choreoc.py choreo.toml` (or with `-o` if not using the
-   default output path).
+1. Edit `<name>.choreo.toml`.
+2. `python3 sdk/tools/choreoc.py <name>.choreo.toml` (or with `-o` if not
+   using the default output path).
 3. Rebuild the firmware. Commit both the `.toml` and the regenerated
    header — CI/other builders never run `choreoc` themselves.
 
@@ -260,6 +268,6 @@ every run.
 - `sdk/python/tapestry/script_toml.py` — the schema parser and validator;
   its module docstring is the authoritative parameter reference if this
   document and the code ever disagree.
-- `examples/cf21bl-formation/choreo.toml` — a flight-validated worked
-  example (two-drone station swap) with a build+fly walkthrough in that
-  example's own README.
+- `examples/cf21bl-formation/change-partners.choreo.toml` — a
+  flight-validated worked example (two-drone station swap) with a
+  build+fly walkthrough in that example's own README.

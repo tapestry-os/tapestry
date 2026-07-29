@@ -1,9 +1,9 @@
 /*
- * choreo_script.h — GENERATED from choreo.toml — DO NOT EDIT.
+ * choreo_script.h — GENERATED from change-partners.choreo.toml — DO NOT EDIT.
  *
  * Choreo: "change-partners"
  * Regenerate after editing the script file:
- *   python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cf21bl-formation/choreo.toml -o tapestry/examples/cf21bl-formation/src/choreo_script.h
+ *   python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cf21bl-formation/change-partners.choreo.toml -o tapestry/examples/cf21bl-formation/src/choreo_script.h
  *
  * Every step is time-bounded by construction (choreoc requires it): the
  * script cannot stall in flight, and CHOREO_SCRIPT_TOTAL_TIMEOUT_MS is a

@@ -3,7 +3,9 @@ script_toml.py — Tapestry Choreo script file parser (TOML).
 
 The authoring format for Choreo scripts: a small TOML document a domain
 expert can edit cold, parsed with the Python standard library (tomllib,
-Python >= 3.11) — no third-party dependencies.
+Python >= 3.11) — no third-party dependencies.  File naming convention:
+<name>.choreo.toml, where <name> matches the script's own "choreo ="
+key below (e.g. change-partners.choreo.toml) — see sdk/CHOREO_SCRIPTS.md.
 
     choreo = "change-partners"
 
@@ -62,7 +64,7 @@ Consumers:
     - load_steps(path)      returns List[ChoreoStep] for the Python SDK:
 
           from tapestry.script_toml import load_steps
-          choreo.submit_script(load_steps("choreo.toml"))
+          choreo.submit_script(load_steps("change-partners.choreo.toml"))
 """
 
 import sys

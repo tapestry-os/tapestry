@@ -1,8 +1,8 @@
-# choreo.toml — the "change-partners" show, and the ONLY file to edit to
-# change it.  Regenerate the committed header afterwards:
+# change-partners.choreo.toml — the "change-partners" show, and the ONLY
+# file to edit to change it.  Regenerate the committed header afterwards:
 #
 #   python3 tapestry/sdk/tools/choreoc.py \
-#       tapestry/examples/cf21bl-formation/choreo.toml
+#       tapestry/examples/cf21bl-formation/change-partners.choreo.toml
 #
 # The script is deliberately coordinate-free: hold references each drone's
 # own current station, exchange references its partner's.  There is no
