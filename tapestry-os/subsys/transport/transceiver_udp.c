@@ -100,6 +100,7 @@ static int udp_tx(const uint8_t *data, uint16_t len)
     const tapestry_gossip_frame_t *frame = (const tapestry_gossip_frame_t *)data;
 
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
     hdr->type        = TAPESTRY_MSG_GOSSIP;
     hdr->src_id      = frame->id;
     hdr->payload_len = len;
@@ -135,6 +136,18 @@ static int udp_rx(uint8_t *buf, uint16_t max_len)
 
     const tapestry_msg_header_t *hdr = (const tapestry_msg_header_t *)rx_buf;
     if (hdr->type != TAPESTRY_MSG_GOSSIP) {
+        return 0;
+    }
+    if (hdr->version != TAPESTRY_WIRE_VERSION) {
+        /* A stale/mismatched peer — reject rather than risk misinterpreting
+         * bytes laid out under a different schema.  Rate-limited like the
+         * duplicate-ID log below: a peer running the wrong version stays
+         * wrong every cycle, not just once. */
+        static uint32_t mismatch_count;
+        if ((++mismatch_count % 20u) == 1u) {
+            LOG_WRN("gossip version mismatch: peer=%u wire=%u (%u frames)",
+                    hdr->src_id, hdr->version, mismatch_count);
+        }
         return 0;
     }
 
@@ -198,6 +211,7 @@ void udp_transceiver_send_metric(const world_model_t *wm,
     uint16_t min_sep_enc = has_peer ? (uint16_t)(min_sep * 100.0f) : 0xFFFFu;
 
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)metric_tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
     hdr->type        = TAPESTRY_MSG_METRIC;
     hdr->src_id      = element_id;
     hdr->payload_len = TAPESTRY_METRIC_FRAME_SIZE;
@@ -237,6 +251,7 @@ void udp_transceiver_send_scr_metric(const scr_state_t *scr,
                                TAPESTRY_SCR_METRIC_FRAME_SIZE];
 
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)scr_tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
     hdr->type        = (uint8_t)TAPESTRY_MSG_SCR_METRIC;
     hdr->src_id      = scr->own_id;
     hdr->payload_len = (uint16_t)TAPESTRY_SCR_METRIC_FRAME_SIZE;

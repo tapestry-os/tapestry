@@ -28,6 +28,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Fails loudly if wire.h changed and the three Python protocol.py
+      # mirrors weren't regenerated — the whole point of generating them
+      # is that this can never silently drift.  Pure Python, no Zephyr
+      # needed, so it runs before the expensive toolchain setup below.
+      - name: Check wire protocol mirrors are up to date
+        working-directory: ${{ github.workspace }}
+        run: python3 tapestry/tapestry-os/tools/gen_wire_protocol.py --check
+
       # Sets up a west workspace at $GITHUB_WORKSPACE, installs the
       # Zephyr SDK, and exports ZEPHYR_BASE.  The app-path tells the
       # action where the west.yml manifest lives.

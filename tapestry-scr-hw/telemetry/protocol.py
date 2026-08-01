@@ -1,39 +1,40 @@
 """
-protocol.py — Python mirror of sim_protocol.h + scr_protocol.h
+protocol.py — Python mirror of wire.h + sim_protocol.h + scr_protocol.h
 
 Wire format is identical to the simulation so the same struct layouts
-decode packets from physical elements without modification.
-
-Message types
-─────────────
-  MSG_GOSSIP      = 1   (not used by collector — elements gossip directly)
-  MSG_METRIC      = 2   element → collector  (L4 CSM metric)
-  MSG_SCR_METRIC  = 4   element → collector  (L5 SCR metric)
-
-Struct sizes
-────────────
-  HEADER_FMT       '<BBH'             type, src_id, payload_len      —  4 bytes
-  METRIC_FMT       '<BBBBBBfBBfIffH'  L4 CSM metric fields           — 30 bytes
-  SCR_METRIC_FMT   '<BBBBBBI'         L5 SCR metric fields            — 10 bytes
+decode packets from physical elements without modification.  The wire.h-
+derived section below is GENERATED — see its own marker comments.
 """
 
+import logging
 import struct
+
+log = logging.getLogger(__name__)
 
 # ── Collector port ────────────────────────────────────────────────────────────
 
 COLLECTOR_PORT = 5100
 
-# ── Message types ─────────────────────────────────────────────────────────────
+# === BEGIN GENERATED WIRE PROTOCOL (tools/gen_wire_protocol.py — DO NOT EDIT) ===
+# Mirrors tapestry-os/include/tapestry/wire.h.
+# Regenerate after any wire.h change:
+#   python3 tapestry-os/tools/gen_wire_protocol.py
+#
+# WIRE_VERSION bumps whenever a struct format below changes;
+# decode() rejects a header whose version does not match —
+# see wire.h's "Wire schema version" section for why.
+
+WIRE_VERSION = 1
 
 MSG_GOSSIP     = 1
 MSG_METRIC     = 2
 MSG_SCR_METRIC = 4
 
-# ── Struct formats ────────────────────────────────────────────────────────────
-
-HEADER_FMT     = struct.Struct('<BBH')
-METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')
-SCR_METRIC_FMT = struct.Struct('<BBBBBBI')
+HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
+GOSSIP_FMT     = struct.Struct('<BffIIBBB')  # 20 bytes: id,x,y,logical_clock,update_seq,energy_level,health_flags,hop_count
+METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
+SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
+# === END GENERATED WIRE PROTOCOL ===
 
 ELEMENT_ID_INVALID = 0xFF
 
@@ -56,8 +57,13 @@ def decode(data: bytes) -> dict | None:
     if len(data) < HEADER_FMT.size:
         return None
 
-    msg_type, src_id, payload_len = HEADER_FMT.unpack_from(data)
+    version, msg_type, src_id, payload_len = HEADER_FMT.unpack_from(data)
     payload = data[HEADER_FMT.size:]
+
+    if version != WIRE_VERSION:
+        log.warning("wire version mismatch: src=%d wire=%d (expected %d)",
+                    src_id, version, WIRE_VERSION)
+        return None
 
     if len(payload) < payload_len:
         return None

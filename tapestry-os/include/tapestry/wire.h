@@ -9,7 +9,14 @@
  *   - No OS or Zephyr types.  Pure C99 + <stdint.h>.
  *   - All wire structs are __attribute__((packed)) — no padding.
  *   - Python's struct module mirrors each layout with little-endian ('<')
- *     format strings documented in each struct's comment block.
+ *     format strings documented in each struct's comment block.  Do not
+ *     hand-edit a mirror after changing a struct here — regenerate the
+ *     three consumers instead:
+ *       python3 tapestry-os/tools/gen_wire_protocol.py
+ *
+ * Whenever a struct below changes layout (not a pure trailing append —
+ * see TAPESTRY_WIRE_VERSION below), bump TAPESTRY_WIRE_VERSION so a stale
+ * peer's frames are rejected instead of silently misinterpreted.
  *
  * Message type space
  * ──────────────────
@@ -66,6 +73,19 @@
 #  define TAPESTRY_WIRE_AUTH_TAG_SIZE   0u
 #endif
 
+/* ── Wire schema version ──────────────────────────────────────────────────── */
+/*
+ * Bump whenever a frame struct's field layout below changes (add/remove/
+ * reorder/retype a field — NOT a pure trailing append, which the length
+ * checks on receive already tolerate).  Carried in every message header;
+ * receivers reject a frame whose version does not match their own rather
+ * than risk misinterpreting bytes laid out under a different schema.  This
+ * only guards translation errors — it is not a compatibility mechanism:
+ * there is no negotiation, and a version bump is a breaking change for any
+ * peer still on the old one.
+ */
+#define TAPESTRY_WIRE_VERSION   1u
+
 /* ── Message types ───────────────────────────────────────────────────────── */
 
 typedef enum {
@@ -77,16 +97,17 @@ typedef enum {
 
 /* ── Message header ──────────────────────────────────────────────────────── */
 /*
- * Python format: struct.Struct('<BBH')
- * Size: 4 bytes
+ * Python format: struct.Struct('<BBBH')
+ * Size: 5 bytes
  */
 typedef struct {
+    uint8_t  version;       /* TAPESTRY_WIRE_VERSION — see above     */
     uint8_t  type;          /* tapestry_msg_type_t                   */
     uint8_t  src_id;        /* sender element ID                     */
     uint16_t payload_len;   /* bytes following this header           */
 } __attribute__((packed)) tapestry_msg_header_t;
 
-#define TAPESTRY_MSG_HEADER_SIZE   ((uint16_t)sizeof(tapestry_msg_header_t))   /* 4 */
+#define TAPESTRY_MSG_HEADER_SIZE   ((uint16_t)sizeof(tapestry_msg_header_t))   /* 5 */
 
 /* ── Gossip frame ────────────────────────────────────────────────────────── */
 /*
@@ -175,6 +196,6 @@ typedef struct {
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
 /* Metric frame (30 B) > gossip wire frame (20+4 = 24 B), so metric wins.   */
 
-#define TAPESTRY_MAX_MSG_SIZE   (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE)   /* 34 */
+#define TAPESTRY_MAX_MSG_SIZE   (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE)   /* 35 */
 
 #endif /* TAPESTRY_WIRE_H */

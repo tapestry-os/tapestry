@@ -1,12 +1,17 @@
 """
-protocol.py — Python mirror of sim_protocol.h
+protocol.py — Python mirror of wire.h + sim_protocol.h
 
 All struct formats are little-endian ('<') to match the C packed structs.
-Update this file whenever sim_protocol.h changes — sizes in the docstrings
-must stay in sync with the C-side #defines.
+The wire.h-derived section below is GENERATED — see its own marker
+comments.  MSG_CONTROL, CTRL_FMT, and the power-state constants come from
+sim_protocol.h (sim-only, not part of wire.h) and remain hand-maintained;
+update them here whenever sim_protocol.h changes.
 """
 
+import logging
 import struct
+
+log = logging.getLogger(__name__)
 
 # ── Ports ─────────────────────────────────────────────────────────────────────
 
@@ -14,17 +19,36 @@ ORCH_PORT         = 5100
 ELEMENT_BASE_PORT = 5000
 LOOPBACK          = "127.0.0.1"
 
-# ── Message types ─────────────────────────────────────────────────────────────
+# === BEGIN GENERATED WIRE PROTOCOL (tools/gen_wire_protocol.py — DO NOT EDIT) ===
+# Mirrors tapestry-os/include/tapestry/wire.h.
+# Regenerate after any wire.h change:
+#   python3 tapestry-os/tools/gen_wire_protocol.py
+#
+# WIRE_VERSION bumps whenever a struct format below changes;
+# decode() rejects a header whose version does not match —
+# see wire.h's "Wire schema version" section for why.
 
-MSG_GOSSIP  = 1
-MSG_METRIC  = 2
+WIRE_VERSION = 1
+
+MSG_GOSSIP     = 1
+MSG_METRIC     = 2
+MSG_SCR_METRIC = 4
+
+HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
+GOSSIP_FMT     = struct.Struct('<BffIIBBB')  # 20 bytes: id,x,y,logical_clock,update_seq,energy_level,health_flags,hop_count
+METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
+SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
+# === END GENERATED WIRE PROTOCOL ===
+
+# ── Sim-only extensions (sim_protocol.h — not part of wire.h) ─────────────────
+
 MSG_CONTROL = 3
-
-# ── Control subtypes ──────────────────────────────────────────────────────────
 
 CTRL_SET_PARTITION = 1
 CTRL_SET_POWER     = 2
 CTRL_SHUTDOWN      = 3
+
+CTRL_FMT = struct.Struct('<BB')   # ctrl_type, value — 2 bytes
 
 # ── Power states (mirror substrate_power_state_t in substrate.h) ──────────────
 
@@ -33,25 +57,11 @@ POWER_IDLE    = 1   # communication only; actuation paused
 POWER_SLEEP   = 2   # deep sleep; wakes on timer or interrupt
 POWER_HARVEST = 3   # energy harvesting; minimal activity
 
-# ── Struct formats ────────────────────────────────────────────────────────────
-#
-# HEADER_FMT   '<BBH'             type, src_id, payload_len             — 4 bytes
-# GOSSIP_FMT   '<BffIIBBB'        id, x, y, clock, seq,                — 20 bytes
-#                                  energy_level, health_flags, hop_count
-# METRIC_FMT   '<BBBBBBfBBfIffH'  eid,at,af,as_,it,cc,ratio,qh,deg,   — 30 bytes
-#                                  conf,cycle,mean_age,mean_pos_err,min_sep
-# CTRL_FMT     '<BB'              ctrl_type, value                      — 2 bytes
-
-HEADER_FMT = struct.Struct('<BBH')
-GOSSIP_FMT = struct.Struct('<BffIIBBB')
-METRIC_FMT = struct.Struct('<BBBBBBfBBfIffH')
-CTRL_FMT   = struct.Struct('<BB')
-
 # ── Encode ────────────────────────────────────────────────────────────────────
 
 def encode_gossip(state: dict) -> bytes:
     """Pack a gossip message from an element_state dict."""
-    header  = HEADER_FMT.pack(MSG_GOSSIP, state['id'], GOSSIP_FMT.size)
+    header  = HEADER_FMT.pack(WIRE_VERSION, MSG_GOSSIP, state['id'], GOSSIP_FMT.size)
     payload = GOSSIP_FMT.pack(
         state['id'],
         state['x'],
@@ -67,7 +77,7 @@ def encode_gossip(state: dict) -> bytes:
 
 def encode_control(src_id: int, ctrl_type: int, value: int) -> bytes:
     """Pack a control message from the orchestrator to an element."""
-    header  = HEADER_FMT.pack(MSG_CONTROL, src_id, CTRL_FMT.size)
+    header  = HEADER_FMT.pack(WIRE_VERSION, MSG_CONTROL, src_id, CTRL_FMT.size)
     payload = CTRL_FMT.pack(ctrl_type, value)
     return header + payload
 
@@ -90,8 +100,13 @@ def decode(data: bytes) -> dict | None:
     if len(data) < HEADER_FMT.size:
         return None
 
-    msg_type, src_id, payload_len = HEADER_FMT.unpack_from(data)
+    version, msg_type, src_id, payload_len = HEADER_FMT.unpack_from(data)
     payload = data[HEADER_FMT.size:]
+
+    if version != WIRE_VERSION:
+        log.warning("wire version mismatch: src=%d wire=%d (expected %d)",
+                    src_id, version, WIRE_VERSION)
+        return None
 
     if len(payload) < payload_len:
         return None
