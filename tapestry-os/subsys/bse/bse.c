@@ -311,8 +311,19 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 
         /* Occupied destination (see the OCCUPIED_M/STANDOFF_M rationale in
          * bse.h): hold a standoff point on the approach line and defer
-         * achievement while a fresh peer still sits on the station. */
-        {
+         * achievement while a fresh peer still sits on the station.
+         *
+         * direct_path only.  The arc already preserves separation by
+         * construction (shared rotation direction, radius interpolated
+         * from the snapshot — see exchange_arc_target()), so it never
+         * beelines into an occupied station in the first place.  Applying
+         * this unconditionally broke that guarantee: on a symmetric swap
+         * the peer starts exactly at this element's destination, the
+         * standoff fires on tick 1, and the commanded target gets pulled
+         * off the arc toward the centroid — collapsing separation instead
+         * of preserving it.  Caught by
+         * choreo_script_test_swap_script_end_to_end (arc-mode script). */
+        if (s_intent.direct_path) {
             bool occupied = false;
             for (int i = 0; i < MAX_ELEMENTS; i++) {
                 const wm_entry_t *e = &wm->entries[i];

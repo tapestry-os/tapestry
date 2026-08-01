@@ -106,18 +106,23 @@ typedef enum {
 #define TAPESTRY_BSE_EXCHANGE_OMEGA_RADPS     0.15f
 #endif
 
-/* EXCHANGE occupied-destination handling (step-skew defense): element
- * scripts advance on per-element clocks, so one element can reach its
- * destination station while its (slower) previous owner still occupies it
- * — 2026-07-19 flight 11: a beeline into an occupied station collapsed
- * separation to 0.09 m, the platform repulsion shoved targets sideways,
- * and achievement fired mid-scrum.  While any fresh peer sits within
- * OCCUPIED_M of the destination, the commanded target holds a STANDOFF_M
- * point on the approach line and achievement is deferred; when the owner
- * vacates (its own exchange moves it), the approach completes.  The step
- * timeout still bounds the wait if the owner never leaves.  For a 1 m
- * swap, OCCUPIED_M must stay below half the station spacing or two
- * synchronized elements crossing at the midpoint would stall each other. */
+/* EXCHANGE occupied-destination handling (step-skew defense), direct_path
+ * ONLY: element scripts advance on per-element clocks, so one element can
+ * reach its destination station while its (slower) previous owner still
+ * occupies it — 2026-07-19 flight 11: a beeline into an occupied station
+ * collapsed separation to 0.09 m, the platform repulsion shoved targets
+ * sideways, and achievement fired mid-scrum.  While any fresh peer sits
+ * within OCCUPIED_M of the destination, the commanded target holds a
+ * STANDOFF_M point on the approach line and achievement is deferred; when
+ * the owner vacates (its own exchange moves it), the approach completes.
+ * The step timeout still bounds the wait if the owner never leaves.  For
+ * a 1 m swap, OCCUPIED_M must stay below half the station spacing or two
+ * synchronized elements crossing at the midpoint would stall each other.
+ * Never applied to the arc path: the arc preserves separation by
+ * construction (see TAPESTRY_BSE_EXCHANGE_OMEGA_RADPS above) and never
+ * beelines into a station, so the standoff has nothing to defend against
+ * there — applying it anyway broke that guarantee on a symmetric swap
+ * (bse.c, ztest choreo_script_test_swap_script_end_to_end). */
 #ifndef TAPESTRY_BSE_EXCHANGE_OCCUPIED_M
 #define TAPESTRY_BSE_EXCHANGE_OCCUPIED_M      0.35f
 #endif

@@ -151,6 +151,7 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
         .energy_level  = own_state->energy_level,
         .health_flags  = own_state->health_flags,
         .hop_count     = IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u,
+        .version       = TAPESTRY_WIRE_VERSION,
     };
 
     tx_frame(&f);
@@ -184,6 +185,21 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
 
             const tapestry_gossip_frame_t *g =
                 (const tapestry_gossip_frame_t *)buf;
+
+            if (g->version != TAPESTRY_WIRE_VERSION) {
+                /* Checked here (medium-agnostic), not just in the UDP
+                 * message header, because BLE and syslink P2P advertise
+                 * this frame directly with no header wrapper at all — see
+                 * the "version in the frame itself" note in wire.h.
+                 * Rate-limited like the duplicate-ID log below: a peer on
+                 * the wrong version stays wrong every cycle, not once. */
+                static uint32_t mismatch_count;
+                if ((++mismatch_count % 20u) == 1u) {
+                    LOG_WRN("gossip frame version mismatch: id=%u wire=%u "
+                            "(%u frames)", g->id, g->version, mismatch_count);
+                }
+                continue;
+            }
 
             if (g->id == own_id) {
 #ifndef CONFIG_BT
@@ -244,6 +260,7 @@ void gossip_send_discovery(uint32_t nonce)
 
     f.id         = ELEMENT_ID_INVALID;
     f.update_seq = nonce;
+    f.version    = TAPESTRY_WIRE_VERSION;
     tx_frame(&f);
 }
 

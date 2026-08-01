@@ -9,7 +9,7 @@
  *
  *   TX to nRF51:
  *     [0xBC][0xCF][0x0A][len][port=0x00][gossip_frame...][ck_a][ck_b]
- *     len = 1 (port) + gossip_frame_size (20 bytes) = 21
+ *     len = 1 (port) + gossip_frame_size (21 bytes) = 22
  *     checksum: Fletcher-8 over [type][len][port][gossip_frame...]
  *
  *   RX from nRF51 (P2P broadcast received from peer drone):

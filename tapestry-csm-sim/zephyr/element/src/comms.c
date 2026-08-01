@@ -74,6 +74,7 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->energy_level  = own_state->energy_level;
     p->health_flags  = own_state->health_flags;
     p->hop_count     = 0;   /* relay not used in sim */
+    p->version       = TAPESTRY_WIRE_VERSION;
 
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);

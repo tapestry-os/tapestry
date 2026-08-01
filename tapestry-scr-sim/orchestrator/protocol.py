@@ -35,7 +35,7 @@ MSG_METRIC     = 2
 MSG_SCR_METRIC = 4
 
 HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
-GOSSIP_FMT     = struct.Struct('<BffIIBBB')  # 20 bytes: id,x,y,logical_clock,update_seq,energy_level,health_flags,hop_count
+GOSSIP_FMT     = struct.Struct('<BffIIBBBB')  # 21 bytes: id,x,y,logical_clock,update_seq,energy_level,health_flags,hop_count,version
 METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
 SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
 # === END GENERATED WIRE PROTOCOL ===
@@ -65,6 +65,7 @@ def encode_gossip(state: dict) -> bytes:
         state.get('energy_level', 100),
         state.get('health_flags', 0),
         state.get('hop_count', 0),
+        WIRE_VERSION,
     )
     return header + payload
 
@@ -102,8 +103,17 @@ def decode(data: bytes) -> dict | None:
         return None
 
     if msg_type == MSG_GOSSIP and len(payload) >= GOSSIP_FMT.size:
-        id_, x, y, clock, seq, energy, health, hop = \
+        id_, x, y, clock, seq, energy, health, hop, frame_version = \
             GOSSIP_FMT.unpack_from(payload)
+        # Checked here too, not just the header above: BLE and syslink P2P
+        # carry this frame with no header wrapper at all on real hardware,
+        # so a frame-level check is what actually protects those transports
+        # (see wire.h's "Wire schema version" section). Redundant with the
+        # header check for UDP specifically, which is fine.
+        if frame_version != WIRE_VERSION:
+            log.warning("gossip frame version mismatch: id=%d wire=%d "
+                        "(expected %d)", id_, frame_version, WIRE_VERSION)
+            return None
         return {
             'type':          'gossip',
             'src_id':        src_id,

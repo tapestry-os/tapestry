@@ -114,15 +114,23 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BffIIBBB')
- * Size: 20 bytes
+ * Python format: struct.Struct('<BffIIBBBB')
+ * Size: 21 bytes
  * Fields: id, x, y, logical_clock, update_seq,
- *         energy_level, health_flags, hop_count
+ *         energy_level, health_flags, hop_count, version
  *
  * hop_count: relay TTL.  First-party frames start at 2 when
  *   CONFIG_TAPESTRY_MESH_RELAY is enabled (0 otherwise).  Each relay node
  *   decrements by 1 before re-advertising; frames with hop_count == 0 are
  *   never re-advertised, capping relay depth at two hops.
+ *
+ * version: TAPESTRY_WIRE_VERSION, carried IN the frame itself (not just the
+ *   tapestry_msg_header_t wrapper) because BLE and syslink P2P advertise
+ *   this frame directly with no header wrapper at all — see wire.h's "Wire
+ *   schema version" section.  Appended as the LAST field (not first, unlike
+ *   the message header) so `id` stays the frame's first byte, which
+ *   transceiver_udp.c relies on when extracting src_id before the header
+ *   is populated.
  *
  * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, TAPESTRY_WIRE_AUTH_TAG_SIZE
  * additional bytes follow the frame on the wire (not counted here).
@@ -136,9 +144,10 @@ typedef struct {
     uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
     uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see csm.h)    */
     uint8_t  hop_count;            /* Relay TTL: 2 first-party, 0 = no relay  */
+    uint8_t  version;              /* TAPESTRY_WIRE_VERSION — see above       */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 20 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 21 */
 
 /* Full on-wire size: frame + optional HMAC auth tag */
 #define TAPESTRY_GOSSIP_WIRE_SIZE    \
@@ -194,7 +203,7 @@ typedef struct {
 #define TAPESTRY_SCR_METRIC_FRAME_SIZE   10   /* sizeof(tapestry_scr_metric_frame_t) */
 
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
-/* Metric frame (30 B) > gossip wire frame (20+4 = 24 B), so metric wins.   */
+/* Metric frame (30 B) > gossip wire frame (21+4 = 25 B), so metric wins.   */
 
 #define TAPESTRY_MAX_MSG_SIZE   (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE)   /* 35 */
 

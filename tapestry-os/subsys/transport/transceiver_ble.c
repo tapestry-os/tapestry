@@ -47,8 +47,10 @@ LOG_MODULE_REGISTER(transceiver_ble, LOG_LEVEL_INF);
  * 1 byte (length field) + 1 byte (AD type) + N bytes of data, so the data
  * for our single manufacturer AD record must be ≤ 29 bytes.
  *
- * Budget (no auth): 3 (prefix) + 20 (frame) + 0 (tag) = 23 ≤ 29  ✓
- * Budget (auth):    3 (prefix) + 20 (frame) + 4 (tag) = 27 ≤ 29  ✓
+ * Budget (no auth): 3 (prefix) + 21 (frame) + 0 (tag) = 24 ≤ 29  ✓
+ * Budget (auth):    3 (prefix) + 21 (frame) + 4 (tag) = 28 ≤ 29  ✓ (1 byte
+ *                    of margin left — the frame cannot grow again without
+ *                    extended advertising or dropping the auth tag)
  */
 
 #define RX_QUEUE_DEPTH  8
@@ -210,6 +212,7 @@ void ble_transceiver_advertise_nonce(uint32_t nonce)
     memset(p, 0, sizeof(*p));
     p->id         = ELEMENT_ID_INVALID;
     p->update_seq = nonce;
+    p->version    = TAPESTRY_WIRE_VERSION;
     bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), NULL, 0);
 }
 
