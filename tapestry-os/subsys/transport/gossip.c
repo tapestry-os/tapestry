@@ -70,6 +70,15 @@ static bool hmac4_verify(const uint8_t *data, size_t data_len,
 static const tapestry_transceiver_t * const *g_transceivers;
 static int g_n;
 
+/* Frames received carrying our OWN element id (non-BLE: duplicate-ID
+ * evidence — see the check in gossip_drain). */
+static uint32_t g_own_id_frames;
+
+uint32_t gossip_own_id_frames(void)
+{
+    return g_own_id_frames;
+}
+
 void gossip_register_transceivers(const tapestry_transceiver_t * const *t,
                                   int n)
 {
@@ -142,6 +151,7 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
         .energy_level  = own_state->energy_level,
         .health_flags  = own_state->health_flags,
         .hop_count     = IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u,
+        .version       = TAPESTRY_WIRE_VERSION,
     };
 
     tx_frame(&f);
@@ -176,7 +186,40 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
             const tapestry_gossip_frame_t *g =
                 (const tapestry_gossip_frame_t *)buf;
 
+            if (g->version != TAPESTRY_WIRE_VERSION) {
+                /* Checked here (medium-agnostic), not just in the UDP
+                 * message header, because BLE and syslink P2P advertise
+                 * this frame directly with no header wrapper at all — see
+                 * the "version in the frame itself" note in wire.h.
+                 * Rate-limited like the duplicate-ID log below: a peer on
+                 * the wrong version stays wrong every cycle, not once. */
+                static uint32_t mismatch_count;
+                if ((++mismatch_count % 20u) == 1u) {
+                    LOG_WRN("gossip frame version mismatch: id=%u wire=%u "
+                            "(%u frames)", g->id, g->version, mismatch_count);
+                }
+                continue;
+            }
+
             if (g->id == own_id) {
+#ifndef CONFIG_BT
+                /* On BLE, hearing your own id is a normal self-echo (RPA
+                 * does not suppress self-rx).  On every other medium a
+                 * node cannot receive its own transmission — an own-id
+                 * frame here means ANOTHER element holds our ID (auto-ID
+                 * collision: both negotiated the same identity, so they
+                 * silently drop each other's gossip and fly blind).
+                 * 2026-07-19 flight 4 failed exactly this way; counted
+                 * via gossip_own_id_frames() so the application can react
+                 * (grounded renegotiation) instead of relying on this log
+                 * line surviving console loss. */
+                g_own_id_frames++;
+                if ((g_own_id_frames % 20u) == 1u) {
+                    LOG_ERR("received OWN id %u from the network — duplicate "
+                            "element ID (auto-ID collision) (%u frames)",
+                            own_id, g_own_id_frames);
+                }
+#endif
                 continue;
             }
 
@@ -207,6 +250,49 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
     }
 
     return total;
+}
+
+/* ── Auto-ID discovery primitives ────────────────────────────────────────── */
+
+void gossip_send_discovery(uint32_t nonce)
+{
+    tapestry_gossip_frame_t f = {0};
+
+    f.id         = ELEMENT_ID_INVALID;
+    f.update_seq = nonce;
+    f.version    = TAPESTRY_WIRE_VERSION;
+    tx_frame(&f);
+}
+
+int gossip_drain_discovery(uint32_t *nonces_out, int max_nonces,
+                           bool *claimed_out, int max_id)
+{
+    uint8_t buf[TAPESTRY_GOSSIP_WIRE_SIZE];
+    int n_nonces = 0;
+
+    for (int i = 0; i < g_n; i++) {
+        int len;
+        while ((len = g_transceivers[i]->rx(buf, sizeof(buf))) > 0) {
+            if (len < (int)sizeof(tapestry_gossip_frame_t)) {
+                continue;
+            }
+            /* Auth tags are not verified during the discovery window: the
+             * outcome (an ID ordering) is validated by the collective's
+             * subsequent authenticated gossip anyway. */
+            const tapestry_gossip_frame_t *g =
+                (const tapestry_gossip_frame_t *)buf;
+
+            if (g->id == ELEMENT_ID_INVALID) {
+                if (n_nonces < max_nonces) {
+                    nonces_out[n_nonces++] = g->update_seq;
+                }
+            } else if (claimed_out != NULL && g->id < (uint8_t)max_id) {
+                claimed_out[g->id] = true;
+            }
+        }
+    }
+
+    return n_nonces;
 }
 
 /* ── gossip_relay_flush ──────────────────────────────────────────────────── */

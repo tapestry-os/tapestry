@@ -5,6 +5,70 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-08-01
+
+### Added
+- **L6/L7: first flight-ready Choreo** — coordinate-free `HOLD` (station
+  captured at activation) and `EXCHANGE` (snapshot stations, rotate by
+  `slot_shift` around the ID-sorted ring, commanded target travels a CCW
+  arc about the snapshot centroid so mutual separation is preserved by
+  construction) goals, plus a minimal feedback controller (achievement
+  predicate). L7 gains linear goal scripts (`choreo_submit_script`) with
+  per-step timeout/advance-on-achieved and quiescence on completion
+  (`IDLE` directive — platforms map it to their own inactive posture;
+  "take off"/"land" never appear at L7). `SUSPENDED` now freezes the BSE
+  and script timers, except `HOLD`, which keeps ticking since it
+  references no peer
+- **Choreo scripts authored in TOML** — `sdk/tools/choreoc.py` compiles a
+  `.toml` script to a committed C header (stdlib-only, no dependencies);
+  the Python SDK loads the identical file directly via
+  `tapestry/script_toml.py`. New `sdk/CHOREO_SCRIPTS.md` authoring guide.
+  Script files follow an `<name>.choreo.toml` naming convention
+- **`examples/cf21bl-formation` Choreo mode** (new default) — one binary
+  for every drone (IDs negotiated at boot over syslink P2P) running a
+  hold → exchange → bow script through the full safety envelope
+  (min-separation repulsion, target leash, arena clamp); script
+  completion lands in place. The original spring-field showcase is
+  preserved behind `DEMO_MODE_SHOWCASE`
+- **Medium-agnostic auto-ID** — discovery beacons are now plain gossip
+  frames over any transceiver, not BLE-only; new diagnostics
+  (per-transceiver drop counters, live progress log, duplicate-ID frame
+  counter) and self-healing (a drone hearing no peers grounds and
+  retries instead of arming solo)
+- **Wire schema version** — a one-byte `TAPESTRY_WIRE_VERSION` in every
+  L3 message header, and in the gossip frame itself so BLE and syslink
+  P2P (which carry it with no header wrapper at all) are covered too; a
+  frame from a mismatched schema is rejected and logged at every layer
+  that carries it, instead of silently misinterpreted
+- **`tapestry-os/tools/gen_wire_protocol.py`** — generates the three
+  previously hand-maintained Python wire-protocol mirrors
+  (`tapestry-csm-sim`, `tapestry-scr-sim`, `tapestry-scr-hw`) directly
+  from `wire.h`; CI now fails if a mirror drifts from source
+- Choreo script ztest suite (native_sim) covering the hold → exchange →
+  bow script end to end
+
+### Changed
+- Choreo-mode gossip cadence raised to 5 Hz (was 2 Hz) — the old cadence
+  let peer entries go stale in roughly half of all windows; landed
+  elements now keep gossiping in Choreo mode so a finisher's departure
+  can't strip its still-flying partner's only peer
+- Auto-ID window now opens after a 2.5 s radio settle delay, with
+  discovery beacons at 150 ms during the window (from 2 Hz) to
+  compensate for ~20–35% measured syslink P2P delivery under load
+- TOML script validation tightened: `hold` rejects `until`/`eps`/`settle`
+  (trivially achieved — would advance on the first tick), `form`
+  requires a `radius` (radius 0 sent every element to the same vertex),
+  `move` warns that it currently behaves like `converge`; duration and
+  length units gained `"min"`, `"h"`, and `"um"`
+
+### Fixed
+- Landing touchdown could cut motors mid-air when the walked-down target
+  reached zero before the airframe had actually descended
+- A two-drone script's only "member departs" path (landing) could
+  silently strip a still-flying partner's last peer, suspending its
+  Choreo and freezing `EXCHANGE`'s step timeout — recoverable only by
+  the outer mission-duration backstop
+
 ## [0.7.0] — 2026-07-14
 
 ### Added
@@ -121,7 +185,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for all three hardware targets and Phase 2 firmware
 - `CODE_OF_CONDUCT.md`, `SECURITY.md`
 
-[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/tapestry-os/tapestry/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/tapestry-os/tapestry/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tapestry-os/tapestry/compare/v0.5.0...v0.6.0

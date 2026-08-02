@@ -1,5 +1,6 @@
 /*
- * main.c — Tapestry hardware element (L4 CSM + L5 SCR + L6 BSE)
+ * main.c — Tapestry hardware element (L4 CSM + L5 SCR; L6 BSE ticks but its
+ * output is not yet consumed here — see the NOTE below)
  *
  * One source file builds for all board targets.  Transport and actuation
  * are selected by the build system (see CMakeLists.txt):
@@ -12,6 +13,15 @@
  *   tapestry_runtime_init() — substrate, transport, L4/L5/L6/L7 init
  *   choreo_submit_goal()    — set swarm goal
  *   main loop               — tick runtime, drive substrate from SCR state
+ *
+ * NOTE (L6 readiness): tapestry_runtime_tick() does drive L6 each cycle
+ * (choreo_tick() fires via the L5 on_tick hook, see runtime.c), and the
+ * FORM goal below is decomposed every tick — but the movement loop here
+ * drives substrate_move() purely from scr_state_t (role/quorum), NOT from
+ * choreo_get_directive().  Wiring this element's actuation to the BSE's
+ * directive is open work (see sdk/README.md's stub notes).
+ * examples/cf21bl-formation/src/main.c is the current reference for an
+ * element that actually drives movement from choreo_get_directive().
  */
 
 #include <zephyr/kernel.h>

@@ -28,6 +28,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Fails loudly if wire.h changed and the three Python protocol.py
+      # mirrors weren't regenerated — the whole point of generating them
+      # is that this can never silently drift.  Pure Python, no Zephyr
+      # needed, so it runs before the expensive toolchain setup below.
+      - name: Check wire protocol mirrors are up to date
+        working-directory: ${{ github.workspace }}
+        run: python3 tapestry/tapestry-os/tools/gen_wire_protocol.py --check
+
       # Sets up a west workspace at $GITHUB_WORKSPACE, installs the
       # Zephyr SDK, and exports ZEPHYR_BASE.  The app-path tells the
       # action where the west.yml manifest lives.
@@ -63,19 +71,21 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./tapestry/tapestry-scr-sim/build/test-scr/zephyr/zephyr.exe
 
-      # ── cf21bl formation field ──────────────────────────────────────────
+      # ── cf21bl formation field + choreo script ──────────────────────────
       # Regression tests for the flight-found spring-field bugs (target
       # leash, alignment squeeze, solo glide, hold-on-stale) plus the
-      # rotation/anchor invariants.  Pure C — runs on native_sim.
+      # rotation/anchor invariants, and the L6/L7 choreo-script suite
+      # (hold→exchange→bow swap end-to-end, suspension freeze, snapshot
+      # wait, stall rejection).  Pure C — runs on native_sim.
 
-      - name: Build formation-field unit tests
+      - name: Build formation-field + choreo unit tests
         working-directory: ${{ github.workspace }}
         run: |
           west build -b native_sim/native/64 \
             --build-dir tapestry/examples/cf21bl-formation/build/test-formation \
             tapestry/examples/cf21bl-formation/tests
 
-      - name: Run formation-field unit tests
+      - name: Run formation-field + choreo unit tests
         working-directory: ${{ github.workspace }}
         run: ./tapestry/examples/cf21bl-formation/build/test-formation/zephyr/zephyr.exe
 

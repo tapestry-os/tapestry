@@ -165,6 +165,23 @@ float demo_compute_drive(const world_model_t *wm,
                           uint32_t dt_ms,
                           element_id_t own_id);
 
+/* Choreo tracking (CONFIG_DEMO_MODE_CHOREO): advance *target toward the L6
+ * directive point (cmd_x, cmd_y) at up to DEMO_MAX_SPEED_MPS, keeping the
+ * spring field's defense-in-depth terms — emergency repulsion inside
+ * DEMO_MIN_SEP_M of any FRESH peer, the target leash, and the arena clamp.
+ * The BSE's exchange arc already deconflicts by construction; the repulsion
+ * here is a backstop, not the primary separation mechanism.  Unlike
+ * demo_compute_drive there is no hold-on-stale check: staleness handling
+ * belongs to the caller's quorum mapping (stale peers → choreo SUSPENDED →
+ * target frozen).  Returns the minimum fresh-peer distance seen (-1 if no
+ * fresh peers). */
+float demo_choreo_track(const world_model_t *wm,
+                        const position_t *own_pos_m,
+                        demo_setpoint_t *target,
+                        float cmd_x, float cmd_y,
+                        uint32_t dt_ms,
+                        element_id_t own_id);
+
 /* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 
 void demo_set_leds(const world_model_t *wm);

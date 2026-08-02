@@ -16,10 +16,23 @@ below it is managed by Tapestry; application code calls only into this SDK.
 └─────────────────────────────────────────────────┘
 ```
 
-> **Stub implementation — not for production use.**
-> The BSE backing this SDK implements intent parsing only (geometry-based
-> directive synthesis).  The physics-aware planner, ML inference runtime,
-> simulation bridge, and feedback controller are not present in this release.
+> **Not for production use.** The BSE backing this SDK implements intent
+> parsing, geometry-based task decomposition (FORM vertex assignment,
+> EXCHANGE station rotation over a snapshot), and a minimal feedback
+> controller — the achievement predicate (`choreo_goal_achieved` /
+> `bse_goal_achieved`). A TOML script authoring/compiler toolchain also
+> exists (`sdk/tools/choreoc.py`, `sdk/python/tapestry/script_toml.py` — see
+> [`CHOREO_SCRIPTS.md`](CHOREO_SCRIPTS.md)). Absent: optimization across the
+> swarm (a physics-aware planner, ML inference — the EXCHANGE arc is a fixed
+> geometric rule, not a planner), priority/preemption across goals, a
+> simulation/replay bridge, and the monitor stage's telemetry export. See
+> `tapestry-os/include/tapestry/bse.h` for the itemized contract this
+> implementation satisfies.
+
+> **Writing a multi-step show?** Scripts (ordered, time-bounded goal
+> sequences) are authored once in TOML and either compiled to a C header or
+> loaded directly in Python — see [`CHOREO_SCRIPTS.md`](CHOREO_SCRIPTS.md).
+> The quick starts below cover the single-goal API scripts are built from.
 
 ## Quick start — Python (simulation / research)
 
@@ -108,7 +121,10 @@ sdk/
   include/tapestry/choreo.h        L7 SDK API header (Goal / lifecycle / directive)
   python/tapestry/choreo.py        L7 Python mirror
   python/tapestry/bse.py           L6 Python stub
+  python/tapestry/script_toml.py   Choreo script (TOML) parser/validator
+  tools/choreoc.py                 Choreo script compiler: TOML -> C header
   examples/hello_swarm.py          Minimal worked example (no sim required)
+  CHOREO_SCRIPTS.md                Script authoring + compilation guide
 
 tapestry-os/
   include/tapestry/choreo.h        L7 C header (choreo_init, choreo_tick, etc.)

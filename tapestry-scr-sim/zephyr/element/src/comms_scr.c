@@ -19,6 +19,7 @@ void comms_send_scr_metric(const comms_t *c,
 {
     /* ── Header ──────────────────────────────────────────────────────────── */
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)scr_tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
     hdr->type        = (uint8_t)TAPESTRY_MSG_SCR_METRIC;
     hdr->src_id      = scr->own_id;
     hdr->payload_len = (uint16_t)TAPESTRY_SCR_METRIC_FRAME_SIZE;

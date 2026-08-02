@@ -66,6 +66,8 @@ class GoalType(IntEnum):
     MOVE     = 2
     DISPERSE = 3
     CONVERGE = 4
+    HOLD     = 5   # stay at current station (coordinate-free)
+    EXCHANGE = 6   # rotate stations among participants (coordinate-free)
 
 
 class GoalShape(IntEnum):
@@ -78,12 +80,37 @@ class GoalShape(IntEnum):
 
 @dataclass
 class Goal:
-    """Declarative desired world state submitted by the application."""
+    """Declarative desired world state submitted by the application.
+
+    FORM/MOVE/DISPERSE/CONVERGE reference absolute coordinates; HOLD and
+    EXCHANGE reference the collective's own current configuration and carry
+    no coordinates at all (see bse.py for the mechanism).
+    """
     type:          GoalType
     target:        tuple = (50.0, 50.0)   # (x, y) in logical world coordinates
     radius:        float = 30.0
     shape:         GoalShape = GoalShape.CIRCLE
     required_caps: int = ChoreoCapabilities.NONE  # ChoreoCapabilities bitmask
+    slot_shift:      int = 0     # EXCHANGE ring rotation (0 → 1)
+    direct_path:     bool = False  # EXCHANGE beeline vs arc (see bse.py)
+    achieve_eps:     float = 0.0 # achievement radius (0 → BSE default)
+    achieve_hold_ms: int = 0     # sustain time, ms (0 → BSE default)
+
+
+@dataclass
+class ChoreoStep:
+    """One step of a linear Choreo script (the minimal Choreo container).
+
+    A step advances when its goal is achieved (advance_on_achieved) or when
+    max_duration_ms elapses (nonzero).  A step with neither would stall —
+    submit_script() rejects it.  Completing the last step terminates the
+    script: directive IDLE, the substrate-neutral quiescence signal (each
+    platform maps it to its own inactive posture; "take off" and "land"
+    never appear in the goal vocabulary).
+    """
+    goal:                Goal
+    max_duration_ms:     int = 0
+    advance_on_achieved: bool = False
 
 
 # ── Choreo ────────────────────────────────────────────────────────────────────
@@ -122,11 +149,17 @@ class Choreo:
 
     QUORUM_LOST = 0
 
+    WM_CYCLE_MS = 100   # step timers integrate time on this tick period
+
     def __init__(self, element_id: int, capabilities: Optional[int] = None):
         self._bse          = BSE(element_id)
         self._goal: Optional[Goal] = None
         self._state        = ChoreoState.IDLE
         self._capabilities = capabilities   # None ≙ no SCR registered
+        self._steps: Optional[List[ChoreoStep]] = None
+        self._step_idx     = 0
+        self._step_ms      = 0
+        self._script_done  = False
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -165,12 +198,17 @@ class Choreo:
 
     def terminate(self) -> None:
         """
-        Abort the current goal and return to IDLE.
+        Abort the current goal or script and return to IDLE.
 
-        Valid from any state.  Submits an IDLE intent to the BSE and clears
-        the stored goal.
+        Valid from any state.  Submits an IDLE intent to the BSE (the
+        quiescence signal) and clears the stored goal and any active script.
+        script_complete() is unaffected — it keeps reporting whether the
+        most recent script ran to completion.
         """
         self._state = ChoreoState.TERMINATED
+        self._steps    = None
+        self._step_idx = 0
+        self._step_ms  = 0
         self._bse.submit_intent(BSEIntent())   # IDLE intent
         self._goal  = None
         self._state = ChoreoState.IDLE
@@ -188,10 +226,63 @@ class Choreo:
             return -1
         if self._state != ChoreoState.IDLE:
             self.terminate()
+        self._script_done = False
         rc = self.configure(goal)
         if rc != 0:
             return rc
         return self.deploy()
+
+    def submit_script(self, steps: List[ChoreoStep]) -> int:
+        """
+        Load and start a goal sequence (mirrors choreo_submit_script).
+
+        Terminates any active goal or script, validates every step up front
+        (goal validity, capabilities, and that each step can advance), then
+        deploys step 0.
+        Returns 0 on success, -1 on invalid arguments or an unadvanceable
+        step, -errno.EPERM on capability mismatch.
+        """
+        if not steps:
+            return -1
+        for st in steps:
+            if st.goal is None or st.goal.type == GoalType.NONE:
+                return -1
+            if not st.advance_on_achieved and st.max_duration_ms == 0:
+                return -1   # no exit condition — stalls by construction
+            if not self._caps_satisfied(st.goal.required_caps):
+                return -_errno.EPERM
+
+        if self._state != ChoreoState.IDLE:
+            self.terminate()
+        self._script_done = False
+
+        rc = self.configure(steps[0].goal)
+        if rc != 0:
+            return rc
+        rc = self.deploy()
+        if rc != 0:
+            return rc
+
+        self._steps    = list(steps)
+        self._step_idx = 0
+        self._step_ms  = 0
+        return 0
+
+    def script_step(self) -> int:
+        """Current step index, or -1 if no script is active."""
+        return self._step_idx if self._steps is not None else -1
+
+    def script_complete(self) -> bool:
+        """True once the most recent script ran all its steps to completion.
+
+        The application's cue to map the IDLE directive to platform
+        quiescence.  Reset by the next submit_script / submit_goal.
+        """
+        return self._script_done
+
+    def goal_achieved(self) -> bool:
+        """L6 achievement predicate for the currently executing goal."""
+        return self._bse.goal_achieved()
 
     def cancel_goal(self) -> None:
         """Cancel the current goal and return to IDLE."""
@@ -201,23 +292,67 @@ class Choreo:
         """Return the current lifecycle state."""
         return self._state
 
+    def current_goal_type(self) -> GoalType:
+        """The goal currently executing (RUNNING or SUSPENDED), else NONE.
+
+        Lets the platform layer apply per-goal quorum semantics: a HOLD
+        directive may be tracked even with quorum lost (it references only
+        this element), while peer-referential directives should be frozen.
+        """
+        if self._state in (ChoreoState.RUNNING, ChoreoState.SUSPENDED) \
+                and self._goal is not None:
+            return self._goal.type
+        return GoalType.NONE
+
     # ── Per-cycle ─────────────────────────────────────────────────────────────
 
     def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
         """
-        Drive L6 decomposition for this cycle.
+        Drive L6 decomposition for this cycle (WM_CYCLE_MS period).
 
-        Only drives the BSE in RUNNING or SUSPENDED states; no-op otherwise.
-        Transitions RUNNING → SUSPENDED on quorum loss, and back on recovery.
+        Only drives the BSE in RUNNING state.  Transitions RUNNING →
+        SUSPENDED on quorum loss — freezing the BSE and any script timers,
+        so a partition pauses the show rather than timing it out — and back
+        on recovery.  Advances the active script per the ChoreoStep rules.
         """
         if self._state == ChoreoState.RUNNING:
             self._bse.tick(wm_entries, scr_state)
-            if scr_state.get('quorum_state', 2) == self.QUORUM_LOST:
+            self._script_advance()
+            if (self._state == ChoreoState.RUNNING and
+                    scr_state.get('quorum_state', 2) == self.QUORUM_LOST):
                 self._state = ChoreoState.SUSPENDED
         elif self._state == ChoreoState.SUSPENDED:
-            self._bse.tick(wm_entries, scr_state)   # BSE returns HOLD
+            # Per-goal quorum: a SELF-referential goal (HOLD) still ticks
+            # the BSE while suspended — station capture and station-keeping
+            # need no peers, and deferring the capture to quorum recovery
+            # would capture a drifted position.  Peer-referential goals
+            # (EXCHANGE) stay frozen.  Script timers stay frozen either way.
+            if self._goal is not None and self._goal.type == GoalType.HOLD:
+                self._bse.tick(wm_entries, scr_state)
             if scr_state.get('quorum_state', 2) != self.QUORUM_LOST:
                 self._state = ChoreoState.RUNNING
+
+    def _script_advance(self) -> None:
+        if self._steps is None:
+            return
+        st = self._steps[self._step_idx]
+        self._step_ms += self.WM_CYCLE_MS
+
+        advance = (st.advance_on_achieved and self._bse.goal_achieved()) or \
+                  (st.max_duration_ms > 0 and self._step_ms >= st.max_duration_ms)
+        if not advance:
+            return
+
+        self._step_idx += 1
+        self._step_ms = 0
+        if self._step_idx >= len(self._steps):
+            # Script complete → quiescence: terminate submits the IDLE
+            # intent; _script_done survives it.
+            self._script_done = True
+            self.terminate()
+            return
+        self._goal = self._steps[self._step_idx].goal
+        self._bse.submit_intent(self._goal_to_intent(self._goal))
 
     def get_directive(self) -> BSEDirective:
         """Return the directive computed by the last tick."""
@@ -254,10 +389,16 @@ class Choreo:
             GoalType.MOVE:     BSEIntentType.MOVE,
             GoalType.DISPERSE: BSEIntentType.DISPERSE,
             GoalType.CONVERGE: BSEIntentType.CONVERGE,
+            GoalType.HOLD:     BSEIntentType.HOLD,
+            GoalType.EXCHANGE: BSEIntentType.EXCHANGE,
         }
         return BSEIntent(
             type   = _type_map.get(goal.type, BSEIntentType.IDLE),
             target = goal.target,
             radius = goal.radius,
             shape  = BSEShape(goal.shape),
+            slot_shift      = goal.slot_shift,
+            direct_path     = goal.direct_path,
+            achieve_eps     = goal.achieve_eps,
+            achieve_hold_ms = goal.achieve_hold_ms,
         )

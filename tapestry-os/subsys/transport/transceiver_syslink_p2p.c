@@ -9,7 +9,7 @@
  *
  *   TX to nRF51:
  *     [0xBC][0xCF][0x0A][len][port=0x00][gossip_frame...][ck_a][ck_b]
- *     len = 1 (port) + gossip_frame_size (20 bytes) = 21
+ *     len = 1 (port) + gossip_frame_size (21 bytes) = 22
  *     checksum: Fletcher-8 over [type][len][port][gossip_frame...]
  *
  *   RX from nRF51 (P2P broadcast received from peer drone):
@@ -98,6 +98,13 @@ K_MSGQ_DEFINE(rx_msgq, TAPESTRY_GOSSIP_WIRE_SIZE, RX_QUEUE_DEPTH, 4);
 static uint32_t g_rx_bytes;    /* raw bytes received from nRF51 on USART6 */
 static uint32_t g_rx_frames;   /* valid P2P frames enqueued */
 static uint32_t g_tx_frames;   /* gossip frames sent to nRF51 */
+/* Silent-drop counters — every way a P2P frame can die without a log line.
+ * Added for the 2026-07-19 radio-blackout triage: with these on both
+ * consoles, one side showing tx>0/rx_frames=0 while the other shows
+ * rx_frames>0 isolates which direction of the nRF51↔nRF51 link is dead. */
+static uint32_t g_ck_fail;     /* syslink checksum failures (any type)    */
+static uint32_t g_p2p_short;   /* P2P frames failing the length check     */
+static uint32_t g_q_drop;      /* valid P2P frames lost to a full queue   */
 
 void syslink_p2p_stats(uint32_t *rx_bytes, uint32_t *rx_frames, uint32_t *tx_frames)
 {
@@ -105,6 +112,38 @@ void syslink_p2p_stats(uint32_t *rx_bytes, uint32_t *rx_frames, uint32_t *tx_fra
     *rx_frames = g_rx_frames;
     *tx_frames = g_tx_frames;
 }
+
+/* ── Periodic counter log ────────────────────────────────────────────────── */
+/*
+ * Every 2 s, if anything changed, print one radio-health line.  This runs
+ * in ALL builds (including during the blocking auto-ID window — the system
+ * work queue keeps running through k_msleep), so radio triage never
+ * depends on application code remembering to ask.
+ */
+#define P2P_STATS_LOG_MS 2000
+
+static void stats_log_fn(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    static uint32_t last_tx, last_rxf, last_ck, last_short, last_drop;
+
+    if (g_tx_frames != last_tx || g_rx_frames != last_rxf ||
+        g_ck_fail != last_ck || g_p2p_short != last_short ||
+        g_q_drop != last_drop) {
+        LOG_INF("p2p: tx=%u rx_frames=%u rx_bytes=%u ck_fail=%u short=%u "
+                "q_drop=%u",
+                g_tx_frames, g_rx_frames, g_rx_bytes,
+                g_ck_fail, g_p2p_short, g_q_drop);
+        last_tx    = g_tx_frames;
+        last_rxf   = g_rx_frames;
+        last_ck    = g_ck_fail;
+        last_short = g_p2p_short;
+        last_drop  = g_q_drop;
+    }
+    k_work_schedule(dwork, K_MSEC(P2P_STATS_LOG_MS));
+}
+
+static K_WORK_DELAYABLE_DEFINE(stats_log_work, stats_log_fn);
 
 /* ── Syslink TX ──────────────────────────────────────────────────────────── */
 
@@ -241,14 +280,19 @@ static void syslink_rx_byte(uint8_t c)
         if (g_cka == g_ca && c == g_cb) {
             /* Valid frame.  If it is a P2P broadcast with a payload large
              * enough to contain a gossip frame, queue it. */
-            if (g_type == SYSLINK_RADIO_P2P_BROADCAST &&
-                g_len >= 2u + TAPESTRY_GOSSIP_WIRE_SIZE) {
-                /* nRF51 firmware (main.c:286) format:
-                 *   g_buf[0] = P2P port  (skip)
-                 *   g_buf[1] = RSSI      (skip — nRF51 inserts inter-drone RSSI)
-                 *   g_buf[2..] = raw gossip frame */
-                if (k_msgq_put(&rx_msgq, g_buf + 2u, K_NO_WAIT) == 0) {
-                    g_rx_frames++;
+            if (g_type == SYSLINK_RADIO_P2P_BROADCAST) {
+                if (g_len >= 2u + TAPESTRY_GOSSIP_WIRE_SIZE) {
+                    /* nRF51 firmware (main.c:286) format:
+                     *   g_buf[0] = P2P port  (skip)
+                     *   g_buf[1] = RSSI  (skip — nRF51 inserts inter-drone RSSI)
+                     *   g_buf[2..] = raw gossip frame */
+                    if (k_msgq_put(&rx_msgq, g_buf + 2u, K_NO_WAIT) == 0) {
+                        g_rx_frames++;
+                    } else {
+                        g_q_drop++;
+                    }
+                } else {
+                    g_p2p_short++;
                 }
             }
 #ifdef CONFIG_CF21BL_PM
@@ -257,6 +301,8 @@ static void syslink_rx_byte(uint8_t c)
                 cf21bl_pm_syslink_input(g_buf, g_len);
             }
 #endif
+        } else {
+            g_ck_fail++;
         }
         g_state = PARSE_MAGIC1;
         break;
@@ -312,6 +358,8 @@ static int syslink_init(void)
 #ifdef CONFIG_CF21BL_PM
     k_work_schedule(&pm_kick_work, K_NO_WAIT);
 #endif
+
+    k_work_schedule(&stats_log_work, K_MSEC(P2P_STATS_LOG_MS));
 
     LOG_INF("syslink P2P ready  channel=%u  queue=%u slots",
             CONFIG_TAPESTRY_P2P_CHANNEL, RX_QUEUE_DEPTH);

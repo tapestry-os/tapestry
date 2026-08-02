@@ -38,4 +38,31 @@ int gossip_drain(world_model_t *wm, element_id_t own_id);
  * Call once per cycle, immediately after gossip_drain completes. */
 void gossip_relay_flush(void);
 
+/* ── Auto-ID discovery (boot window only) ────────────────────────────────── */
+/* Medium-agnostic primitives behind transport_negotiate_id().  A discovery
+ * beacon is an ordinary gossip frame with id = ELEMENT_ID_INVALID and the
+ * hardware nonce in update_seq, so it travels over ANY transceiver.  On
+ * one-shot media (syslink P2P, UDP broadcast) the beacon must be re-sent
+ * periodically during the window; BLE additionally keeps it in the
+ * advertising payload between sends. */
+
+/* Transmit one discovery beacon carrying nonce via all transceivers. */
+void gossip_send_discovery(uint32_t nonce);
+
+/* Number of received frames that carried our OWN element id.  On non-BLE
+ * media a node cannot hear its own transmission, so a nonzero count means
+ * another element shares our identity (auto-ID collision) — its gossip is
+ * being silently dropped by the self-echo filter.  Monotonic since boot. */
+uint32_t gossip_own_id_frames(void);
+
+/* Drain all transceiver rx queues without a world model, splitting frames:
+ * discovery beacons (id == ELEMENT_ID_INVALID) append their nonce to
+ * nonces_out[0..max_nonces-1]; normal gossip frames mark claimed_out[id]
+ * true for id < max_id (already-running elements).  claimed_out must be a
+ * caller-zeroed bool array.  Returns the number of nonces written.
+ * Note: frames are consumed — do not interleave with gossip_drain() during
+ * the discovery window. */
+int gossip_drain_discovery(uint32_t *nonces_out, int max_nonces,
+                           bool *claimed_out, int max_id);
+
 #endif /* TAPESTRY_GOSSIP_H */

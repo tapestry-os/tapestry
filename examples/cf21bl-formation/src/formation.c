@@ -190,6 +190,94 @@ float demo_compute_drive(const world_model_t *wm,
     return min_dist_m;
 }
 
+/* ── Choreo tracking (see formation.h) ───────────────────────────────────── */
+
+float demo_choreo_track(const world_model_t *wm,
+                        const position_t *own_pos_m,
+                        demo_setpoint_t *target,
+                        float cmd_x, float cmd_y,
+                        uint32_t dt_ms,
+                        element_id_t own_id)
+{
+    float dt = (float)dt_ms * 0.001f;
+
+    /* Emergency repulsion + minimum-distance bookkeeping over fresh peers.
+     * Same constants and force convention as the spring field, but no
+     * attraction term — the L6 directive owns where we are going. */
+    float fx         = 0.0f;
+    float fy         = 0.0f;
+    float min_dist_m = -1.0f;
+
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (!e->is_active || e->is_self || e->is_stale) {
+            continue;
+        }
+
+        float dx   = e->state.position.x - own_pos_m->x;
+        float dy   = e->state.position.y - own_pos_m->y;
+        float dist = sqrtf(dx * dx + dy * dy);
+
+        if (min_dist_m < 0.0f || dist < min_dist_m) {
+            min_dist_m = dist;
+        }
+        if (dist < 0.01f) {
+            continue;   /* coincident reading — direction undefined */
+        }
+        if (dist < DEMO_MIN_SEP_M) {
+            float force = (DEMO_MIN_SEP_M - dist) * EMERGENCY_K;
+            fx -= force * (dx / dist);
+            fy -= force * (dy / dist);
+        }
+    }
+
+    /* Approach velocity toward the directive point.  ad/dt (not just the
+     * speed clamp) lets the target land exactly on cmd once close. */
+    float vx = fx * FORCE_TO_SPEED;
+    float vy = fy * FORCE_TO_SPEED;
+
+    float ax = cmd_x - target->x;
+    float ay = cmd_y - target->y;
+    float ad = sqrtf(ax * ax + ay * ay);
+    if (ad > 1e-6f) {
+        float speed = ad / dt;
+        if (speed > DEMO_MAX_SPEED_MPS) {
+            speed = DEMO_MAX_SPEED_MPS;
+        }
+        vx += (ax / ad) * speed;
+        vy += (ay / ad) * speed;
+    }
+
+    float v_mag = sqrtf(vx * vx + vy * vy);
+    if (v_mag > DEMO_MAX_SPEED_MPS) {
+        vx *= DEMO_MAX_SPEED_MPS / v_mag;
+        vy *= DEMO_MAX_SPEED_MPS / v_mag;
+    }
+
+    target->x = clampf(target->x + vx * dt, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
+    target->y = clampf(target->y + vy * dt, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
+
+    /* Same leash rationale as the spring field: never command further than
+     * the body can meaningfully chase. */
+    {
+        float lx = target->x - own_pos_m->x;
+        float ly = target->y - own_pos_m->y;
+        float ld = sqrtf(lx * lx + ly * ly);
+        if (ld > DEMO_TARGET_LEASH_M) {
+            target->x = own_pos_m->x + lx / ld * DEMO_TARGET_LEASH_M;
+            target->y = own_pos_m->y + ly / ld * DEMO_TARGET_LEASH_M;
+        }
+    }
+
+    LOG_DBG("id=%u choreo cmd=(%.2f,%.2f) tgt=(%.2f,%.2f) min_d=%.2f",
+            (unsigned)own_id,
+            (double)cmd_x, (double)cmd_y,
+            (double)target->x, (double)target->y,
+            (double)min_dist_m);
+
+    return min_dist_m;
+}
+
 /* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 
 void demo_set_leds(const world_model_t *wm)

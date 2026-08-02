@@ -59,6 +59,7 @@ int comms_init(comms_t *c, element_id_t element_id, uint16_t orch_port)
 void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
 {
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
     hdr->type        = TAPESTRY_MSG_GOSSIP;
     hdr->src_id      = own_state->id;
     hdr->payload_len = TAPESTRY_GOSSIP_FRAME_SIZE;
@@ -73,6 +74,7 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->energy_level  = own_state->energy_level;
     p->health_flags  = own_state->health_flags;
     p->hop_count     = 0;   /* relay not used in sim */
+    p->version       = TAPESTRY_WIRE_VERSION;
 
     struct sockaddr_in orch_addr;
     make_addr(&orch_addr, c->orch_port);
@@ -123,6 +125,7 @@ void comms_send_metric(const comms_t *c, const world_model_t *wm,
 
     /* ── Pack and send ── */
     tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
     hdr->type        = TAPESTRY_MSG_METRIC;
     hdr->src_id      = element_id;
     hdr->payload_len = TAPESTRY_METRIC_FRAME_SIZE;
@@ -174,6 +177,18 @@ int comms_drain_inbox(comms_t *c, world_model_t *wm,
 
         const tapestry_msg_header_t *hdr = (const tapestry_msg_header_t *)rx_buf;
         const uint8_t *payload           = rx_buf + TAPESTRY_MSG_HEADER_SIZE;
+
+        if (hdr->version != TAPESTRY_WIRE_VERSION) {
+            /* Reject rather than risk misinterpreting bytes laid out under
+             * a different schema.  Rate-limited: a peer/orchestrator on the
+             * wrong version stays wrong every cycle, not just once. */
+            static uint32_t mismatch_count;
+            if ((++mismatch_count % 20u) == 1u) {
+                LOG_WRN("wire version mismatch: src=%u wire=%u (%u frames)",
+                        hdr->src_id, hdr->version, mismatch_count);
+            }
+            continue;
+        }
 
         switch ((sim_msg_type_t)hdr->type) {
 
