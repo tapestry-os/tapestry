@@ -15,7 +15,10 @@
  * ║    ✗  Optimization across swarm (physics-aware planning, ML inference)   ║
  * ║       — except the EXCHANGE arc trajectory, a deliberately minimal       ║
  * ║       deconfliction rule (see TAPESTRY_BSE_INTENT_EXCHANGE below)        ║
- * ║    ✗  Simulation bridge (offline training / hardware-in-the-loop)        ║
+ * ║    ✓  Simulation bridge (hardware-in-the-loop) — this unmodified L6/L7   ║
+ * ║       stack runs against real Webots physics (examples/webots-formation/)║
+ * ║    ✗  Offline training / replay harness (RL-style training, logged-      ║
+ * ║       telemetry replay) — not yet built                                  ║
  * ║                                                                          ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *

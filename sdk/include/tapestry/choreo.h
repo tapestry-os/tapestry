@@ -25,12 +25,14 @@
  * ║  achievement predicate (choreo_goal_achieved), the install/configure/    ║
  * ║  deploy/terminate lifecycle stages (choreo_state_t below), and a TOML    ║
  * ║  script authoring/compiler toolchain (sdk/tools/choreoc.py — see         ║
- * ║  sdk/CHOREO_SCRIPTS.md).                                                 ║
+ * ║  sdk/CHOREO_SCRIPTS.md), and a hardware-in-the-loop simulation bridge    ║
+ * ║  (examples/webots-formation/ — this stack, unmodified, against real      ║
+ * ║  Webots physics).                                                       ║
  * ║  Absent: priority queues, preemption across goals, multi-Choreo          ║
  * ║  arbitration, the monitor stage's telemetry export (step/achieved state  ║
- * ║  is queryable locally but not published), and a simulation/replay        ║
- * ║  bridge beyond the Python engine's ad hoc tick-parity checks against     ║
- * ║  the C engine.                                                          ║
+ * ║  is queryable locally but not published), and an offline training/replay ║
+ * ║  harness (RL-style training, logged-telemetry replay — the Webots bridge ║
+ * ║  above is hardware-in-the-loop, not this).                               ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 

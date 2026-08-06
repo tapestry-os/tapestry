@@ -278,6 +278,14 @@ in identity negotiation, gossip delivery, and the exchange/landing interaction; 
 script on a single platform, not yet validated as broadly as L4/L5 above. See
 [`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md) for the current state.
 
+The same `change-partners` script also runs unmodified in simulation:
+[`examples/webots-formation/README.md`](examples/webots-formation/README.md) compiles the real
+L3-L7 stack into a Webots controller against simulated physics (no hardware required), with only an L1 substrate and L3 transceiver written
+for the sim. That example is a reusable pattern, and new elements can be added here:
+`controllers/common/`.
+Useful for iterating on swarm-scale behavior (elections, partitions, larger formations) faster and
+more cheaply than re-flying real drones between changes.
+
 ## License
 
 Tapestry is released under the [Apache 2.0 License](LICENSE).
