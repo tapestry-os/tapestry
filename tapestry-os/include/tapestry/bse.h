@@ -17,8 +17,13 @@
  * ║       deconfliction rule (see TAPESTRY_BSE_INTENT_EXCHANGE below)        ║
  * ║    ✓  Simulation bridge (hardware-in-the-loop) — this unmodified L6/L7   ║
  * ║       stack runs against real Webots physics (examples/webots-formation/)║
- * ║    ✗  Offline training / replay harness (RL-style training, logged-      ║
- * ║       telemetry replay) — not yet built                                  ║
+ * ║    ✓  Offline replay harness — capture per-tick L6/L7 inputs/outputs to  ║
+ * ║       CSV (examples/webots-formation/.../choreo_telemetry.h) and replay  ║
+ * ║       them through sdk/python/tapestry offline for tick-by-tick          ║
+ * ║       regression testing (sdk/tools/choreo_replay.py)                    ║
+ * ║    ✗  RL-style / ML training on captured telemetry — not built,          ║
+ * ║       long-horizon/deferred (the replay harness above is the capture+    ║
+ * ║       diff infrastructure prerequisite, not the training itself)         ║
  * ║                                                                          ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *

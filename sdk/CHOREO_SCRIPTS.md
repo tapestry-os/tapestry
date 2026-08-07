@@ -248,6 +248,27 @@ final positions match exactly between the two, which makes the Python SDK
 a legitimate way to rehearse a script (including multi-agent parity checks)
 before ever compiling it for hardware.
 
+That parity claim doesn't have to stay theoretical — `sdk/tools/choreo_replay.py`
+checks it against real recorded runs. Capture a Webots run's per-tick inputs
+and outputs to CSV (set `TAPESTRY_TELEMETRY_DIR`; see
+`examples/webots-formation/controllers/cf21bl/choreo_telemetry.h`), then
+replay that CSV through the Python engine and diff every tick:
+
+```sh
+python3 sdk/tools/choreo_replay.py \
+    --script examples/cf21bl-formation/change-partners.choreo.toml \
+    --telemetry /path/to/choreo_0.csv
+```
+
+A clean replay (0 divergences) means the C engine that produced the
+recording and the current Python engine agree tick-for-tick on real
+flight/simulation data, not just a bare script rehearsal. A divergence
+means either the recording is stale (script or engine changed since
+capture — re-record) or a genuine regression in `sdk/python/tapestry` vs.
+`tapestry-os/subsys/choreo`+`bse`. This is offline capture-and-replay
+infrastructure for regression testing, not ML training — see
+`tapestry/choreo.h`'s status banner for that distinction.
+
 ## Regeneration workflow
 
 1. Edit `<name>.choreo.toml`.
@@ -271,3 +292,7 @@ every run.
 - `examples/cf21bl-formation/change-partners.choreo.toml` — a
   flight-validated worked example (two-drone station swap) with a
   build+fly walkthrough in that example's own README.
+- `sdk/tools/choreo_replay.py` — the offline replay/regression harness;
+  run with `--help` or read its module docstring for CLI details.
+- `examples/webots-formation/controllers/cf21bl/choreo_telemetry.h` — the
+  per-tick CSV capture that feeds `choreo_replay.py`.

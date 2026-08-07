@@ -25,14 +25,19 @@
  * ║  achievement predicate (choreo_goal_achieved), the install/configure/    ║
  * ║  deploy/terminate lifecycle stages (choreo_state_t below), and a TOML    ║
  * ║  script authoring/compiler toolchain (sdk/tools/choreoc.py — see         ║
- * ║  sdk/CHOREO_SCRIPTS.md), and a hardware-in-the-loop simulation bridge    ║
+ * ║  sdk/CHOREO_SCRIPTS.md), a hardware-in-the-loop simulation bridge        ║
  * ║  (examples/webots-formation/ — this stack, unmodified, against real      ║
- * ║  Webots physics).                                                       ║
+ * ║  Webots physics), and an offline capture/replay harness (opt-in CSV      ║
+ * ║  capture of per-tick inputs/outputs — choreo_telemetry.h — replayed      ║
+ * ║  offline through sdk/python/tapestry and diffed tick-by-tick against     ║
+ * ║  the recording — sdk/tools/choreo_replay.py; see sdk/CHOREO_SCRIPTS.md's ║
+ * ║  "Parity" section).                                                      ║
  * ║  Absent: priority queues, preemption across goals, multi-Choreo          ║
- * ║  arbitration, the monitor stage's telemetry export (step/achieved state  ║
- * ║  is queryable locally but not published), and an offline training/replay ║
- * ║  harness (RL-style training, logged-telemetry replay — the Webots bridge ║
- * ║  above is hardware-in-the-loop, not this).                               ║
+ * ║  arbitration, the monitor stage's LIVE telemetry export (step/achieved   ║
+ * ║  state is queryable locally and capturable to CSV per above, but not     ║
+ * ║  published over the network), and RL-style/ML training on captured       ║
+ * ║  telemetry (the replay harness above is capture+diff infrastructure, a   ║
+ * ║  prerequisite — not the training itself, which stays long-horizon).      ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 

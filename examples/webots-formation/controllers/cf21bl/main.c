@@ -42,6 +42,7 @@
 #include "transceiver_udp_posix.h"
 #include "tracker.h"
 #include "choreo_script.h"
+#include "choreo_telemetry.h"
 
 /* Per-drone cruise altitude, staggered by element_id — same rationale as
  * cf21bl-formation (reduces downwash interaction), widened a bit beyond
@@ -118,6 +119,11 @@ int main(int argc, char **argv)
     printf("id=%u choreo \"%s\" loaded — %u steps, time bound %u s\n",
            (unsigned)element_id, CHOREO_NAME, (unsigned)CHOREO_SCRIPT_LEN,
            (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
+
+    /* Offline replay capture — see choreo_telemetry.h. NULL (no-op) unless
+     * TAPESTRY_TELEMETRY_DIR is set. */
+    choreo_telemetry_t *telemetry = choreo_telemetry_open(element_id);
+    uint32_t telemetry_tick = 0;
 
     scr_state_t scr_synth = {0};
     scr_synth.own_id       = element_id;
@@ -212,6 +218,12 @@ int main(int argc, char **argv)
 
             choreo_tick(&wm, &scr_synth);
 
+            const tapestry_bse_directive_t *dir = choreo_get_directive();
+            choreo_telemetry_write(telemetry, telemetry_tick,
+                                   (double)telemetry_tick * WM_CYCLE_MS / 1000.0,
+                                   &wm, &scr_synth, dir);
+            telemetry_tick++;
+
             if (choreo_script_step() != last_step) {
                 last_step = choreo_script_step();
                 printf("id=%u choreo step %d %s\n", (unsigned)element_id, last_step,
@@ -225,7 +237,6 @@ int main(int argc, char **argv)
                 break;
             }
 
-            const tapestry_bse_directive_t *dir = choreo_get_directive();
             bool self_referential = choreo_current_goal_type() == CHOREO_GOAL_HOLD;
             float min_dist_m = -1.0f;
             if (dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
@@ -308,5 +319,6 @@ int main(int argc, char **argv)
         }
     }
 
+    choreo_telemetry_close(telemetry);
     return 0;
 }

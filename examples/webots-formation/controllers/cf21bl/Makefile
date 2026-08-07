@@ -31,6 +31,7 @@ COMMON            = ../common
 C_SOURCES = main.c \
             substrate_webots.c \
             pid_controller.c \
+            choreo_telemetry.c \
             $(COMMON)/transceiver_udp_posix.c \
             $(COMMON)/tracker.c \
             $(TAPESTRY_OS)/subsys/csm/world_model.c \

@@ -164,6 +164,35 @@ line (`... pos=(x,y) tgt=(x,y) goal=(x,y) ... step=N q=H`) — `pos` should visi
 approach `goal` each second, and `q` should read `H` (healthy quorum) once every drone
 is gossiping (`peers N-1/N-1`).
 
+## Telemetry capture / offline replay
+
+Set `TAPESTRY_TELEMETRY_DIR` before launching Webots to record each drone's
+per-tick L6/L7 inputs and outputs (position, wm_entries snapshot, quorum,
+script step, directive, achievement) to `<dir>/choreo_<element_id>.csv` —
+see `controllers/cf21bl/choreo_telemetry.h`. Unset (the default), this is a
+complete no-op — no file, no overhead.
+
+```sh
+mkdir -p /tmp/telemetry
+TAPESTRY_TELEMETRY_DIR=/tmp/telemetry \
+  /Applications/Webots.app/Contents/MacOS/webots --mode=fast --batch --minimize \
+  --stdout --stderr worlds/change_partners.wbt
+```
+
+Replay a captured CSV through the Python L6/L7 engine offline (no Webots, no
+C build) and diff every tick against the recording — a regression test for
+`sdk/python/tapestry` against real captured flight data, not just a bare
+script rehearsal:
+
+```sh
+python3 ../../sdk/tools/choreo_replay.py \
+    --script ../cf21bl-formation/change-partners.choreo.toml \
+    --telemetry /tmp/telemetry/choreo_0.csv
+```
+
+See sdk/CHOREO_SCRIPTS.md's "Parity" section for what a clean replay (0
+divergences) actually establishes.
+
 ## Known limitations
 
 Deliberate simplifications versus the hardware version:
