@@ -712,6 +712,7 @@ int main(void)
             was_up = quorum_up;
 
             choreo_tick(&wm, &scr_synth);
+            own_state.goal_achieved = choreo_goal_achieved();
 
             static int last_step = -2;
             if (choreo_script_step() != last_step) {

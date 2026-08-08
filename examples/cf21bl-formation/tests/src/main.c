@@ -620,4 +620,233 @@ ZTEST(choreo_script, test_hold_is_coordinate_free)
                  "hold is trivially achieved (duration governs)");
 }
 
+/* ── FORM shapes + MOVE offset-preserving translation ─────────────────────── */
+
+ZTEST(choreo_script, test_form_shape_line)
+{
+    /* 3 elements, radius=3 target=(10,10): evenly spaced on X,
+     * spanning [target.x - radius, target.x + radius]. */
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
+        .target = { 10.0f, 10.0f },
+        .radius = 3.0f,
+        .shape  = TAPESTRY_BSE_SHAPE_LINE,
+    };
+    const float expect_x[3] = { 7.0f, 10.0f, 13.0f };
+
+    for (int rank = 0; rank < 3; rank++) {
+        choreo_init((element_id_t)rank);
+        zassert_equal(choreo_submit_goal(&goal), 0, "submit failed");
+
+        wm_reset();
+        wm_set_self(rank, (element_id_t)rank, 0.0f, 0.0f);
+        for (int i = 0; i < 3; i++) {
+            if (i != rank) {
+                wm_set_peer(i, 0.0f, 0.0f, false);   /* id = slot = i */
+            }
+        }
+
+        scr_state_t scr = { 0 };
+        scr.quorum_state = SCR_QUORUM_HEALTHY;
+        choreo_tick(&wm, &scr);
+
+        const tapestry_bse_directive_t *d = choreo_get_directive();
+        zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                      "form line must move");
+        zassert_within(d->target.x, expect_x[rank], EPS,
+                       "rank %d line x", rank);
+        zassert_within(d->target.y, 10.0f, EPS, "rank %d line y", rank);
+    }
+}
+
+ZTEST(choreo_script, test_form_shape_grid)
+{
+    /* 4 elements, radius=2 (cell spacing), target=(0,0): 2x2 grid,
+     * corners at (+-1, +-1). */
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
+        .target = { 0.0f, 0.0f },
+        .radius = 2.0f,
+        .shape  = TAPESTRY_BSE_SHAPE_GRID,
+    };
+    const float expect_x[4] = { -1.0f, 1.0f, -1.0f, 1.0f };
+    const float expect_y[4] = { -1.0f, -1.0f, 1.0f, 1.0f };
+
+    for (int rank = 0; rank < 4; rank++) {
+        choreo_init((element_id_t)rank);
+        zassert_equal(choreo_submit_goal(&goal), 0, "submit failed");
+
+        wm_reset();
+        for (int i = 0; i < 4; i++) {
+            if (i == rank) {
+                wm_set_self(i, (element_id_t)i, 0.0f, 0.0f);
+            } else {
+                wm_set_peer(i, 0.0f, 0.0f, false);   /* id = slot = i */
+            }
+        }
+
+        scr_state_t scr = { 0 };
+        scr.quorum_state = SCR_QUORUM_HEALTHY;
+        choreo_tick(&wm, &scr);
+
+        const tapestry_bse_directive_t *d = choreo_get_directive();
+        zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                      "form grid must move");
+        zassert_within(d->target.x, expect_x[rank], EPS,
+                       "rank %d grid x", rank);
+        zassert_within(d->target.y, expect_y[rank], EPS,
+                       "rank %d grid y", rank);
+    }
+}
+
+ZTEST(choreo_script, test_move_preserves_offset)
+{
+    /* Self at (0,0), peer at (2,0): centroid (1,0), self offset (-1,0).
+     * MOVE to (10,10) must land self at (9,10) — NOT at (10,10), which is
+     * what CONVERGE would do. */
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_MOVE,
+        .target = { 10.0f, 10.0f },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_goal(&goal), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 2.0f, 0.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "move must move");
+    zassert_within(d->target.x, 9.0f, EPS, "move offset x");
+    zassert_within(d->target.y, 10.0f, EPS, "move offset y");
+
+    /* Offset is captured once at activation — simulate physical drift and
+     * confirm the commanded point does not re-derive from the new
+     * position (mirrors the HOLD/EXCHANGE capture-once contract). */
+    wm_set_self(0, 0, 5.0f, 5.0f);
+    wm_set_peer(1, 2.0f, 0.0f, false);
+    choreo_tick(&wm, &scr);
+    d = choreo_get_directive();
+    zassert_within(d->target.x, 9.0f, EPS, "move offset must stay captured");
+    zassert_within(d->target.y, 10.0f, EPS, "move offset must stay captured");
+}
+
+ZTEST(choreo_script, test_converge_collapses_to_target)
+{
+    /* Regression guard: CONVERGE (unlike MOVE) still sends every element
+     * to the identical point regardless of starting offset. */
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_CONVERGE,
+        .target = { 5.0f, 5.0f },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_goal(&goal), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 2.0f, 0.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 5.0f, EPS, "converge x");
+    zassert_within(d->target.y, 5.0f, EPS, "converge y");
+}
+
+/* ── Collective achievement (scope = all) ──────────────────────────────────── */
+
+ZTEST(choreo_script, test_scope_all_waits_for_peer_achievement)
+{
+    /* HOLD is trivially self-achieved, so with scope=all the ONLY thing
+     * gating advance is the peer's gossiped achieved bit (simulated here
+     * by writing wm.entries[1].state.goal_achieved directly — on the wire
+     * this arrives via the gossip frame's 'achieved' field). */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 60000, .advance_on_achieved = true,
+          .scope = CHOREO_SCOPE_ALL },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm.entries[1].state.goal_achieved = false;
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    for (int i = 0; i < 20; i++) {
+        choreo_tick(&wm, &scr);
+        zassert_false(choreo_script_complete(),
+                      "must not advance while a fresh peer is unachieved");
+    }
+
+    wm.entries[1].state.goal_achieved = true;
+    choreo_tick(&wm, &scr);
+    zassert_true(choreo_script_complete(),
+                 "must advance once every fresh peer is achieved");
+}
+
+ZTEST(choreo_script, test_scope_all_vacuous_when_solo)
+{
+    /* No fresh peers to disagree — scope=all must not deadlock a lone
+     * survivor. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 60000, .advance_on_achieved = true,
+          .scope = CHOREO_SCOPE_ALL },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_script_complete(),
+                 "scope=all must be vacuously true with no fresh peers");
+}
+
+ZTEST(choreo_script, test_scope_all_ignores_stale_peer)
+{
+    /* A stale (non-fresh) peer's achieved bit is not gossip we can trust —
+     * it must not block the collective predicate. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 60000, .advance_on_achieved = true,
+          .scope = CHOREO_SCOPE_ALL },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, /* stale = */ true);
+    wm.entries[1].state.goal_achieved = false;
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_script_complete(),
+                 "a stale peer's unachieved bit must not block scope=all");
+}
+
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

@@ -81,13 +81,16 @@ What the steps mean:
    (from the L4 world model — nothing is prescribed); with `path =
    "direct"` the commanded target beelines straight to the destination
    (~4 s for a 1 m swap), safe here because altitude staggering
-   deconflicts the crossing vertically.  Advances on the L6 achievement
-   predicate (within `eps` of the destination for `settle` — 25 cm / 3 s
-   by default), with a 30 s timeout as the robustness net — if lighthouse
-   jitter keeps achievement from ever firing, the show still ends cleanly.
-3. `hold` (8 s, the "bow") — settle on the new stations.  Achievement is
-   per-drone, so this beat keeps the first finisher airborne (and
-   gossiping) until its partner also finishes.
+   deconflicts the crossing vertically.  Advances on the **collective**
+   achievement predicate (`scope = "all"` — within `eps` of the
+   destination for `settle`, 25 cm / 3 s by default, AND its gossiped peer
+   reports the same), with a 30 s timeout as the robustness net — if
+   lighthouse jitter keeps achievement from ever firing, the show still
+   ends cleanly. `scope = "all"` is also what keeps the first finisher
+   airborne and gossiping until its partner catches up: its own step
+   won't advance until the collective predicate is true.
+3. `hold` (8 s, the "bow") — a deliberate settle beat on the new stations
+   before landing, not a sync mechanism (that's `scope = "all"` above).
 
 The script never says "take off", "land", or any altitude: script
 completion → directive IDLE → **quiescence**, which this platform maps to

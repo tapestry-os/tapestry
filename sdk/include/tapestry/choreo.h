@@ -16,21 +16,26 @@
  * └─────────────────────────────────────────┘
  *
  * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║  STUB IMPLEMENTATION — NOT FOR PRODUCTION USE                            ║
+ * ║  v1.0 FEATURE SCOPE                                                      ║
  * ║                                                                          ║
- * ║  The stub backing (tapestry-os/subsys/choreo/choreo.c) delegates to      ║
- * ║  tapestry-os/subsys/bse/bse.c.                                           ║
- * ║  Implemented: single goals, linear goal SCRIPTS (choreo_submit_script)  ║
- * ║  with per-step timeout / advance-on-achieved, the minimal L6             ║
- * ║  achievement predicate (choreo_goal_achieved), the install/configure/    ║
- * ║  deploy/terminate lifecycle stages (choreo_state_t below), and a TOML    ║
- * ║  script authoring/compiler toolchain (sdk/tools/choreoc.py — see         ║
- * ║  sdk/CHOREO_SCRIPTS.md).                                                 ║
- * ║  Absent: priority queues, preemption across goals, multi-Choreo          ║
- * ║  arbitration, the monitor stage's telemetry export (step/achieved state  ║
- * ║  is queryable locally but not published), and a simulation/replay        ║
- * ║  bridge beyond the Python engine's ad hoc tick-parity checks against     ║
- * ║  the C engine.                                                          ║
+ * ║  The backing implementation (tapestry-os/subsys/choreo/choreo.c)         ║
+ * ║  delegates to tapestry-os/subsys/bse/bse.c.  Open-core (public):         ║
+ * ║  single goals, linear goal SCRIPTS (choreo_submit_script) with           ║
+ * ║  per-step timeout / advance-on-achieved, the L6 achievement predicate    ║
+ * ║  (choreo_goal_achieved) and its scope=all collective aggregation         ║
+ * ║  (choreo_collective_achieved — see choreo_achieve_scope_t below), the    ║
+ * ║  install/configure/deploy/terminate lifecycle stages (choreo_state_t     ║
+ * ║  below), and a TOML script authoring/compiler toolchain                  ║
+ * ║  (sdk/tools/choreoc.py — see sdk/CHOREO_SCRIPTS.md).                     ║
+ * ║                                                                          ║
+ * ║  Deliberately out of the open-core tier (licensing boundary, not a       ║
+ * ║  gap to close in this header): priority queues, preemption across        ║
+ * ║  goals, multi-Choreo arbitration, the monitor stage's telemetry export   ║
+ * ║  (step/achieved state is queryable locally but not published), the       ║
+ * ║  scope=all barrier/lockstep upgrade (design doc v0.2 §8.5's              ║
+ * ║  `barrier = true` — scope=all here is eventually consistent, not a       ║
+ * ║  synchronization guarantee), and a simulation/replay bridge beyond the   ║
+ * ║  Python engine's ad hoc tick-parity checks against the C engine.         ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -148,7 +153,8 @@ typedef struct {
 /*
  * The paper's Choreo is a collection of Goals; this is its minimal linear
  * form — no priorities, no preemption.  Each step runs until:
- *   - its goal is achieved (if advance_on_achieved), or
+ *   - its goal is achieved (if advance_on_achieved — scope decides whose
+ *     achievement counts, see choreo_achieve_scope_t below), or
  *   - max_duration_ms elapses (if nonzero) — the timeout doubles as the
  *     step duration for steps that advance on time alone (e.g. HOLD 30 s).
  * A step with advance_on_achieved=false and max_duration_ms=0 never
@@ -158,10 +164,39 @@ typedef struct {
  * When the last step completes the script terminates: directive IDLE —
  * the quiescence signal (see the goal-family comment above).
  */
+
+/*
+ * choreo_achieve_scope_t — whose achievement gates an advance_on_achieved
+ * step (design doc v0.2 §8.5, the Tier-1 "achieved-bit" item):
+ *
+ *   CHOREO_SCOPE_SELF  (default, zero value) — this element's own
+ *                      achievement only (choreo_goal_achieved()).  This is
+ *                      all that existed before scope was added, so it is
+ *                      the zero-initialized behavior of every existing
+ *                      choreo_step_t.
+ *   CHOREO_SCOPE_ALL   — the collective predicate: this element's own
+ *                      achievement AND every fresh active peer's gossiped
+ *                      achieved bit (choreo_collective_achieved()).
+ *                      Eventually consistent — a peer's achieved bit is
+ *                      only as fresh as its last gossip frame, and a
+ *                      solo element (no fresh peers) is vacuously "all
+ *                      achieved" so it cannot deadlock alone.  This is
+ *                      NOT a barrier/lockstep guarantee — different
+ *                      elements can observe "all achieved" on different
+ *                      ticks, bounded by gossip latency.  The lockstep
+ *                      upgrade (design doc's `barrier = true`) is not
+ *                      implemented.
+ */
+typedef enum {
+    CHOREO_SCOPE_SELF = 0,
+    CHOREO_SCOPE_ALL  = 1,
+} choreo_achieve_scope_t;
+
 typedef struct {
-    choreo_goal_t goal;
-    uint32_t      max_duration_ms;      /* 0 = no timeout                   */
-    bool          advance_on_achieved;  /* advance when bse_goal_achieved() */
+    choreo_goal_t          goal;
+    uint32_t               max_duration_ms;     /* 0 = no timeout                   */
+    bool                   advance_on_achieved; /* advance when achieved (scope-gated) */
+    choreo_achieve_scope_t scope;                /* whose achievement counts; 0=SELF */
 } choreo_step_t;
 
 /* ── SDK API ──────────────────────────────────────────────────────────────── */
@@ -260,6 +295,16 @@ bool choreo_script_complete(void);
  * predicate for the currently executing goal (see bse_goal_achieved()).
  */
 bool choreo_goal_achieved(void);
+
+/*
+ * choreo_collective_achieved — The scope=all achievement predicate (see
+ * choreo_achieve_scope_t): true when choreo_goal_achieved() is true AND
+ * every fresh, active, non-self entry in wm has its gossiped achieved bit
+ * set.  Vacuously true with no fresh peers (a solo element cannot deadlock
+ * on a scope=all step).  Eventually consistent — bounded by gossip
+ * latency, not a synchronization barrier.
+ */
+bool choreo_collective_achieved(const world_model_t *wm);
 
 /*
  * choreo_cancel_goal — Cancel the current goal and return to IDLE.

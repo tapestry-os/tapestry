@@ -1,15 +1,17 @@
 /*
- * bse.c — Tapestry L6 Behavior Synthesis Engine (STUB)
+ * bse.c — Tapestry L6 Behavior Synthesis Engine
  *
- * NOT FOR PRODUCTION USE.  See bse.h for the full interface contract and
- * a description of which BSE tiers are absent from this implementation.
+ * See bse.h for the full interface contract and v1.0 feature scope (what's
+ * open-core here vs. deliberately licensed-tier).
  *
- * What this stub does:
+ * What this implements:
  *   - Intent parsing: reads the active intent type.
  *   - Task decomposition (FORM): maps the FORM goal to per-element vertex
- *     assignments — a regular N-gon centered on intent.target, N = active
- *     fresh element count.  Each element independently derives its own
- *     vertex from its peer-rank ordinal; no coordination messages needed.
+ *     assignments, N = active fresh element count, using intent.shape:
+ *     CIRCLE (regular N-gon), LINE (evenly spaced on the X axis), or GRID
+ *     (near-square rows/cols, radius as cell spacing) — all centered on
+ *     intent.target.  Each element independently derives its own vertex
+ *     from its peer-rank ordinal; no coordination messages needed.
  *   - Task decomposition (EXCHANGE): rotate stations by slot_shift around
  *     the ID-sorted participant ring, over a SNAPSHOT of positions captured
  *     at activation; the commanded target travels a CCW arc about the
@@ -17,20 +19,24 @@
  *   - HOLD: captures own position at activation and station-keeps there.
  *   - Feedback controller (minimal): achievement predicate — own position
  *     within achieve_eps of the goal point for achieve_hold_ms.
- *   - For MOVE / CONVERGE: emits MOVE_TO_POINT to intent.target for all
- *     elements (no formation-relative offset; stub limitation).  Do not
- *     build on MOVE ≡ CONVERGE: per SDK design v0.2 §4, MOVE becomes
- *     offset-preserving translation of the current configuration
- *     (shape + drift), not all-to-point.
+ *   - For MOVE: offset-preserving translation (design v0.2 §4) — the
+ *     formation's shape is preserved while its centroid travels to
+ *     intent.target (own offset from the participant centroid is snapshot
+ *     at activation).  A solo element has zero offset, so MOVE degenerates
+ *     to CONVERGE — correct, there is nothing to preserve.
+ *   - For CONVERGE: emits MOVE_TO_POINT to intent.target for all elements
+ *     (deliberately collapses the formation — this is the "gather" goal).
  *   - For DISPERSE: emits MAINTAIN_SPRING with intent.radius as spacing.
  *   - For IDLE / unknown: emits IDLE.
  *
- * What this stub does NOT do:
+ * What this does NOT do:
  *   - Optimization across swarm (physics-aware planning, ML inference) —
  *     the EXCHANGE arc is a fixed geometric deconfliction rule, not a
- *     planner.
+ *     planner.  Licensed-tier scope, not a gap to fill here.
  *   - Path planning or obstacle avoidance.
- *   - Collective achievement barriers (achievement is own-goal only).
+ *   - Collective achievement aggregation: bse_goal_achieved() is own-goal
+ *     only by design — the scope=all aggregation across peers is L7's
+ *     job (choreo_collective_achieved() in choreo.c), one layer up.
  */
 
 #include <tapestry/bse.h>
@@ -65,6 +71,11 @@ static float               s_ex_dtheta;     /* total CCW angle to travel      */
 static float               s_ex_r0;         /* own start radius               */
 static float               s_ex_r1;         /* destination radius             */
 static float               s_ex_progress;   /* radians travelled so far       */
+
+/* ── MOVE offset capture (shape + drift translation) ─────────────────────── */
+
+static bool                s_move_captured;
+static tapestry_position_t s_move_offset;   /* own anchor - snapshot centroid */
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
@@ -236,6 +247,7 @@ void bse_init(element_id_t self_id)
     s_achieve_accum_ms = 0;
     s_hold_captured    = false;
     s_ex_captured      = false;
+    s_move_captured    = false;
 }
 
 int bse_submit_intent(const tapestry_bse_intent_t *intent)
@@ -251,6 +263,7 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
     s_achieve_accum_ms = 0;
     s_hold_captured    = false;
     s_ex_captured      = false;
+    s_move_captured    = false;
 
     /* An IDLE intent (quiescence) takes effect immediately, not at the next
      * tick — choreo_terminate() submits it and then stops ticking the BSE,
@@ -263,7 +276,7 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
 
 void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 {
-    (void)scr;   /* stub does not use SCR role for directive synthesis */
+    (void)scr;   /* not used for directive synthesis in this implementation */
 
     s_goal_pt_valid = false;
 
@@ -377,19 +390,90 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             break;
         }
 
-        float angle = 2.0f * BSE_PI * (float)rank / (float)count;
-        s_directive.type     = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
-        s_directive.target.x = s_intent.target.x + s_intent.radius * cosf(angle);
-        s_directive.target.y = s_intent.target.y + s_intent.radius * sinf(angle);
-        s_goal_pt            = s_directive.target;
-        s_goal_pt_valid      = true;
+        tapestry_position_t tgt;
+        switch (s_intent.shape) {
+        case TAPESTRY_BSE_SHAPE_LINE: {
+            /* Evenly spaced along the X axis, centered on intent.target,
+             * spanning [-radius, +radius]. */
+            if (count > 1) {
+                float step = (2.0f * s_intent.radius) / (float)(count - 1);
+                tgt.x = s_intent.target.x - s_intent.radius + step * (float)rank;
+            } else {
+                tgt.x = s_intent.target.x;
+            }
+            tgt.y = s_intent.target.y;
+            break;
+        }
+        case TAPESTRY_BSE_SHAPE_GRID: {
+            /* Near-square layout; radius reused as cell spacing. */
+            int cols = (int)ceilf(sqrtf((float)count));
+            int rows = (int)ceilf((float)count / (float)cols);
+            int col  = rank % cols;
+            int row  = rank / cols;
+            tgt.x = s_intent.target.x
+                    + ((float)col - 0.5f * (float)(cols - 1)) * s_intent.radius;
+            tgt.y = s_intent.target.y
+                    + ((float)row - 0.5f * (float)(rows - 1)) * s_intent.radius;
+            break;
+        }
+        case TAPESTRY_BSE_SHAPE_CIRCLE:
+        default: {
+            float angle = 2.0f * BSE_PI * (float)rank / (float)count;
+            tgt.x = s_intent.target.x + s_intent.radius * cosf(angle);
+            tgt.y = s_intent.target.y + s_intent.radius * sinf(angle);
+            break;
+        }
+        }
+
+        s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
+        s_directive.target = tgt;
+        s_goal_pt           = s_directive.target;
+        s_goal_pt_valid     = true;
         break;
     }
 
-    case TAPESTRY_BSE_INTENT_MOVE:
+    case TAPESTRY_BSE_INTENT_MOVE: {
+        /*
+         * Offset-preserving translation (design doc v0.2 §4): "move" is
+         * shape + drift, not collapse-to-point.  On activation, snapshot
+         * this element's own offset from the participant centroid; every
+         * tick after that the commanded point is intent.target displaced
+         * by that same offset, so the formation's relative geometry is
+         * preserved while its centroid travels to intent.target.  A solo
+         * element has offset (0,0) — MOVE degenerates to CONVERGE, which
+         * is correct: there is no formation to preserve.
+         */
+        if (!s_move_captured) {
+            element_id_t        ids[MAX_ELEMENTS];
+            tapestry_position_t pos[MAX_ELEMENTS];
+            int                 rank;
+            int count = collect_participants(wm, ids, pos, &rank);
+            if (rank < 0 || count == 0) {
+                s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
+                break;
+            }
+            float cx = 0.0f, cy = 0.0f;
+            for (int i = 0; i < count; i++) {
+                cx += pos[i].x;
+                cy += pos[i].y;
+            }
+            cx /= (float)count;
+            cy /= (float)count;
+            s_move_offset.x = pos[rank].x - cx;
+            s_move_offset.y = pos[rank].y - cy;
+            s_move_captured = true;
+        }
+        s_directive.type     = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
+        s_directive.target.x = s_intent.target.x + s_move_offset.x;
+        s_directive.target.y = s_intent.target.y + s_move_offset.y;
+        s_goal_pt             = s_directive.target;
+        s_goal_pt_valid       = true;
+        break;
+    }
+
     case TAPESTRY_BSE_INTENT_CONVERGE:
-        /* Stub: move every element to the same target point.
-         * A physics-aware planner would compute formation-relative offsets. */
+        /* All elements gather at the identical point — deliberately
+         * different from MOVE (see above), which preserves formation. */
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
         s_directive.target = s_intent.target;
         s_goal_pt          = s_intent.target;

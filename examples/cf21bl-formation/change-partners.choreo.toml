@@ -21,21 +21,26 @@ hold = { duration = "10s", requires = ["locomotion"] }
 # this platform because deconfliction is VERTICAL (ID-staggered altitudes),
 # and much faster than the default centroid arc (~4 s vs ~21 s for a 1 m
 # swap).  Keep the default arc on platforms with no vertical dimension.
-# Advances as soon as the drone has settled within eps of its destination
-# for the settle time; the timeout is the robustness net if achievement
-# never fires.
+# Advances once BOTH drones have settled within eps of their own
+# destination for the settle time (scope="all" — the achieved-bit is
+# gossiped and aggregated, see choreo_collective_achieved()); the timeout
+# is the robustness net if achievement never fires on one side. scope="all"
+# is also what keeps the first-finisher airborne and gossiping until its
+# partner catches up: its own exchange step won't advance (so it won't
+# suspend/stop gossiping) until the collective predicate is true.
 [[steps]]
 [steps.exchange]
 until    = "achieved"
+scope    = "all"
 timeout  = "30s"
 path     = "direct"
 eps      = "25cm"
 settle   = "3s"
 requires = ["locomotion"]
 
-# Bow: settle on the new stations.  Achievement is per-drone, so this beat
-# keeps the first finisher airborne (and gossiping) until its partner also
-# finishes — without it, the early finisher would rest and suspend its
-# partner mid-maneuver via quorum loss.
+# Bow: a deliberate settle beat on the new stations before landing. NOT a
+# sync workaround anymore — scope="all" above already guarantees neither
+# drone reaches this step until both have swapped, so this is purely a
+# short hover-together beat before quiescence.
 [[steps]]
 hold = { duration = "8s", requires = ["locomotion"] }

@@ -151,6 +151,7 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
         .energy_level  = own_state->energy_level,
         .health_flags  = own_state->health_flags,
         .hop_count     = IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u,
+        .achieved      = own_state->goal_achieved ? 1u : 0u,
         .version       = TAPESTRY_WIRE_VERSION,
     };
 
@@ -231,6 +232,7 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
             received.update_seq      = g->update_seq;
             received.energy_level    = g->energy_level;
             received.health_flags    = g->health_flags;
+            received.goal_achieved   = (g->achieved != 0);
 
             wm_receive_gossip(wm, &received);
             total++;
