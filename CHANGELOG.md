@@ -5,6 +5,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Collective achievement (`scope = "all"`)** — each element now gossips
+  an `achieved` bit every cycle (`tapestry_gossip_frame_t` gains an
+  `achieved` field, a wire-compatible append — no `TAPESTRY_WIRE_VERSION`
+  bump), aggregated via `choreo_collective_achieved()`. `choreo_step_t`
+  and Choreo-script TOML gain `scope = "self"|"all"` (default `"self"`,
+  existing scripts unaffected). `examples/cf21bl-formation`'s exchange
+  step now uses `scope = "all"`, replacing the bow step's former role as
+  an implicit per-drone-achievement workaround (the bow step itself is
+  kept, now purely as a settle-before-landing beat)
+- ztest coverage (native_sim, `examples/cf21bl-formation/tests`) for
+  `FORM` shapes, `MOVE` translation, and `scope = "all"` collective
+  achievement (including solo/vacuous-truth and stale-peer cases)
+
+### Changed
+- **`sdk/README.md`, `choreo.h`, `bse.h`, `bse.c`, `choreo.c`, and their
+  Python mirrors** — "NOT FOR PRODUCTION USE" / "STUB IMPLEMENTATION"
+  banners replaced with an itemized v1.0 feature-scope statement: what's
+  implemented (open-core) vs. deliberately deferred to the licensed tier
+
+### Fixed
+- **`FORM` shape** — `shape = "line"` and `"grid"` were accepted and
+  silently rendered a circle regardless; both now produce the requested
+  layout (`bse.c`/`bse.py`)
+- **`MOVE`** — previously identical to `CONVERGE` (collapsed every
+  element onto the same point); now offset-preserving formation
+  translation (design doc v0.2 §4) — each element keeps its position
+  relative to the formation centroid. A solo element still degenerates to
+  `CONVERGE`, correctly, since there is no formation to preserve
+- **`tapestry-scr-hw`'s movement loop** — drove `substrate_move()` from
+  raw SCR role/quorum and never read `choreo_get_directive()`, so L6/L7
+  output reached an airframe only via `examples/cf21bl-formation`. This
+  reference element's actuation is now directive-driven (SCR quorum still
+  gates safety, role still tiers speed)
+
 ## [0.8.0] — 2026-08-01
 
 ### Added

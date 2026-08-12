@@ -45,6 +45,14 @@ Common parameters:
     eps                  achievement radius — "25cm", "0.25m", "250mm",
                          "500um", or bare meters.
     settle               achievement sustain time — duration syntax.
+    scope = "self"|"all" whose achievement gates until = "achieved"
+                         (default "self"). "all" advances only once this
+                         element AND every fresh peer have achieved
+                         (aggregated from gossiped state — eventually
+                         consistent, not a synchronization barrier; see
+                         choreo_collective_achieved() in choreo.h). Only
+                         valid alongside until = "achieved"; not allowed
+                         on hold (which never carries until either).
     requires             list of capability names:
                          ["locomotion", "bonding", "sensing", "signaling"]
 
@@ -67,7 +75,6 @@ Consumers:
           choreo.submit_script(load_steps("change-partners.choreo.toml"))
 """
 
-import sys
 import tomllib
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -102,16 +109,18 @@ SHAPES = {
 _KNOWN_PARAMS = {
     "hold":     {"duration", "timeout", "until", "eps", "settle", "requires"},
     "exchange": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "shift", "path"},
+                 "scope", "shift", "path"},
     "form":     {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "target", "radius", "shape"},
+                 "scope", "target", "radius", "shape"},
     "move":     {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "target"},
+                 "scope", "target"},
     "converge": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "target"},
+                 "scope", "target"},
     "disperse": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "radius"},
+                 "scope", "radius"},
 }
+
+SCOPES = {"self": 0, "all": 1}
 
 
 class ScriptError(ValueError):
@@ -124,6 +133,7 @@ class NormalizedStep:
     goal:                str
     max_duration_ms:     int
     advance_on_achieved: bool = False
+    scope:               int = 0   # CHOREO_SCOPE_SELF (0) / CHOREO_SCOPE_ALL (1)
     slot_shift:          Optional[int] = None
     direct_path:         bool = False
     achieve_eps:         Optional[float] = None
@@ -235,13 +245,6 @@ def _parse_step(index: int, table: dict) -> NormalizedStep:
                 f"tick), so hold steps are duration-governed; these "
                 f"parameters are reserved for scoped achievement "
                 f"(design doc v0.2 §8.5)")
-    if goal == "move":
-        print(f"warning: {where}: 'move' currently behaves identically to "
-              f"'converge' (all elements to the target, no formation-offset "
-              f"preservation); its semantics will change to offset-"
-              f"preserving translation (design doc v0.2 §4) — use "
-              f"'converge' if gathering at the target is what is intended",
-              file=sys.stderr)
     if "duration" in params and "timeout" in params:
         raise ScriptError(f"{where}: give either 'duration' or 'timeout', "
                           f"not both (they are the same time bound)")
@@ -261,6 +264,16 @@ def _parse_step(index: int, table: dict) -> NormalizedStep:
             raise ScriptError(f"{where}: until = {until!r} — the only "
                               f"supported value is \"achieved\"")
         step.advance_on_achieved = True
+
+    if "scope" in params:
+        if not step.advance_on_achieved:
+            raise ScriptError(f"{where}: 'scope' has no effect without "
+                              f"until = \"achieved\"")
+        scope = params["scope"]
+        if scope not in SCOPES:
+            raise ScriptError(f"{where}: scope must be \"self\" (default) "
+                              f"or \"all\", got {scope!r}")
+        step.scope = SCOPES[scope]
 
     if "eps" in params:
         step.achieve_eps = parse_length_m(params["eps"], where)
@@ -371,7 +384,8 @@ def to_choreo_steps(script: ChoreoScript) -> List[ChoreoStep]:
         goal.required_caps = s.required_caps
         out.append(ChoreoStep(goal=goal,
                               max_duration_ms=s.max_duration_ms,
-                              advance_on_achieved=s.advance_on_achieved))
+                              advance_on_achieved=s.advance_on_achieved,
+                              scope=s.scope))
     return out
 
 

@@ -142,6 +142,7 @@ int main(void)
 
         /* 5. Choreo tick — synthesise per-element directive against fresh own state */
         choreo_tick(&wm, &scr);
+        own_state.goal_achieved = choreo_goal_achieved();
 
         /* 6. Send gossip on interval */
         gossip_accum_ms += WM_CYCLE_MS;

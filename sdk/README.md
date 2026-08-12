@@ -16,17 +16,25 @@ below it is managed by Tapestry; application code calls only into this SDK.
 └─────────────────────────────────────────────────┘
 ```
 
-> **Not for production use.** The BSE backing this SDK implements intent
-> parsing, geometry-based task decomposition (FORM vertex assignment,
-> EXCHANGE station rotation over a snapshot), and a minimal feedback
-> controller — the achievement predicate (`choreo_goal_achieved` /
-> `bse_goal_achieved`). A TOML script authoring/compiler toolchain also
-> exists (`sdk/tools/choreoc.py`, `sdk/python/tapestry/script_toml.py` — see
-> [`CHOREO_SCRIPTS.md`](CHOREO_SCRIPTS.md)). Absent: optimization across the
-> swarm (a physics-aware planner, ML inference — the EXCHANGE arc is a fixed
-> geometric rule, not a planner), priority/preemption across goals, a
-> simulation/replay bridge, and the monitor stage's telemetry export. See
-> `tapestry-os/include/tapestry/bse.h` for the itemized contract this
+> **v1.0 feature scope.** The BSE backing this SDK implements intent
+> parsing, geometry-based task decomposition (FORM vertex assignment across
+> CIRCLE/LINE/GRID, MOVE offset-preserving formation translation, CONVERGE,
+> EXCHANGE station rotation over a snapshot with arc or direct path), and a
+> feedback controller — the per-element achievement predicate
+> (`choreo_goal_achieved` / `bse_goal_achieved`) plus its collective
+> aggregation (`choreo_collective_achieved`, `scope = "all"` in TOML — see
+> [`CHOREO_SCRIPTS.md`](CHOREO_SCRIPTS.md)). A TOML script authoring/compiler
+> toolchain also exists (`sdk/tools/choreoc.py`,
+> `sdk/python/tapestry/script_toml.py`).
+>
+> Deliberately out of the open-core tier (a licensing boundary, not a gap):
+> optimization across the swarm (a physics-aware planner, ML inference — the
+> EXCHANGE arc is a fixed geometric rule, not a planner), priority/preemption
+> across goals, a simulation/replay bridge, the monitor stage's telemetry
+> export, and the `scope = "all"` barrier/lockstep upgrade (collective
+> achievement here is eventually consistent, bounded by gossip latency — not
+> a synchronization guarantee). See `tapestry-os/include/tapestry/bse.h` and
+> `sdk/include/tapestry/choreo.h` for the itemized contract this
 > implementation satisfies.
 
 > **Writing a multi-step show?** Scripts (ordered, time-bounded goal
@@ -95,11 +103,13 @@ const tapestry_bse_directive_t *d = choreo_get_directive();
 
 ## Goal types
 
-| Goal | Directive produced by stub |
+| Goal | Directive produced |
 |---|---|
-| `CHOREO_GOAL_FORM` | `MOVE_TO_POINT` — regular N-gon vertex, slot by element_id rank |
-| `CHOREO_GOAL_MOVE` | `MOVE_TO_POINT` — all elements to target (no formation offset) |
-| `CHOREO_GOAL_CONVERGE` | `MOVE_TO_POINT` — all elements to target |
+| `CHOREO_GOAL_FORM` | `MOVE_TO_POINT` — vertex by element_id rank; `shape` CIRCLE (N-gon), LINE (evenly spaced), or GRID (near-square rows/cols) |
+| `CHOREO_GOAL_MOVE` | `MOVE_TO_POINT` — target displaced by this element's own offset from the participant centroid (preserves formation; a solo element degenerates to CONVERGE) |
+| `CHOREO_GOAL_CONVERGE` | `MOVE_TO_POINT` — all elements to target (collapses formation) |
+| `CHOREO_GOAL_EXCHANGE` | `MOVE_TO_POINT` — rotate stations among participants, arc or direct path |
+| `CHOREO_GOAL_HOLD` | `MOVE_TO_POINT` — station-keep at the position captured on activation |
 | `CHOREO_GOAL_DISPERSE` | `MAINTAIN_SPRING` — spring-field with `radius` spacing |
 
 ## Lifecycle states
@@ -120,7 +130,7 @@ The SDK contains only interface artifacts; implementations live in `tapestry-os/
 sdk/
   include/tapestry/choreo.h        L7 SDK API header (Goal / lifecycle / directive)
   python/tapestry/choreo.py        L7 Python mirror
-  python/tapestry/bse.py           L6 Python stub
+  python/tapestry/bse.py           L6 Python mirror
   python/tapestry/script_toml.py   Choreo script (TOML) parser/validator
   tools/choreoc.py                 Choreo script compiler: TOML -> C header
   examples/hello_swarm.py          Minimal worked example (no sim required)
@@ -129,6 +139,6 @@ sdk/
 tapestry-os/
   include/tapestry/choreo.h        L7 C header (choreo_init, choreo_tick, etc.)
   include/tapestry/bse.h           L6 interface contract (intent → directive)
-  subsys/choreo/choreo.c           L7 Choreographer C stub
-  subsys/bse/bse.c                 L6 BSE C stub
+  subsys/choreo/choreo.c           L7 Choreographer implementation
+  subsys/bse/bse.c                 L6 BSE implementation
 ```

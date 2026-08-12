@@ -14,14 +14,20 @@
  *   choreo_submit_goal()    — set swarm goal
  *   main loop               — tick runtime, drive substrate from SCR state
  *
- * NOTE (L6 readiness): tapestry_runtime_tick() does drive L6 each cycle
+ * L6/L7 actuation: tapestry_runtime_tick() drives L6 each cycle
  * (choreo_tick() fires via the L5 on_tick hook, see runtime.c), and the
- * FORM goal below is decomposed every tick — but the movement loop here
- * drives substrate_move() purely from scr_state_t (role/quorum), NOT from
- * choreo_get_directive().  Wiring this element's actuation to the BSE's
- * directive is open work (see sdk/README.md's stub notes).
- * examples/cf21bl-formation/src/main.c is the current reference for an
- * element that actually drives movement from choreo_get_directive().
+ * movement loop below reads choreo_get_directive() to decide whether to
+ * move at all — MOVE_TO_POINT / MAINTAIN_SPRING move, IDLE / HOLD stop.
+ * SCR quorum still gates safety (no motion below HEALTHY) and role still
+ * tiers speed.
+ *
+ * This is deliberately coarse: this reference element never calls
+ * tapestry_runtime_update_pos() (no dead-reckoning/heading source on any
+ * of its three boards, and two of them — EK-RA8D1, ESP-WROVER-KIT — have
+ * no actuators at all), so there is no closed-loop point tracking here,
+ * only a move/hold decision driven by directive type.
+ * examples/cf21bl-formation/src/main.c is the reference for an element
+ * that actually tracks a commanded point.
  */
 
 #include <zephyr/kernel.h>
@@ -83,8 +89,12 @@ int main(void)
         else                                                sig = SUBSTRATE_SIGNAL_FAILED;
         substrate_set_signal(sig);
 
+        const tapestry_bse_directive_t *directive = choreo_get_directive();
+
         substrate_twist_t twist = {0};
-        if (scr->quorum_state == SCR_QUORUM_HEALTHY) {
+        if (scr->quorum_state == SCR_QUORUM_HEALTHY &&
+            (directive->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT ||
+             directive->type == TAPESTRY_BSE_DIRECTIVE_MAINTAIN_SPRING)) {
             twist.linear.x = (scr->role == SCR_ROLE_LEADER) ? 0.7f : 0.5f;
         }
         substrate_move(&twist);

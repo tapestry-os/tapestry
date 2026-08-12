@@ -13,7 +13,7 @@ Run from any directory:
 import os
 import sys
 
-# Resolve SDK and BSE stub from repo root.
+# Resolve the SDK and BSE modules from repo root.
 _HERE      = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.abspath(os.path.join(_HERE, '..', '..'))
 sys.path.insert(0, os.path.join(_REPO_ROOT, 'sdk', 'python'))
@@ -72,4 +72,4 @@ for elem in ELEMENTS:
     print(f"{self_id:>8}  {d.type.name:>18}  {target_str:>20}")
 
 print()
-print("Note: currently, target positions are geometry-only (stub); no path planning.")
+print("Note: target positions are geometry-only; no path planning (licensed-tier feature).")
