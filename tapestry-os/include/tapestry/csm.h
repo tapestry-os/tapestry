@@ -84,6 +84,12 @@ typedef struct {
     uint32_t      update_seq;       /* Monotonic update counter (debug/log)   */
     uint8_t       energy_level;     /* Battery/power [0=empty, 100=full]      */
     uint8_t       health_flags;     /* ELEMENT_HEALTH_* bitmask               */
+    bool          goal_achieved;    /* L6/L7 own-goal achievement predicate — */
+                                    /* set by the application from            */
+                                    /* choreo_goal_achieved() before gossip;  */
+                                    /* gossiped so peers can aggregate a      */
+                                    /* collective ("scope=all") predicate     */
+                                    /* (see choreo_collective_achieved()).    */
 } element_state_t;
 
 /* ── Collision event ─────────────────────────────────────────────────────── */

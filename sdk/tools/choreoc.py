@@ -101,8 +101,11 @@ def emit_step(s: NormalizedStep) -> str:
         lines[0] = "    { .goal = { " + goal_fields[0] + " },"
 
     lines.append(f"      .max_duration_ms = {s.max_duration_ms}u,")
-    lines.append(f"      .advance_on_achieved = "
-                 f"{'true' if s.advance_on_achieved else 'false'} }},")
+    step_fields = [f".advance_on_achieved = "
+                  f"{'true' if s.advance_on_achieved else 'false'}"]
+    if s.scope:
+        step_fields.append(".scope = CHOREO_SCOPE_ALL")
+    lines.append("      " + ", ".join(step_fields) + " },")
     return "\n".join(lines)
 
 

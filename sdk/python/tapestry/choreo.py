@@ -2,10 +2,8 @@
 choreo.py — Tapestry Choreographer SDK, L7 (Python)
 
 Python mirror of sdk/include/tapestry/choreo.h +
-tapestry-os/subsys/choreo/choreo.c.
-Backed by the BSE stub from sdk/python/tapestry/bse.py.
-
-NOT FOR PRODUCTION USE.
+tapestry-os/subsys/choreo/choreo.c — see those files for the v1.0 feature
+scope. Backed by the BSE engine from sdk/python/tapestry/bse.py.
 """
 
 import errno as _errno
@@ -76,6 +74,17 @@ class GoalShape(IntEnum):
     GRID   = 3
 
 
+class ChoreoScope(IntEnum):
+    """Whose achievement gates an advance_on_achieved step (design doc v0.2
+    §8.5). SELF (default) is this element's own achievement only. ALL is
+    the collective predicate — this element's own achievement AND every
+    fresh peer's gossiped achieved bit (see Choreo._collective_achieved).
+    Eventually consistent, not a synchronization barrier; vacuously true
+    with no fresh peers."""
+    SELF = 0
+    ALL  = 1
+
+
 # ── Public data classes ───────────────────────────────────────────────────────
 
 @dataclass
@@ -111,6 +120,7 @@ class ChoreoStep:
     goal:                Goal
     max_duration_ms:     int = 0
     advance_on_achieved: bool = False
+    scope:               int = ChoreoScope.SELF   # whose achievement counts
 
 
 # ── Choreo ────────────────────────────────────────────────────────────────────
@@ -136,14 +146,16 @@ class Choreo:
         choreo.submit_goal(Goal(type=GoalType.FORM, radius=30.0))
 
     wm_entries format — list of dicts:
-        {'id': int, 'is_active': bool, 'is_stale': bool, 'is_self': bool}
+        {'id': int, 'is_active': bool, 'is_stale': bool, 'is_self': bool,
+         'achieved': bool}   # peer's gossiped own-goal achievement (scope=all);
+                             # optional, defaults to False if absent
 
     scr_state format — dict:
         {'role': int, 'quorum_state': int, 'leader_id': int}
         quorum_state: 0=LOST, 1=DEGRADED, 2=HEALTHY
 
     capabilities — SCR_CAP_* hardware bitmask for this element.  Pass None
-        (default) to skip the capability check entirely, mirroring the C stub
+        (default) to skip the capability check entirely, mirroring the C
         behavior when choreo_register_scr() has not been called.
     """
 
@@ -284,6 +296,12 @@ class Choreo:
         """L6 achievement predicate for the currently executing goal."""
         return self._bse.goal_achieved()
 
+    def collective_achieved(self, wm_entries: List[dict]) -> bool:
+        """The scope=ALL achievement predicate — see ChoreoScope and
+        _collective_achieved(). Mirrors choreo_collective_achieved() in
+        choreo.h/choreo.c."""
+        return self._collective_achieved(wm_entries)
+
     def cancel_goal(self) -> None:
         """Cancel the current goal and return to IDLE."""
         self.terminate()
@@ -317,7 +335,7 @@ class Choreo:
         """
         if self._state == ChoreoState.RUNNING:
             self._bse.tick(wm_entries, scr_state)
-            self._script_advance()
+            self._script_advance(wm_entries)
             if (self._state == ChoreoState.RUNNING and
                     scr_state.get('quorum_state', 2) == self.QUORUM_LOST):
                 self._state = ChoreoState.SUSPENDED
@@ -332,13 +350,35 @@ class Choreo:
             if scr_state.get('quorum_state', 2) != self.QUORUM_LOST:
                 self._state = ChoreoState.RUNNING
 
-    def _script_advance(self) -> None:
+    def _collective_achieved(self, wm_entries: List[dict]) -> bool:
+        """scope=ALL predicate: own achievement AND every fresh, active,
+        non-self peer's gossiped 'achieved' key (default False if absent).
+        Vacuously true with no fresh peers — mirrors choreo_collective_achieved
+        in choreo.c. Eventually consistent, not a synchronization barrier."""
+        if not self._bse.goal_achieved():
+            return False
+        for e in wm_entries:
+            if e.get('is_self', False):
+                continue
+            if not e.get('is_active') or e.get('is_stale'):
+                continue
+            if not e.get('achieved', False):
+                return False
+        return True
+
+    def _script_advance(self, wm_entries: List[dict]) -> None:
         if self._steps is None:
             return
         st = self._steps[self._step_idx]
         self._step_ms += self.WM_CYCLE_MS
 
-        advance = (st.advance_on_achieved and self._bse.goal_achieved()) or \
+        if st.advance_on_achieved:
+            achieved = (self._collective_achieved(wm_entries)
+                       if st.scope == ChoreoScope.ALL
+                       else self._bse.goal_achieved())
+        else:
+            achieved = False
+        advance = achieved or \
                   (st.max_duration_ms > 0 and self._step_ms >= st.max_duration_ms)
         if not advance:
             return

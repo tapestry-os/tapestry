@@ -2,28 +2,26 @@
  * bse.h — Tapestry L6 Behavior Synthesis Engine interface
  *
  * ╔══════════════════════════════════════════════════════════════════════════╗
- * ║  STUB IMPLEMENTATION — NOT FOR PRODUCTION USE                            ║
+ * ║  v1.0 FEATURE SCOPE                                                      ║
  * ║                                                                          ║
  * ║  This header defines the full L6 interface contract.  bse.c              ║
- * ║  currently implements:                                                   ║
+ * ║  implements, open-core (public):                                         ║
  * ║    ✓  Intent parsing — declarative goal → per-element behavioral spec    ║
- * ║    ✓  Task decomposition — FORM intent → per-element vertex assignment;  ║
- * ║       EXCHANGE intent → station rotation over snapshot positions         ║
+ * ║    ✓  Task decomposition — FORM (CIRCLE/LINE/GRID vertex assignment),    ║
+ * ║       MOVE (offset-preserving formation translation), CONVERGE           ║
+ * ║       (collapse to a point), EXCHANGE (station rotation over snapshot    ║
+ * ║       positions, arc or direct path), HOLD (station-keep), DISPERSE      ║
+ * ║       (spring-field spacing)                                             ║
  * ║    ✓  Feedback controller (minimal) — achievement predicate: own         ║
  * ║       position within achieve_eps of the goal point, sustained for       ║
- * ║       achieve_hold_ms (bse_goal_achieved)                                ║
- * ║    ✗  Optimization across swarm (physics-aware planning, ML inference)   ║
- * ║       — except the EXCHANGE arc trajectory, a deliberately minimal       ║
- * ║       deconfliction rule (see TAPESTRY_BSE_INTENT_EXCHANGE below)        ║
+ * ║       achieve_hold_ms (bse_goal_achieved); collective (scope=all)        ║
+ * ║       achievement aggregation lives one layer up in choreo.h             ║
  * ║    ✓  Simulation bridge (hardware-in-the-loop) — this unmodified L6/L7   ║
  * ║       stack runs against real Webots physics (examples/webots-formation/)║
  * ║    ✓  Offline replay harness — capture per-tick L6/L7 inputs/outputs to  ║
  * ║       CSV (examples/webots-formation/.../choreo_telemetry.h) and replay  ║
  * ║       them through sdk/python/tapestry offline for tick-by-tick          ║
  * ║       regression testing (sdk/tools/choreo_replay.py)                    ║
- * ║    ✗  RL-style / ML training on captured telemetry — not built,          ║
- * ║       long-horizon/deferred (the replay harness above is the capture+    ║
- * ║       diff infrastructure prerequisite, not the training itself)         ║
  * ║                                                                          ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *
@@ -58,14 +56,27 @@ typedef struct {
 
 /* ── Intent: L7 → L6 ─────────────────────────────────────────────────────── */
 /*
- * IDLE / FORM / MOVE / DISPERSE / CONVERGE reference absolute coordinates
- * supplied by the application.  HOLD and EXCHANGE instead reference the
- * collective's OWN current configuration (positions read from the L4 world
- * model) — no coordinates appear in the intent at all:
+ * IDLE / FORM / DISPERSE / CONVERGE reference absolute coordinates supplied
+ * by the application.  HOLD and EXCHANGE instead reference the collective's
+ * OWN current configuration (positions read from the L4 world model) — no
+ * coordinates appear in the intent at all.  MOVE is a hybrid: an absolute
+ * target, displaced per-element by an offset read from the collective's own
+ * configuration at activation (see below) — the formation translates as a
+ * rigid body instead of collapsing onto the target.
  *
  *   HOLD      Stay at the current station.  On the first tick the element
  *             captures its own position as its station and station-keeps
  *             there (directive MOVE_TO_POINT to the captured point).
+ *
+ *   MOVE      Translate the formation to intent.target, preserving shape.
+ *             On activation each element snapshots its own offset from the
+ *             participant centroid (self + fresh peers); every tick the
+ *             commanded point is intent.target + that offset, so the
+ *             formation's relative geometry travels as a rigid body instead
+ *             of every element collapsing onto the same point (that
+ *             collapse is what CONVERGE does instead).  A solo element has
+ *             a zero offset, so MOVE degenerates to CONVERGE for it —
+ *             correct, there is no formation to preserve.
  *
  *   EXCHANGE  Rotate stations by slot_shift around the ID-sorted ring of
  *             participants (self + fresh peers): element at rank r takes the
@@ -141,7 +152,9 @@ typedef enum {
 typedef struct {
     tapestry_bse_intent_type_t type;
     tapestry_position_t        target;   /* MOVE / CONVERGE destination    */
-    float                      radius;   /* FORM radius; DISPERSE min dist */
+    float                      radius;   /* FORM: circumradius (CIRCLE) or
+                                           * half-span/cell-spacing (LINE/
+                                           * GRID); DISPERSE min dist       */
     tapestry_bse_shape_t       shape;    /* FORM shape                     */
 
     /* EXCHANGE: ring rotation amount.  0 is treated as 1 (the common case)
@@ -245,7 +258,9 @@ const tapestry_bse_directive_t *bse_get_directive(void);
  * goal point for achieve_hold_ms (accumulated across consecutive ticks;
  * leaving the epsilon ball resets the accumulator).  The goal point is:
  *   FORM              — this element's assigned vertex
- *   MOVE / CONVERGE   — the intent target
+ *   MOVE              — this element's translated point (intent.target +
+ *                       its own offset from the participant centroid)
+ *   CONVERGE          — the intent target
  *   EXCHANGE          — the destination station (the snapshot point, not
  *                       the moving arc target)
  *   HOLD              — trivially achieved (staying is the goal; a HOLD

@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Collective achievement (`scope = "all"`)** — each element now gossips
+  an `achieved` bit every cycle (`tapestry_gossip_frame_t` gains an
+  `achieved` field, a wire-compatible append — no `TAPESTRY_WIRE_VERSION`
+  bump), aggregated via `choreo_collective_achieved()`. `choreo_step_t`
+  and Choreo-script TOML gain `scope = "self"|"all"` (default `"self"`,
+  existing scripts unaffected). `examples/cf21bl-formation`'s exchange
+  step now uses `scope = "all"`, replacing the bow step's former role as
+  an implicit per-drone-achievement workaround
+- ztest coverage (native_sim, `examples/cf21bl-formation/tests`) for
+  `FORM` shapes, `MOVE` translation, and `scope = "all"` collective
+  achievement (including solo/vacuous-truth and stale-peer cases)
+
+### Changed
+- **`sdk/README.md`, `choreo.h`, `bse.h`, `bse.c`, `choreo.c`, and their
+  Python mirrors** now achieved v1.0 feature-scope 
+
+### Fixed
+- **`FORM` shape** — `shape = "line"` and `"grid"` were accepted and
+  silently rendered a circle regardless; both now produce the requested
+  layout (`bse.c`/`bse.py`)
+- **`MOVE`** — previously identical to `CONVERGE` (collapsed every
+  element onto the same point); now offset-preserving formation
+  translation with each element keeping its position relative to 
+  the formation centroid. A solo element still degenerates to
+  `CONVERGE`, correctly, since there is no formation to preserve
+- **`tapestry-scr-hw`'s movement loop** — `substrate_move()` is now
+  directive-driven reading `choreo_get_directive()`
+
 ## [0.8.0] — 2026-08-01
 
 ### Added

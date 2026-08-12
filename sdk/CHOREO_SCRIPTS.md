@@ -91,9 +91,10 @@ on an aerial platform); see
 | Key | Meaning |
 |---|---|
 | `duration` / `timeout` | step time bound. **Required on every step** — this is the robustness net that keeps a script from stalling; give exactly one of the two names (they're the same field). |
-| `until = "achieved"` | advance as soon as the L6 achievement predicate fires, instead of waiting out the full duration. The timeout still applies as a fallback. Not allowed on `hold` — hold is trivially achieved, so hold steps are duration-governed (`until`/`eps`/`settle` on hold are rejected; reserved for future scoped-achievement semantics). |
+| `until = "achieved"` | advance as soon as the achievement predicate fires (scope decides whose — see `scope` below), instead of waiting out the full duration. The timeout still applies as a fallback. Not allowed on `hold` — hold is trivially achieved, so hold steps are duration-governed (`until`/`eps`/`settle` on hold are rejected; reserved for future scoped-achievement semantics). |
 | `eps` | achievement radius (default: BSE default if omitted). |
 | `settle` | how long the error must stay within `eps` before achievement fires (default: BSE default). |
+| `scope = "self"` \| `"all"` | whose achievement `until = "achieved"` waits for (default `"self"`). `"all"` advances only once this element **and** every fresh peer have achieved — aggregated from an `achieved` bit each element gossips every cycle ("achieved-bit" item). Eventually consistent, bounded by gossip latency — not a synchronization barrier (that's the doc's separate `barrier = true`, not implemented). A lone element with no fresh peers is vacuously "all achieved", so it can't deadlock alone. Only valid alongside `until = "achieved"`; not allowed on `hold`. |
 | `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
 
 **Duration syntax**: `"30s"`, `"500ms"`, `"45min"`, `"2h"`, or a bare
@@ -108,11 +109,10 @@ number (meters).
 > `achieve_hold_ms`). `choreoc` converts between them — one more reason
 > to author in TOML and never edit the generated header.
 
-Note on `move`: in the current runtime it behaves identically to
-`converge` (all elements to the target, no formation-offset
-preservation); the parser warns on use. Its semantics will change to
-offset-preserving translation of the current configuration — prefer
-`converge` when gathering is what you mean.
+Note on `move` vs. `converge`: `move` translates the formation to
+`target`, preserving each element's offset from the participant centroid
+(a rigid-body translation) — it does not collapse the formation. Use
+`converge` when gathering everyone at the same point is what you mean.
 
 ## Validation
 

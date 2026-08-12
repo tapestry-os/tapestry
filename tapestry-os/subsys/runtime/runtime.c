@@ -109,6 +109,9 @@ void tapestry_runtime_tick(void)
     s_gossip_accum_ms += WM_CYCLE_MS;
     if (s_gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
         s_own.update_seq++;
+        /* Own-goal achievement as of this tick's choreo_tick (step 4 above),
+         * so peers running a scope=all step can aggregate it. */
+        s_own.goal_achieved = choreo_goal_achieved();
         transport_send(&s_own, TAPESTRY_QOS_SOFT_RT);
         s_gossip_accum_ms = 0;
     }

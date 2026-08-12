@@ -1,7 +1,8 @@
 /*
- * choreo.c — Tapestry Choreographer SDK stub (L7)
+ * choreo.c — Tapestry Choreographer SDK (L7)
  *
- * NOT FOR PRODUCTION USE.  Implements choreo.h by delegating to bse.c.
+ * Implements choreo.h by delegating to bse.c.  See choreo.h for the v1.0
+ * feature scope (what's open-core here vs. deliberately licensed-tier).
  *
  * Lifecycle state machine:
  *   IDLE        → choreo_configure()  → CONFIGURED
@@ -227,6 +228,23 @@ bool choreo_goal_achieved(void)
     return bse_goal_achieved();
 }
 
+bool choreo_collective_achieved(const world_model_t *wm)
+{
+    if (!bse_goal_achieved()) {
+        return false;
+    }
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_self || !e->is_active || e->is_stale) {
+            continue;
+        }
+        if (!e->state.goal_achieved) {
+            return false;
+        }
+    }
+    return true;   /* vacuously true when solo — no fresh peer to disagree */
+}
+
 void choreo_cancel_goal(void)
 {
     choreo_terminate();
@@ -246,7 +264,7 @@ choreo_goal_type_t choreo_current_goal_type(void)
 }
 
 /* Advance the script if the current step's exit condition is met. */
-static void script_advance(void)
+static void script_advance(const world_model_t *wm)
 {
     if (!s_script_active) {
         return;
@@ -256,8 +274,13 @@ static void script_advance(void)
     s_step_ms += WM_CYCLE_MS;
 
     bool advance = false;
-    if (st->advance_on_achieved && bse_goal_achieved()) {
-        advance = true;
+    if (st->advance_on_achieved) {
+        bool achieved = (st->scope == CHOREO_SCOPE_ALL)
+                        ? choreo_collective_achieved(wm)
+                        : bse_goal_achieved();
+        if (achieved) {
+            advance = true;
+        }
     }
     if (st->max_duration_ms > 0u && s_step_ms >= st->max_duration_ms) {
         advance = true;
@@ -288,7 +311,7 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
     switch (s_state) {
     case CHOREO_STATE_RUNNING:
         bse_tick(wm, scr);
-        script_advance();
+        script_advance(wm);
         /* script_advance may have terminated → IDLE; quorum check only
          * applies while still RUNNING. */
         if (s_state == CHOREO_STATE_RUNNING &&

@@ -1,20 +1,26 @@
 """
-bse.py — Tapestry L6 Behavior Synthesis Engine stub (Python)
+bse.py — Tapestry L6 Behavior Synthesis Engine (Python)
 
-NOT FOR PRODUCTION USE.
-
-Python mirror of tapestry-os/subsys/bse/bse.c for simulation and
-research.  Implements the intent-parser and task-decomposition tiers plus
-the minimal feedback controller (achievement predicate).  The physics-aware
-planner, ML inference runtime, and simulation bridge are absent (commercial
-BSE) — except the EXCHANGE arc, a deliberately minimal deconfliction rule.
+Python mirror of tapestry-os/subsys/bse/bse.c for simulation and research
+(kept tick-for-tick equivalent — see the C file's module doc). Implements
+the intent-parser and task-decomposition tiers plus the feedback controller
+(achievement predicate). Deliberately out of the open-core tier (licensed):
+the physics-aware planner, ML inference runtime, and simulation bridge —
+except the EXCHANGE arc, a deliberately minimal deconfliction rule.
 
 Intent → directive mapping
 --------------------------
   IDLE      → IDLE            — the substrate-neutral QUIESCENCE signal
-  FORM      → MOVE_TO_POINT   — vertex of regular N-gon, slot by element_id rank
-  MOVE      → MOVE_TO_POINT   — all elements to same target (stub limitation)
-  CONVERGE  → MOVE_TO_POINT   — all elements to target
+  FORM      → MOVE_TO_POINT   — vertex assignment by element_id rank; shape
+                                CIRCLE (N-gon), LINE (evenly spaced on X),
+                                or GRID (near-square rows/cols, radius as
+                                cell spacing)
+  MOVE      → MOVE_TO_POINT   — offset-preserving translation: own offset
+                                from the participant centroid, captured at
+                                activation, added to intent.target (a solo
+                                element has zero offset and degenerates to
+                                CONVERGE)
+  CONVERGE  → MOVE_TO_POINT   — all elements to target (collapses formation)
   DISPERSE  → MAINTAIN_SPRING — spring-field with intent.radius spacing
   HOLD      → MOVE_TO_POINT   — own position captured at activation
                                 (coordinate-free station-keeping)
@@ -110,7 +116,7 @@ class BSEDirective:
 
 class BSE:
     """
-    Geometry-only intent decomposition stub + minimal feedback controller.
+    Geometry-only intent decomposition + feedback controller.
 
     wm_entries passed to tick() must be a list of dicts with keys:
         id        int   element ID
@@ -140,6 +146,7 @@ class BSE:
         self._goal_pt: Optional[Tuple[float, float]] = None
         self._hold_station: Optional[Tuple[float, float]] = None
         self._ex: Optional[dict] = None   # exchange snapshot/arc state
+        self._move_offset: Optional[Tuple[float, float]] = None
 
     def submit_intent(self, intent: BSEIntent) -> None:
         self._intent = intent
@@ -167,8 +174,14 @@ class BSE:
             if self._directive.type == BSEDirectiveType.MOVE_TO_POINT:
                 self._goal_pt = self._directive.target
 
-        elif intent.type in (BSEIntentType.MOVE, BSEIntentType.CONVERGE):
-            # Stub: move every element to the same target point.
+        elif intent.type == BSEIntentType.MOVE:
+            self._directive = self._move_directive(wm_entries, intent)
+            if self._directive.type == BSEDirectiveType.MOVE_TO_POINT:
+                self._goal_pt = self._directive.target
+
+        elif intent.type == BSEIntentType.CONVERGE:
+            # All elements gather at the identical point — deliberately
+            # different from MOVE, which preserves formation (see below).
             self._directive = BSEDirective(
                 type   = BSEDirectiveType.MOVE_TO_POINT,
                 target = intent.target,
@@ -350,7 +363,9 @@ class BSE:
     def _form_directive(self, wm_entries: List[dict],
                         intent: BSEIntent) -> BSEDirective:
         """
-        Assign self a vertex of a regular N-gon.
+        Assign self a vertex per intent.shape: CIRCLE (regular N-gon), LINE
+        (evenly spaced on the X axis), or GRID (near-square rows/cols,
+        radius as cell spacing) — all centered on intent.target.
         N = active + fresh element count (including self).
         Rank = position of self.element_id in the sorted active-ID list.
         """
@@ -367,13 +382,53 @@ class BSE:
         if not active_ids:
             return BSEDirective(type=BSEDirectiveType.HOLD)
 
-        rank  = active_ids.index(self.element_id)
-        n     = len(active_ids)
-        angle = 2.0 * math.pi * rank / n
-        tx    = intent.target[0] + intent.radius * math.cos(angle)
-        ty    = intent.target[1] + intent.radius * math.sin(angle)
+        rank = active_ids.index(self.element_id)
+        n    = len(active_ids)
+        tx, ty = intent.target
+
+        if intent.shape == BSEShape.LINE:
+            if n > 1:
+                step = (2.0 * intent.radius) / (n - 1)
+                tx = intent.target[0] - intent.radius + step * rank
+        elif intent.shape == BSEShape.GRID:
+            cols = math.ceil(math.sqrt(n))
+            rows = math.ceil(n / cols)
+            col, row = rank % cols, rank // cols
+            tx = intent.target[0] + (col - 0.5 * (cols - 1)) * intent.radius
+            ty = intent.target[1] + (row - 0.5 * (rows - 1)) * intent.radius
+        else:
+            angle = 2.0 * math.pi * rank / n
+            tx = intent.target[0] + intent.radius * math.cos(angle)
+            ty = intent.target[1] + intent.radius * math.sin(angle)
 
         return BSEDirective(
             type   = BSEDirectiveType.MOVE_TO_POINT,
             target = (tx, ty),
+        )
+
+    def _move_directive(self, wm_entries: List[dict],
+                        intent: BSEIntent) -> BSEDirective:
+        """
+        Offset-preserving translation: snapshot own offset
+        from the participant centroid on activation, then command
+        intent.target + that offset every tick — the formation translates
+        as a rigid body instead of collapsing onto the target.
+        """
+        if self._move_offset is None:
+            parts = self._participants(wm_entries)
+            if not parts:
+                return BSEDirective(type=BSEDirectiveType.HOLD)
+            ids = [p[0] for p in parts]
+            if self.element_id not in ids:
+                return BSEDirective(type=BSEDirectiveType.HOLD)
+            rank = ids.index(self.element_id)
+            cx = sum(p[1][0] for p in parts) / len(parts)
+            cy = sum(p[1][1] for p in parts) / len(parts)
+            own = parts[rank][1]
+            self._move_offset = (own[0] - cx, own[1] - cy)
+
+        ox, oy = self._move_offset
+        return BSEDirective(
+            type   = BSEDirectiveType.MOVE_TO_POINT,
+            target = (intent.target[0] + ox, intent.target[1] + oy),
         )
