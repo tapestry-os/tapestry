@@ -19,23 +19,19 @@
  * ║  v1.0 FEATURE SCOPE                                                      ║
  * ║                                                                          ║
  * ║  The backing implementation (tapestry-os/subsys/choreo/choreo.c)         ║
- * ║  delegates to tapestry-os/subsys/bse/bse.c.  Open-core (public):         ║
- * ║  single goals, linear goal SCRIPTS (choreo_submit_script) with           ║
- * ║  per-step timeout / advance-on-achieved, the L6 achievement predicate    ║
- * ║  (choreo_goal_achieved) and its scope=all collective aggregation         ║
- * ║  (choreo_collective_achieved — see choreo_achieve_scope_t below), the    ║
- * ║  install/configure/deploy/terminate lifecycle stages (choreo_state_t     ║
- * ║  below), and a TOML script authoring/compiler toolchain                  ║
- * ║  (sdk/tools/choreoc.py — see sdk/CHOREO_SCRIPTS.md).                     ║
- * ║                                                                          ║
- * ║  Deliberately out of the open-core tier (licensing boundary, not a       ║
- * ║  gap to close in this header): priority queues, preemption across        ║
- * ║  goals, multi-Choreo arbitration, the monitor stage's telemetry export   ║
- * ║  (step/achieved state is queryable locally but not published), the       ║
- * ║  scope=all barrier/lockstep upgrade (design doc v0.2 §8.5's              ║
- * ║  `barrier = true` — scope=all here is eventually consistent, not a       ║
- * ║  synchronization guarantee), and a simulation/replay bridge beyond the   ║
- * ║  Python engine's ad hoc tick-parity checks against the C engine.         ║
+ * ║  delegates to tapestry-os/subsys/bse/bse.c.                              ║
+ * ║  Implemented: single goals, linear goal SCRIPTS (choreo_submit_script)   ║
+ * ║  with per-step timeout / advance-on-achieved, the minimal L6             ║
+ * ║  achievement predicate (choreo_goal_achieved), the install/configure/    ║
+ * ║  deploy/terminate lifecycle stages (choreo_state_t below), and a TOML    ║
+ * ║  script authoring/compiler toolchain (sdk/tools/choreoc.py — see         ║
+ * ║  sdk/CHOREO_SCRIPTS.md), a hardware-in-the-loop simulation bridge        ║
+ * ║  (examples/webots-formation/ — this stack, unmodified, against real      ║
+ * ║  Webots physics), and an offline capture/replay harness (opt-in CSV      ║
+ * ║  capture of per-tick inputs/outputs — choreo_telemetry.h — replayed      ║
+ * ║  offline through sdk/python/tapestry and diffed tick-by-tick against     ║
+ * ║  the recording — sdk/tools/choreo_replay.py; see sdk/CHOREO_SCRIPTS.md's ║
+ * ║  "Parity" section).                                                      ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
@@ -167,7 +163,6 @@ typedef struct {
 
 /*
  * choreo_achieve_scope_t — whose achievement gates an advance_on_achieved
- * step (design doc v0.2 §8.5, the Tier-1 "achieved-bit" item):
  *
  *   CHOREO_SCOPE_SELF  (default, zero value) — this element's own
  *                      achievement only (choreo_goal_achieved()).  This is

@@ -39,9 +39,6 @@ Common parameters:
                          (before the time bound).  Not allowed on hold:
                          hold is trivially achieved in the current
                          runtime, so hold steps are duration-governed
-                         (until/eps/settle on hold are reserved for the
-                         scoped-achievement semantics of design doc v0.2
-                         §8.5 and rejected until those land).
     eps                  achievement radius — "25cm", "0.25m", "250mm",
                          "500um", or bare meters.
     settle               achievement sustain time — duration syntax.
@@ -243,8 +240,7 @@ def _parse_step(index: int, table: dict) -> NormalizedStep:
                 f"is trivially achieved in the current runtime (a hold step "
                 f"with until = \"achieved\" would advance on the first "
                 f"tick), so hold steps are duration-governed; these "
-                f"parameters are reserved for scoped achievement "
-                f"(design doc v0.2 §8.5)")
+                f"parameters are reserved for scoped achievement")
     if "duration" in params and "timeout" in params:
         raise ScriptError(f"{where}: give either 'duration' or 'timeout', "
                           f"not both (they are the same time bound)")

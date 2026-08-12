@@ -409,8 +409,8 @@ class BSE:
     def _move_directive(self, wm_entries: List[dict],
                         intent: BSEIntent) -> BSEDirective:
         """
-        Offset-preserving translation (design doc v0.2 §4): snapshot own
-        offset from the participant centroid on activation, then command
+        Offset-preserving translation: snapshot own offset
+        from the participant centroid on activation, then command
         intent.target + that offset every tick — the formation translates
         as a rigid body instead of collapsing onto the target.
         """

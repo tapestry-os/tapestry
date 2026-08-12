@@ -94,7 +94,7 @@ on an aerial platform); see
 | `until = "achieved"` | advance as soon as the achievement predicate fires (scope decides whose — see `scope` below), instead of waiting out the full duration. The timeout still applies as a fallback. Not allowed on `hold` — hold is trivially achieved, so hold steps are duration-governed (`until`/`eps`/`settle` on hold are rejected; reserved for future scoped-achievement semantics). |
 | `eps` | achievement radius (default: BSE default if omitted). |
 | `settle` | how long the error must stay within `eps` before achievement fires (default: BSE default). |
-| `scope = "self"` \| `"all"` | whose achievement `until = "achieved"` waits for (default `"self"`). `"all"` advances only once this element **and** every fresh peer have achieved — aggregated from an `achieved` bit each element gossips every cycle (design doc v0.2 §8.5's Tier-1 "achieved-bit" item). Eventually consistent, bounded by gossip latency — not a synchronization barrier (that's the doc's separate `barrier = true`, not implemented). A lone element with no fresh peers is vacuously "all achieved", so it can't deadlock alone. Only valid alongside `until = "achieved"`; not allowed on `hold`. |
+| `scope = "self"` \| `"all"` | whose achievement `until = "achieved"` waits for (default `"self"`). `"all"` advances only once this element **and** every fresh peer have achieved — aggregated from an `achieved` bit each element gossips every cycle ("achieved-bit" item). Eventually consistent, bounded by gossip latency — not a synchronization barrier (that's the doc's separate `barrier = true`, not implemented). A lone element with no fresh peers is vacuously "all achieved", so it can't deadlock alone. Only valid alongside `until = "achieved"`; not allowed on `hold`. |
 | `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
 
 **Duration syntax**: `"30s"`, `"500ms"`, `"45min"`, `"2h"`, or a bare
@@ -248,6 +248,27 @@ final positions match exactly between the two, which makes the Python SDK
 a legitimate way to rehearse a script (including multi-agent parity checks)
 before ever compiling it for hardware.
 
+That parity claim doesn't have to stay theoretical — `sdk/tools/choreo_replay.py`
+checks it against real recorded runs. Capture a Webots run's per-tick inputs
+and outputs to CSV (set `TAPESTRY_TELEMETRY_DIR`; see
+`examples/webots-formation/controllers/cf21bl/choreo_telemetry.h`), then
+replay that CSV through the Python engine and diff every tick:
+
+```sh
+python3 sdk/tools/choreo_replay.py \
+    --script examples/cf21bl-formation/change-partners.choreo.toml \
+    --telemetry /path/to/choreo_0.csv
+```
+
+A clean replay (0 divergences) means the C engine that produced the
+recording and the current Python engine agree tick-for-tick on real
+flight/simulation data, not just a bare script rehearsal. A divergence
+means either the recording is stale (script or engine changed since
+capture — re-record) or a genuine regression in `sdk/python/tapestry` vs.
+`tapestry-os/subsys/choreo`+`bse`. This is offline capture-and-replay
+infrastructure for regression testing, not ML training — see
+`tapestry/choreo.h`'s status banner for that distinction.
+
 ## Regeneration workflow
 
 1. Edit `<name>.choreo.toml`.
@@ -271,3 +292,7 @@ every run.
 - `examples/cf21bl-formation/change-partners.choreo.toml` — a
   flight-validated worked example (two-drone station swap) with a
   build+fly walkthrough in that example's own README.
+- `sdk/tools/choreo_replay.py` — the offline replay/regression harness;
+  run with `--help` or read its module docstring for CLI details.
+- `examples/webots-formation/controllers/cf21bl/choreo_telemetry.h` — the
+  per-tick CSV capture that feeds `choreo_replay.py`.

@@ -16,13 +16,12 @@
  * ║       position within achieve_eps of the goal point, sustained for       ║
  * ║       achieve_hold_ms (bse_goal_achieved); collective (scope=all)        ║
  * ║       achievement aggregation lives one layer up in choreo.h             ║
- * ║                                                                          ║
- * ║  Deliberately out of the open-core tier (see the open-core split — this  ║
- * ║  is a licensing boundary, not a missing feature to be added here):       ║
- * ║    —  Optimization across the swarm: physics-aware trajectory planning,  ║
- * ║       ML inference.  The EXCHANGE arc/standoff logic is a fixed          ║
- * ║       geometric deconfliction rule, not a planner.                       ║
- * ║    —  Simulation bridge (offline training / hardware-in-the-loop)        ║
+ * ║    ✓  Simulation bridge (hardware-in-the-loop) — this unmodified L6/L7   ║
+ * ║       stack runs against real Webots physics (examples/webots-formation/)║
+ * ║    ✓  Offline replay harness — capture per-tick L6/L7 inputs/outputs to  ║
+ * ║       CSV (examples/webots-formation/.../choreo_telemetry.h) and replay  ║
+ * ║       them through sdk/python/tapestry offline for tick-by-tick          ║
+ * ║       regression testing (sdk/tools/choreo_replay.py)                    ║
  * ║                                                                          ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  *

@@ -1,0 +1,70 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/bitcraze/crazyflie/protos/Crazyflie.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+
+WorldInfo {
+  info [
+    "Tapestry change-partners choreo (examples/cf21bl-formation's"
+    "change-partners.choreo.toml, unmodified logic -- see ../README.md for"
+    "the one script difference: no path=\"direct\" -- see WEBOTS FORK NOTE"
+    "in ../change-partners.choreo.toml) on simulated Crazyflies."
+    "Same L3-L7 stack as real cf21bl hardware -- see ../README.md."
+  ]
+  title "Tapestry change-partners (Webots, N=4)"
+  basicTimeStep 8
+}
+Viewpoint {
+  orientation -0.2 0.35 0.92 1.75
+  position -2.4 -2.1 2.0
+  follow "cf0"
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+Floor {
+  size 6 6
+}
+
+# 4 drones on a ring, radius 0.6 m, placed in ID order going
+# counterclockwise (0 deg, 90 deg, 180 deg, 270 deg). bse.c's EXCHANGE
+# ranks participants by sorted element ID and rotates each to the NEXT
+# rank's station (shift=1, CCW arc) -- see tapestry-os/subsys/bse/bse.c's
+# collect_participants()/exchange_capture(). Placing IDs in ID order
+# around the ring turns "everyone move one seat" into a literal one-seat
+# rotation around it.
+#
+# controllerArgs: <element_id> <n_elements> -- read by main.c's argv, and
+# by transceiver_udp_posix.c's per-element UDP port fan-out (see
+# ../README.md). n_elements must match across every node in this file.
+
+Crazyflie {
+  translation 0.60 0.00 0.015
+  name "cf0"
+  controller "cf21bl"
+  controllerArgs [ "0" "4" ]
+}
+
+Crazyflie {
+  translation 0.00 0.60 0.015
+  name "cf1"
+  controller "cf21bl"
+  controllerArgs [ "1" "4" ]
+}
+
+Crazyflie {
+  translation -0.60 0.00 0.015
+  name "cf2"
+  controller "cf21bl"
+  controllerArgs [ "2" "4" ]
+}
+
+Crazyflie {
+  translation 0.00 -0.60 0.015
+  name "cf3"
+  controller "cf21bl"
+  controllerArgs [ "3" "4" ]
+}

@@ -19,7 +19,7 @@
  *   - HOLD: captures own position at activation and station-keeps there.
  *   - Feedback controller (minimal): achievement predicate — own position
  *     within achieve_eps of the goal point for achieve_hold_ms.
- *   - For MOVE: offset-preserving translation (design v0.2 §4) — the
+ *   - For MOVE: offset-preserving translation — the
  *     formation's shape is preserved while its centroid travels to
  *     intent.target (own offset from the participant centroid is snapshot
  *     at activation).  A solo element has zero offset, so MOVE degenerates
@@ -434,7 +434,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 
     case TAPESTRY_BSE_INTENT_MOVE: {
         /*
-         * Offset-preserving translation (design doc v0.2 §4): "move" is
+         * Offset-preserving translation: "move" is
          * shape + drift, not collapse-to-point.  On activation, snapshot
          * this element's own offset from the participant centroid; every
          * tick after that the commanded point is intent.target displaced

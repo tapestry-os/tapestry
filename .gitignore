@@ -70,3 +70,8 @@ wifi.conf
 tmp/
 *.csv
 *.png
+
+# Webots: per-user project-state cache and the compiled controller binary
+# (Makefile.include names it after the controller directory, no extension)
+*.wbproj
+examples/webots-formation/controllers/cf21bl/cf21bl
