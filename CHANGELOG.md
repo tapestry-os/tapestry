@@ -11,7 +11,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `scr_init()`/`scr_tick()` (quorum, role, task_slot, abort protocol)
   instead of synthesizing a quorum signal from raw L4 freshness;
   `SUSPENDED` is now triggered by the actual L5 quorum computation in
-  both. 
+  both. Enforced real-world geofence and mission-duration landing backstops.
 - **Collective achievement (`scope = "all"`)** — each element now gossips
   an `achieved` bit every cycle (`tapestry_gossip_frame_t` gains an
   `achieved` field, a wire-compatible append — no `TAPESTRY_WIRE_VERSION`

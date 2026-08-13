@@ -56,6 +56,25 @@
 
 #define LAND_TOUCHDOWN_M  0.05f
 
+/* Geofence backstop: land immediately if the drone's ACTUAL measured
+ * position strays past this distance from the world origin — independent
+ * of, and in addition to, tracker.c's target-leash/arena-clamp above
+ * (those bound the COMMANDED target, not where the airframe actually is;
+ * defense in depth against a runaway tracking error, not a substitute for
+ * this check). Hardware uses a room-scaled GEOFENCE_RADIUS_M=2.0m; reusing
+ * DEMO_ARENA_LIMIT_M here keeps this backstop consistent with this
+ * example's own arena scale rather than the hardware room's. */
+#define GEOFENCE_RADIUS_M DEMO_ARENA_LIMIT_M
+
+/* Mission-duration backstop: land unconditionally if FLIGHT_FLYING runs
+ * longer than the script's own time bound plus margin — the robustness
+ * net if the script stalls (e.g. stuck SUSPENDED with no peer ever
+ * returning). Same formula as cf21bl-formation/src/main.c's
+ * MISSION_DURATION_S. mission_elapsed_ms (below) is latched from the
+ * FLIGHT_RAMPING -> FLIGHT_FLYING transition, not wall-clock/arm time —
+ * there is no separate "arm" event in this substrate. */
+#define MISSION_DURATION_S (CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u + 40u)
+
 /* Approach gain converting world-frame position error (meters) into a
  * normalized [-1,1] twist command — substrate_webots.c scales the result
  * by its own MAX_SPEED_MPS. 2.0 reaches the twist's unit cap at a 0.5 m
@@ -149,6 +168,7 @@ int main(int argc, char **argv)
     flight_state_t state           = FLIGHT_RAMPING;
     uint32_t        gossip_accum_ms = DEMO_GOSSIP_MS;
     uint32_t        fresh_streak_ms = 0;
+    uint32_t        mission_elapsed_ms = 0;   /* counts up once FLYING starts */
     bool            log_quorum_up   = false;
     int             last_step       = -2;
 
@@ -200,6 +220,24 @@ int main(int argc, char **argv)
              * altitude is held by commanding a rate proportional to the
              * error, not a one-shot absolute setpoint. */
             sp.linear.z = clampf((cruise_alt_m - pz) * 2.0f, -1.0f, 1.0f);
+
+            float origin_dist = sqrtf(own_pos_m.x * own_pos_m.x
+                                       + own_pos_m.y * own_pos_m.y);
+            if (origin_dist > GEOFENCE_RADIUS_M) {
+                printf("id=%u geofence breach (%.2f m > %.2f m) — landing\n",
+                       (unsigned)element_id, (double)origin_dist,
+                       (double)GEOFENCE_RADIUS_M);
+                state = FLIGHT_LANDING;
+                break;
+            }
+
+            mission_elapsed_ms += WM_CYCLE_MS;
+            if (mission_elapsed_ms > (uint32_t)MISSION_DURATION_S * 1000u) {
+                printf("id=%u mission duration elapsed — landing\n",
+                       (unsigned)element_id);
+                state = FLIGHT_LANDING;
+                break;
+            }
 
             /* Real L5: recompute quorum/role/task_slot/abort from the
              * actual world model, then apply the SUSTAINED-freshness
