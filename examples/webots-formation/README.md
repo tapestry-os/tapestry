@@ -185,13 +185,19 @@ C build) and diff every tick against the recording — a regression test for
 script rehearsal:
 
 ```sh
-python3 ../../sdk/tools/choreo_replay.py \
+python3 ../../sdk/tools/choreo_sim.py --replay \
     --script ../cf21bl-formation/change-partners.choreo.toml \
     --telemetry /tmp/telemetry/choreo_0.csv
 ```
 
 See sdk/CHOREO_SCRIPTS.md's "Parity" section for what a clean replay (0
 divergences) actually establishes.
+
+`choreo_sim.py` also has a `--simulate` mode — no CSV, no Webots, no C
+build at all: it drives a synthetic multi-element run of a `.choreo.toml`
+directly through `sdk/python/tapestry` for sub-second script feedback
+while authoring. See sdk/CHOREO_SCRIPTS.md's "Script-authoring
+simulation" section.
 
 ## Known limitations
 

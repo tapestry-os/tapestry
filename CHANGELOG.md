@@ -17,6 +17,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ztest coverage (native_sim, `examples/cf21bl-formation/tests`) for
   `FORM` shapes, `MOVE` translation, and `scope = "all"` collective
   achievement (including solo/vacuous-truth and stale-peer cases)
+- **Webots simulation pattern (`examples/webots-formation/`)** — compiles
+  the real, unmodified L3-L7 stack (`world_model.c`/`scr.c`/`bse.c`/
+  `choreo.c`/`gossip.c`) into a plain host C Webots controller against
+  simulated physics: a hardware-in-the-loop bridge. Structured as a
+  reusable pattern rather than a single-robot demo: `controllers/common/`
+  holds everything substrate-agnostic (POSIX UDP transceiver, Zephyr
+  header shim, target tracker)
+- **Offline capture/replay harness for the Choreo engine** — 
+  `sdk/tools/choreo_sim.py
+  --simulate` (renamed from `choreo_replay.py`, which is now its
+  `--replay` mode; both share one tick loop and plot output) drives N
+  in-process `Choreo` objects through a `.choreo.toml` with no C, Zephyr,
+  or network involved. For someone editing a script who has no build 
+  toolchain or Webots set up yet, or is designing for a substrate 
+  that doesn't exist as code
 
 ### Changed
 - **`sdk/README.md`, `choreo.h`, `bse.h`, `bse.c`, `choreo.c`, and their

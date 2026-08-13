@@ -248,14 +248,14 @@ final positions match exactly between the two, which makes the Python SDK
 a legitimate way to rehearse a script (including multi-agent parity checks)
 before ever compiling it for hardware.
 
-That parity claim doesn't have to stay theoretical — `sdk/tools/choreo_replay.py`
-checks it against real recorded runs. Capture a Webots run's per-tick inputs
-and outputs to CSV (set `TAPESTRY_TELEMETRY_DIR`; see
+That parity claim doesn't have to stay theoretical — `sdk/tools/choreo_sim.py
+--replay` checks it against real recorded runs. Capture a Webots run's
+per-tick inputs and outputs to CSV (set `TAPESTRY_TELEMETRY_DIR`; see
 `examples/webots-formation/controllers/cf21bl/choreo_telemetry.h`), then
 replay that CSV through the Python engine and diff every tick:
 
 ```sh
-python3 sdk/tools/choreo_replay.py \
+python3 sdk/tools/choreo_sim.py --replay \
     --script examples/cf21bl-formation/change-partners.choreo.toml \
     --telemetry /path/to/choreo_0.csv
 ```
@@ -268,6 +268,35 @@ capture — re-record) or a genuine regression in `sdk/python/tapestry` vs.
 `tapestry-os/subsys/choreo`+`bse`. This is offline capture-and-replay
 infrastructure for regression testing, not ML training — see
 `tapestry/choreo.h`'s status banner for that distinction.
+
+## Script-authoring simulation
+
+`sdk/tools/choreo_sim.py --simulate` is a lightweight, dependency-free
+sanity check for a script you're still editing — sub-second feedback
+without a build toolchain or Webots set up, and without a substrate
+existing at all yet. It instantiates N in-process `Choreo` objects (no C,
+no Zephyr, no network) and ticks them with perfect shared visibility
+(every element sees every other element's current position; no gossip,
+staleness, or quorum-degradation simulation — quorum is synthesized
+HEALTHY), moving each element toward its directive's target at a capped
+speed:
+
+```sh
+python3 sdk/tools/choreo_sim.py --simulate \
+    --script examples/cf21bl-formation/change-partners.choreo.toml \
+    --elements 4 --plot
+```
+
+`--plot` renders a trajectory/timeline figure (lazy `matplotlib` import —
+only this code path touches it; compiling or replaying a script stays
+standard-library-only). This is deliberately NOT a fidelity simulator: no
+repulsion, leash, or arena-clamp physics — that realism belongs to
+`examples/webots-formation`. It is also not a replacement for
+`tapestry-csm-sim`/`tapestry-scr-sim`, which validate partition tolerance
+and quorum/election under injected network faults against the real
+production C engine; `--simulate` assumes all of that away to get a fast
+script check on the Python mirror. Run with `--help` for the full flag
+reference (`--elements`, `--speed`, `--plot`, `--out`).
 
 ## Regeneration workflow
 
@@ -292,7 +321,9 @@ every run.
 - `examples/cf21bl-formation/change-partners.choreo.toml` — a
   flight-validated worked example (two-drone station swap) with a
   build+fly walkthrough in that example's own README.
-- `sdk/tools/choreo_replay.py` — the offline replay/regression harness;
-  run with `--help` or read its module docstring for CLI details.
+- `sdk/tools/choreo_sim.py` — the offline replay/regression harness
+  (`--replay`) and the synthetic script-authoring simulator
+  (`--simulate`); run with `--help` or read its module docstring for CLI
+  details.
 - `examples/webots-formation/controllers/cf21bl/choreo_telemetry.h` — the
-  per-tick CSV capture that feeds `choreo_replay.py`.
+  per-tick CSV capture that feeds `choreo_sim.py --replay`.
