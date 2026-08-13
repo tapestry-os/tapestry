@@ -62,9 +62,10 @@
  * error, well inside the DEMO_TARGET_LEASH_M tracker already enforces. */
 #define TRACK_KP 2.0f
 
-/* Synthetic L5 quorum debounce — see cf21bl-formation/src/main.c's
- * QUORUM_UP_MS comment (2026-07-19 flight 2) for why quorum requires
- * SUSTAINED freshness, not just an instantaneous fresh peer. */
+/* Quorum debounce, layered on top of the real L5 scr_tick() output below
+ * — see cf21bl-formation/src/main.c's QUORUM_UP_MS comment (2026-07-19
+ * flight 2) for why quorum requires SUSTAINED freshness, not just an
+ * instantaneous fresh peer. */
 #define QUORUM_UP_MS 2000u
 
 /* UDP base port for the POSIX transceiver — see transceiver_udp_posix.h. */
@@ -110,7 +111,16 @@ int main(int argc, char **argv)
                 (unsigned)element_id);
     }
 
+    /* Real L5 SCR — quorum_min=quorum_target=1: this script only ever
+     * needs one fresh partner (same threshold the old synthetic quorum
+     * used). SCR_CAP_ACTUATOR satisfies the script's CHOREO_CAP_LOCOMOTION
+     * requirement, enforced below by choreo_submit_script() now that a
+     * real scr is registered. */
+    scr_state_t scr;
+    scr_init(&scr, element_id, 1, 1, SCR_CAP_ACTUATOR);
+
     choreo_init(element_id);
+    choreo_register_scr(&scr);
     if (choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN) != 0) {
         fprintf(stderr, "id=%u choreo script rejected — staying grounded\n",
                 (unsigned)element_id);
@@ -124,10 +134,6 @@ int main(int argc, char **argv)
      * TAPESTRY_TELEMETRY_DIR is set. */
     choreo_telemetry_t *telemetry = choreo_telemetry_open(element_id);
     uint32_t telemetry_tick = 0;
-
-    scr_state_t scr_synth = {0};
-    scr_synth.own_id       = element_id;
-    scr_synth.quorum_state = SCR_QUORUM_LOST;   /* until peers are fresh */
 
     element_state_t own_state = {0};
     own_state.id = element_id;
@@ -195,16 +201,14 @@ int main(int argc, char **argv)
              * error, not a one-shot absolute setpoint. */
             sp.linear.z = clampf((cruise_alt_m - pz) * 2.0f, -1.0f, 1.0f);
 
-            /* Synthetic L5 quorum from L4 freshness, debounced on the way
-             * up — see QUORUM_UP_MS above. */
-            int fresh_peers = 0;
-            for (int i = 0; i < MAX_ELEMENTS; i++) {
-                const wm_entry_t *e = &wm.entries[i];
-                if (e->is_active && !e->is_self && !e->is_stale) {
-                    fresh_peers++;
-                }
-            }
-            if (fresh_peers >= 1) {
+            /* Real L5: recompute quorum/role/task_slot/abort from the
+             * actual world model, then apply the SUSTAINED-freshness
+             * debounce on top — see QUORUM_UP_MS above. Only quorum_state
+             * (the field choreo_tick() reads) is overridden; scr's own
+             * role/task_slot/abort bookkeeping keeps tracking the real,
+             * undebounced quorum history. */
+            scr_tick(&scr, &wm);
+            if (scr.fresh_count >= 1) {
                 if (fresh_streak_ms < QUORUM_UP_MS) {
                     fresh_streak_ms += WM_CYCLE_MS;
                 }
@@ -213,15 +217,14 @@ int main(int argc, char **argv)
             }
             bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
             log_quorum_up = quorum_up;
-            scr_synth.fresh_count  = (uint8_t)fresh_peers;
-            scr_synth.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY : SCR_QUORUM_LOST;
+            scr.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY : SCR_QUORUM_LOST;
 
-            choreo_tick(&wm, &scr_synth);
+            choreo_tick(&wm, &scr);
 
             const tapestry_bse_directive_t *dir = choreo_get_directive();
             choreo_telemetry_write(telemetry, telemetry_tick,
                                    (double)telemetry_tick * WM_CYCLE_MS / 1000.0,
-                                   &wm, &scr_synth, dir);
+                                   &wm, &scr, dir);
             telemetry_tick++;
 
             if (choreo_script_step() != last_step) {

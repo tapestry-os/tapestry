@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Real L5 SCR wired into `examples/cf21bl-formation` and
+  `examples/webots-formation`'s cf21bl controller** — both now call
+  `scr_init()`/`scr_tick()` (quorum, role, task_slot, abort protocol)
+  instead of synthesizing a quorum signal from raw L4 freshness;
+  `SUSPENDED` is now triggered by the actual L5 quorum computation in
+  both. 
 - **Collective achievement (`scope = "all"`)** — each element now gossips
   an `achieved` bit every cycle (`tapestry_gossip_frame_t` gains an
   `achieved` field, a wire-compatible append — no `TAPESTRY_WIRE_VERSION`
