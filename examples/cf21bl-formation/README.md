@@ -160,7 +160,10 @@ minutes after a console-less boot still tells the whole story.
    hold, ~4 s direct-path swap, 8 s bow, then both land in place — each on
    its partner's original mark — and disarm.
 
-The synthetic quorum is **debounced upward**: a peer only counts as
+This build carries a real L5 SCR (`scr_init()`/`scr_tick()` — quorum,
+role, task slot, and the abort protocol, computed from the actual world
+model, not a stand-in), with one flight-tested filter on top: the
+quorum the Choreo sees is **debounced upward** — a peer only counts as
 contact after ~2 s of sustained freshness (≥ 2 consecutive gossip
 frames).  A single lucky packet through a bad radio window used to wake
 the Choreo for a second at a time, letting the tracker's leash ratchet

@@ -20,7 +20,7 @@
  * (rather than one shared file) because each element's replay is
  * self-contained — it only ever needs its own recorded rows, never another
  * element's file, so there's no cross-file join to get right at replay
- * time. See sdk/tools/choreo_replay.py for the reader.
+ * time. See sdk/tools/choreo_sim.py (--replay mode) for the reader.
  */
 
 #ifndef TAPESTRY_WEBOTS_CHOREO_TELEMETRY_H

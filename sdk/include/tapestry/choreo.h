@@ -30,8 +30,13 @@
  * ║  Webots physics), and an offline capture/replay harness (opt-in CSV      ║
  * ║  capture of per-tick inputs/outputs — choreo_telemetry.h — replayed      ║
  * ║  offline through sdk/python/tapestry and diffed tick-by-tick against     ║
- * ║  the recording — sdk/tools/choreo_replay.py; see sdk/CHOREO_SCRIPTS.md's ║
- * ║  "Parity" section).                                                      ║
+ * ║  the recording — sdk/tools/choreo_sim.py --replay; see                   ║
+ * ║  sdk/CHOREO_SCRIPTS.md's "Parity" section), and a synthetic              ║
+ * ║  script-authoring simulator (sdk/tools/choreo_sim.py --simulate — N      ║
+ * ║  in-process Choreo instances, perfect shared visibility, no C/Zephyr/    ║
+ * ║  network, deliberately no repulsion/leash/arena-clamp physics; not a     ║
+ * ║  fidelity simulator, see sdk/CHOREO_SCRIPTS.md's "Script-authoring       ║
+ * ║  simulation" section).                                                   ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 

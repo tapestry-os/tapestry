@@ -3,9 +3,11 @@
  *
  * Two build modes (Kconfig choice DEMO_MODE):
  *
- *   DEMO_MODE_CHOREO (default) — the L6/L7 path.  ONE BINARY for all
+ *   DEMO_MODE_CHOREO (default) — the L5/L6/L7 path.  ONE BINARY for all
  *     drones: element IDs are negotiated at boot (transport_negotiate_id,
- *     same auto-ID protocol as cutebot-formation).  A declarative L7
+ *     same auto-ID protocol as cutebot-formation).  A real L5 SCR (see
+ *     scr_init()/scr_tick() below) drives quorum/role/task_slot/abort from
+ *     the actual world model — no synthetic quorum.  A declarative L7
  *     Choreo script drives the flight through the L6 BSE:
  *       1. hold  — station-keep at the current position (coordinate-free)
  *       2. exchange — swap places: each drone takes its partner's station
@@ -108,7 +110,7 @@
 #include <tapestry/transport.h>
 #include <tapestry/substrate.h>
 #ifdef CONFIG_DEMO_MODE_CHOREO
-#include <tapestry/scr.h>      /* scr_state_t for the synthetic quorum */
+#include <tapestry/scr.h>      /* real L5 quorum/role/task_slot/abort */
 #include <tapestry/choreo.h>
 #include "gossip.h"            /* gossip_own_id_frames — duplicate-ID diag */
 /* The show itself.  GENERATED from ../change-partners.choreo.toml (the
@@ -400,16 +402,27 @@ int main(void)
             (double)DEMO_TARGET_SPACING_M);
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
+    /* Real L5 SCR.  CONFIG_TAPESTRY_QUORUM_MIN/_TARGET (this Kconfig,
+     * default 1/1 — this script only ever needs one fresh partner) were
+     * previously dead config, unused anywhere in this example; same
+     * options tapestry-scr-hw's reference element feeds to scr_init().
+     * SCR_CAP_ACTUATOR satisfies the script's CHOREO_CAP_LOCOMOTION
+     * requirement, enforced below by choreo_submit_script() now that a
+     * real scr is registered. */
+    scr_state_t scr;
+    scr_init(&scr, element_id,
+        (uint8_t)CONFIG_TAPESTRY_QUORUM_MIN,
+        (uint8_t)CONFIG_TAPESTRY_QUORUM_TARGET,
+        SCR_CAP_ACTUATOR);
+
     choreo_init(element_id);
+    choreo_register_scr(&scr);
     /* k_choreo_script comes from the generated choreo_script.h — the
      * authored script is ../change-partners.choreo.toml (coordinate-free:
      * hold references each drone's own station, exchange references the
      * partner's; no takeoff/landing/altitude anywhere — quiescence at
      * script end maps to land-in-place below, and altitude staggering is
-     * a platform deconfliction rule the Choreo never sees).
-     * No L5 SCR on this platform — no scr registered, so the capability
-     * check passes by default; the synthetic quorum below still gives the
-     * lifecycle machine its RUNNING/SUSPENDED signal. */
+     * a platform deconfliction rule the Choreo never sees). */
     if (choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN) != 0) {
         LOG_ERR("id=%u choreo script rejected — staying grounded",
                 (unsigned)element_id);
@@ -420,9 +433,6 @@ int main(void)
             (unsigned)element_id, CHOREO_NAME,
             (unsigned)CHOREO_SCRIPT_LEN,
             (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
-    scr_state_t scr_synth = { 0 };
-    scr_synth.own_id       = element_id;
-    scr_synth.quorum_state = SCR_QUORUM_LOST;   /* until peers are fresh */
 #endif
 
     LOG_INF("id=%u Waiting for lighthouse fix (up to 30 s) ...", (unsigned)element_id);
@@ -653,24 +663,28 @@ int main(void)
             }
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
-            /* Synthetic L5 quorum from L4 freshness (no SCR on this
-             * platform), DEBOUNCED on the way up: a single lucky gossip
-             * frame keeps a peer "fresh" for WM_STALE_THRESHOLD_MS
-             * (1500 ms), so gating on instantaneous freshness let lone
-             * packets flicker the Choreo awake for a second at a time —
-             * each flicker ran the tracker briefly and its leash ratcheted
-             * the target toward a (possibly corrupt) position estimate
-             * (2026-07-19 flight 2).  Requiring ≥ QUORUM_UP_MS of
-             * SUSTAINED freshness means at least two consecutive gossip
-             * frames: real contact, not a lucky packet.  Loss is
-             * immediate. */
+            /* Real L5: recompute quorum/role/task_slot/abort from the
+             * actual world model. */
+            scr_tick(&scr, &wm);
+
+            /* Debounced VIEW of quorum for L6/L7, layered on top of the
+             * real scr_tick() output: a single lucky gossip frame keeps a
+             * peer "fresh" for WM_STALE_THRESHOLD_MS (1500 ms), so gating
+             * on instantaneous freshness let lone packets flicker the
+             * Choreo awake for a second at a time — each flicker ran the
+             * tracker briefly and its leash ratcheted the target toward a
+             * (possibly corrupt) position estimate (2026-07-19 flight 2).
+             * Requiring ≥ QUORUM_UP_MS of SUSTAINED freshness means at
+             * least two consecutive gossip frames: real contact, not a
+             * lucky packet.  Loss is immediate.  Only quorum_state — the
+             * one field choreo_tick() reads — is overridden below; scr's
+             * own role/task_slot/abort bookkeeping keeps tracking the
+             * real, undebounced quorum history. */
 #define QUORUM_UP_MS 2000
-            int   fresh_peers = 0;
-            float nearest_m   = -1.0f;
+            float nearest_m = -1.0f;
             for (int i = 0; i < MAX_ELEMENTS; i++) {
                 const wm_entry_t *e = &wm.entries[i];
                 if (e->is_active && !e->is_self && !e->is_stale) {
-                    fresh_peers++;
                     float dx = e->state.position.x - own_pos_m.x;
                     float dy = e->state.position.y - own_pos_m.y;
                     float d  = sqrtf(dx * dx + dy * dy);
@@ -680,7 +694,7 @@ int main(void)
                 }
             }
             static uint32_t fresh_streak_ms;
-            if (fresh_peers >= 1) {
+            if (scr.fresh_count >= 1) {
                 if (fresh_streak_ms < QUORUM_UP_MS) {
                     fresh_streak_ms += WM_CYCLE_MS;
                 }
@@ -689,9 +703,8 @@ int main(void)
             }
             bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
             log_quorum_up = quorum_up;
-            scr_synth.fresh_count  = (uint8_t)fresh_peers;
-            scr_synth.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY
-                                               : SCR_QUORUM_LOST;
+            scr.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY
+                                         : SCR_QUORUM_LOST;
 
             /* Station-compatibility check, once per contact: stations
              * closer than ~2× the separation floor mean station-keeping
@@ -711,7 +724,7 @@ int main(void)
             }
             was_up = quorum_up;
 
-            choreo_tick(&wm, &scr_synth);
+            choreo_tick(&wm, &scr);
             own_state.goal_achieved = choreo_goal_achieved();
 
             static int last_step = -2;

@@ -185,13 +185,19 @@ C build) and diff every tick against the recording — a regression test for
 script rehearsal:
 
 ```sh
-python3 ../../sdk/tools/choreo_replay.py \
+python3 ../../sdk/tools/choreo_sim.py --replay \
     --script ../cf21bl-formation/change-partners.choreo.toml \
     --telemetry /tmp/telemetry/choreo_0.csv
 ```
 
 See sdk/CHOREO_SCRIPTS.md's "Parity" section for what a clean replay (0
 divergences) actually establishes.
+
+`choreo_sim.py` also has a `--simulate` mode — no CSV, no Webots, no C
+build at all: it drives a synthetic multi-element run of a `.choreo.toml`
+directly through `sdk/python/tapestry` for sub-second script feedback
+while authoring. See sdk/CHOREO_SCRIPTS.md's "Script-authoring
+simulation" section.
 
 ## Known limitations
 
@@ -202,4 +208,5 @@ Deliberate simplifications versus the hardware version:
 | `transport_negotiate_id()` radio auto-ID at boot | Element ID from `.wbt` `controllerArgs` | Webots starts every controller deterministically together — no discovery problem to solve. Auto-ID is a fine stretch goal if it's ever worth exercising in sim too. |
 | UDP broadcast to `255.255.255.255` | Unicast fan-out to a small fixed peer-port list (`controllers/common/transceiver_udp_posix.c`) | Loopback broadcast between sibling processes is unreliable on macOS. Wire format is untouched — this is a transport-only simplification, not a protocol change. |
 | Lighthouse fix-loss handling, battery-critical landing | Not ported | No equivalent failure mode exists against Webots' GPS ground truth in this scope. |
+| `GEOFENCE_RADIUS_M` = 2.0 m (room-scaled) | `GEOFENCE_RADIUS_M` = `DEMO_ARENA_LIMIT_M` (5.0 m) | Same backstop (lands if the drone's actual measured position strays past this radius from the origin — independent of the target-leash/arena-clamp above), sized to this example's own arena instead of the hardware room's. |
 

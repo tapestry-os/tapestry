@@ -35,10 +35,10 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c
 )
 
-# L6 BSE + L7 Choreographer — the choreo demo mode's target source.
-# (No L5 SCR: main.c synthesizes the quorum signal from L4 freshness.)
+# L5 SCR + L6 BSE + L7 Choreographer — the choreo demo mode's target source.
 if(CONFIG_DEMO_MODE_CHOREO)
     target_sources(app PRIVATE
+        ${TAPESTRY_OS_ROOT}/subsys/scr/scr.c
         ${TAPESTRY_OS_ROOT}/subsys/bse/bse.c
         ${TAPESTRY_OS_ROOT}/subsys/choreo/choreo.c
     )
