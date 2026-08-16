@@ -5,13 +5,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-08-16
+
 ### Added
 - **Real L5 SCR wired into `examples/cf21bl-formation` and
   `examples/webots-formation`'s cf21bl controller** — both now call
-  `scr_init()`/`scr_tick()` (quorum, role, task_slot, abort protocol)
-  instead of synthesizing a quorum signal from raw L4 freshness;
-  `SUSPENDED` is now triggered by the actual L5 quorum computation in
-  both. Enforced real-world geofence and mission-duration landing backstops.
+  `scr_init()`/`scr_tick()`, so role, `task_slot`, leader election and the
+  abort protocol are computed from the actual world model instead of being
+  synthesized from raw L4 freshness. Note that `SUSPENDED` is additionally
+  gated by an application-level debounce: both apps overwrite
+  `scr_state_t::quorum_state` after `scr_tick()` with a sustained-freshness signal (`QUORUM_UP_MS`, 2 s) before handing it to `choreo_tick()`. At the thresholds both apps configure (`quorum_min` = `quorum_target` = 1) this yields the same HEALTHY/LOST verdict L5 computes, plus a 2 s confirmation before an up-transition is believed — quorum loss is still immediate. The debounce is applied to a copy handed to `choreo_tick()`, never written back into the live `scr_state_t`, so L5's own accessors stay mutually consistent. Hysteresis on quorum acquisition belongs inside L5 rather than being repeated per application — deciding whether the collective has quorum is L5's responsibility, and an obligation carried by every element main loop is one every new element main loop can forget (TODO). Enforced real-world geofence and mission-duration landing backstops.
 - **Collective achievement (`scope = "all"`)** — each element now gossips
   an `achieved` bit every cycle (`tapestry_gossip_frame_t` gains an
   `achieved` field, a wire-compatible append — no `TAPESTRY_WIRE_VERSION`
@@ -38,10 +41,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   or network involved. For someone editing a script who has no build 
   toolchain or Webots set up yet, or is designing for a substrate 
   that doesn't exist as code
+- **`choreoc.py --check`, enforced in CI** — generated `choreo_script.h`
+  headers are committed so firmware builds never need Python, which means
+  a script edit that is not recompiled ships silently. `--check` writes
+  nothing and exits non-zero if a committed header does not match what its
+  script generates today, the same guarantee
+  `gen_wire_protocol.py --check` already gave the wire mirrors. With no
+  arguments it discovers every generated header in the repository and
+  recovers each one's source from the regenerate command line in its own
+  banner, so an added consumer is covered without editing CI — the drift
+  it is meant to catch happened precisely because a second consumer was
+  added and nothing knew to keep it in sync
 
 ### Changed
-- **`sdk/README.md`, `choreo.h`, `bse.h`, `bse.c`, `choreo.c`, and their
-  Python mirrors** now achieved v1.0 feature-scope 
+- **Status banners rewritten across `sdk/README.md`, `choreo.h`, `bse.h`,
+  `bse.c`, `choreo.c` and their Python mirrors** — feature ready for v1.0 release. They now itemize the feature scope: what L6/L7
+  implement today, and which capabilities (physics planner, ML runtime,
+  goal queue with preemption and arbitration, hi-fi simulation bridge,
+  monitor telemetry export) are deliberately out of scope rather than
+  merely unfinished
 
 ### Fixed
 - **`FORM` shape** — `shape = "line"` and `"grid"` were accepted and
@@ -54,6 +72,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CONVERGE`, correctly, since there is no formation to preserve
 - **`tapestry-scr-hw`'s movement loop** — `substrate_move()` is now
   directive-driven reading `choreo_get_directive()`
+- **`examples/webots-formation` ran a stale Choreo script** — its generated
+  `choreo_script.h` predated collective achievement and was missing
+  `scope = "all"` on the exchange step, so the simulation did not run the
+  same script as the hardware demo despite the README saying it did.
+  Regenerated from `change-partners.choreo.toml`
+- **Out-of-range element ID corrupted memory in L4/L5** — `wm_init()` and
+  `wm_update_self()` indexed `world_model_t::entries[]` with an unvalidated
+  `owner_id` (an out-of-bounds *write* for any ID ≥ `MAX_ELEMENTS`),
+  `wm_check_collisions()` read the same way, and `scr_tick()` could write
+  one entry past its `candidates[]` array because its peer loop skips only
+  `own_id`. Peer IDs arriving over the wire were already validated; the
+  owner's ID, which comes from the application, was not. It is now checked
+  once in `wm_init()` — an out-of-range owner leaves the model inert rather
+  than corrupting adjacent memory — and `scr_tick()`'s array is sized for
+  the worst case. Reachable through a hand-configured element ID or an
+  `ELEMENT_ID_INVALID` propagated from a failed identity negotiation
+- **`transport.h` contradicted `wire.h` on QoS** — `transport_send()`'s
+  documentation claimed `qos_tier` was "embedded in the gossip frame so
+  peers can prioritize accordingly". It is not: `gossip_send()` ignores the
+  parameter, and `wire.h` correctly documents the tiers as reserved
+  placeholders. `transport.h` now says the same
 
 ## [0.8.0] — 2026-08-01
 
@@ -235,8 +274,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for all three hardware targets and Phase 2 firmware
 - `CODE_OF_CONDUCT.md`, `SECURITY.md`
 
-[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...HEAD
-[0.8.0]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...v0.8.0
+[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...v0.9.0[0.8.0]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/tapestry-os/tapestry/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/tapestry-os/tapestry/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tapestry-os/tapestry/compare/v0.5.0...v0.6.0

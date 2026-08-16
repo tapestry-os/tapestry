@@ -303,11 +303,31 @@ reference (`--elements`, `--speed`, `--plot`, `--out`).
 1. Edit `<name>.choreo.toml`.
 2. `python3 sdk/tools/choreoc.py <name>.choreo.toml` (or with `-o` if not
    using the default output path).
-3. Rebuild the firmware. Commit both the `.toml` and the regenerated
-   header — CI/other builders never run `choreoc` themselves.
+3. **Regenerate every consumer.** One script can be compiled into more
+   than one header — `change-partners.choreo.toml` feeds both
+   `examples/cf21bl-formation/src/` and
+   `examples/webots-formation/controllers/cf21bl/` — and each needs its
+   own `-o` run. Miss one and that consumer silently keeps running the
+   previous version of the show; this has happened.
+4. Rebuild the firmware. Commit both the `.toml` and the regenerated
+   headers — CI/other builders never run `choreoc` themselves.
+
+To find out what is stale without regenerating anything:
+
+```bash
+python3 sdk/tools/choreoc.py --check
+```
+
+With no arguments this checks every generated header in the repository,
+recovering each one's source script from the regenerate command line in
+its own banner, and exits non-zero if any differs from what its script
+generates today. CI runs exactly this, so a missed step 3 fails the build
+instead of reaching a drone. Add `<script> -o <header>` to check a single
+pair.
 
 The Python side needs no rebuild step; it reads the `.toml` directly on
-every run.
+every run — which is also why a stale header shows up as the C and Python
+engines disagreeing in a replay diff.
 
 ## See also
 

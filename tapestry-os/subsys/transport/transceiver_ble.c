@@ -47,11 +47,25 @@ LOG_MODULE_REGISTER(transceiver_ble, LOG_LEVEL_INF);
  * 1 byte (length field) + 1 byte (AD type) + N bytes of data, so the data
  * for our single manufacturer AD record must be ≤ 29 bytes.
  *
- * Budget (no auth): 3 (prefix) + 21 (frame) + 0 (tag) = 24 ≤ 29  ✓
- * Budget (auth):    3 (prefix) + 21 (frame) + 4 (tag) = 28 ≤ 29  ✓ (1 byte
- *                    of margin left — the frame cannot grow again without
- *                    extended advertising or dropping the auth tag)
+ * Budget (no auth): 3 (prefix) + 22 (frame) + 0 (tag) = 25 ≤ 29  ✓
+ * Budget (auth):    3 (prefix) + 22 (frame) + 4 (tag) = 29 ≤ 29  ✓ — EXACTLY
+ *                    at the limit, zero margin.  The gossip frame cannot
+ *                    grow by even one byte while CONFIG_TAPESTRY_WIRE_AUTH_
+ *                    ENABLED is a supported configuration; growing it needs
+ *                    extended advertising, a second AD record, or a shorter
+ *                    auth tag.
+ *
+ * These numbers were hand-maintained and went stale once already: the frame
+ * grew 21 → 22 bytes when the `achieved` field was appended, and nothing
+ * caught it because no build in this repo compiles the auth path.  The
+ * BUILD_ASSERT below is the real guard — it fails the build rather than the
+ * radio if the frame outgrows the record.
  */
+BUILD_ASSERT(MFR_DATA_SIZE <= 29,
+             "Tapestry gossip AD record exceeds the 31-byte BLE advertising "
+             "payload (29 bytes usable after the AD length+type prefix). "
+             "Shrink tapestry_gossip_frame_t, shorten the auth tag, or move "
+             "to extended advertising.");
 
 #define RX_QUEUE_DEPTH  8
 

@@ -17,9 +17,19 @@ for choreo = "change-partners") — see sdk/CHOREO_SCRIPTS.md.
 
 Usage:
     python3 sdk/tools/choreoc.py <name.choreo.toml> [-o <out.h>]
+    python3 sdk/tools/choreoc.py --check [<name.choreo.toml> [-o <out.h>]]
 
 With no -o, the header is written next to the script as
 src/choreo_script.h if src/ exists, else choreo_script.h alongside it.
+
+--check writes nothing and exits 1 if a committed header does not match
+what its script would generate today.  With no script argument it checks
+EVERY generated header in the repository, recovering each one's source
+from the regenerate command line embedded in its own banner.  Discovery
+rather than a hardcoded list is deliberate: a script compiled into two
+consumers drifted once already (examples/webots-formation's copy sat a
+release behind examples/cf21bl-formation's), and a list that has to be
+edited by hand when a consumer is added would have missed it the same way.
 
 The Python SDK reads the SAME file directly — no generation step:
     from tapestry.script_toml import load_steps
@@ -27,8 +37,18 @@ The Python SDK reads the SAME file directly — no generation step:
 """
 
 import argparse
+import re
 import sys
 from pathlib import Path
+
+# choreoc.py lives at <workspace>/tapestry/sdk/tools/.  Generated banners
+# spell paths relative to the WORKSPACE root (west's checkout root, the
+# directory holding tapestry/), while discovery scans the repository.
+WORKSPACE_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+REPO_ROOT      = Path(__file__).resolve().parent.parent.parent
+
+# "python3 tapestry/sdk/tools/choreoc.py <script> -o <header>"
+REGEN_RE = re.compile(r"choreoc\.py\s+(\S+)\s+-o\s+(\S+)")
 
 # Import the tapestry package from the sibling sdk/python directory without
 # requiring installation.
@@ -141,38 +161,111 @@ static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {{
 """
 
 
+def default_output(script_path: Path) -> Path:
+    """Where the header lands when -o is omitted."""
+    src_dir = script_path.parent / "src"
+    return (src_dir if src_dir.is_dir() else script_path.parent) \
+        / "choreo_script.h"
+
+
+def render(script_path: Path, out_path: Path) -> tuple[ChoreoScript, str]:
+    """Parse a script and render the header text it should produce at
+    out_path.  The output embeds out_path (in the regenerate banner), so
+    the same script rendered for two consumers differs by that line — which
+    is why check compares against a render targeting the SAME path."""
+    script = parse_file(script_path)
+    try:
+        rel_script = script_path.resolve().relative_to(WORKSPACE_ROOT)
+        rel_out    = out_path.resolve().relative_to(WORKSPACE_ROOT)
+        regen = f"python3 tapestry/sdk/tools/choreoc.py {rel_script} -o {rel_out}"
+    except ValueError:
+        regen = f"python3 choreoc.py {script_path} -o {out_path}"
+    return script, emit_header(script, script_path.name, regen)
+
+
+def discover_pairs() -> list[tuple[Path, Path]]:
+    """Find every committed generated header and recover its source script
+    from the regenerate command line in its own banner.  Returns
+    (script, header) pairs.  Build trees are skipped — they hold copies."""
+    pairs: list[tuple[Path, Path]] = []
+    for header in sorted(REPO_ROOT.rglob("choreo_script.h")):
+        if "build" in header.parts:
+            continue
+        m = REGEN_RE.search(header.read_text())
+        if m is None:
+            print(f"choreoc: {header.relative_to(REPO_ROOT)} — no regenerate "
+                  f"command in banner; cannot determine its source script",
+                  file=sys.stderr)
+            continue
+        script = (WORKSPACE_ROOT / m.group(1)).resolve()
+        if not script.is_file():
+            print(f"choreoc: {header.relative_to(REPO_ROOT)} — banner names "
+                  f"{m.group(1)}, which does not exist", file=sys.stderr)
+            continue
+        pairs.append((script, header))
+    return pairs
+
+
+def check_pair(script_path: Path, out_path: Path) -> bool:
+    """True if out_path already matches what script_path generates."""
+    rel = out_path.resolve()
+    try:
+        rel = rel.relative_to(REPO_ROOT)
+    except ValueError:
+        pass
+    try:
+        _, expected = render(script_path, out_path)
+    except (ScriptError, OSError) as e:
+        print(f"choreoc: {e}", file=sys.stderr)
+        return False
+    if not out_path.is_file():
+        print(f"choreoc: {rel} — MISSING (never generated)", file=sys.stderr)
+        return False
+    if out_path.read_text() != expected:
+        print(f"choreoc: {rel} — STALE (regeneration needed)", file=sys.stderr)
+        return False
+    print(f"choreoc: {rel} — already up to date")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         prog="choreoc", description="Compile a Choreo script (TOML) into a "
         "C header of choreo_step_t.")
-    ap.add_argument("script", type=Path, help="path to the .toml script")
+    ap.add_argument("script", type=Path, nargs="?",
+                    help="path to the .toml script (omit with --check to "
+                         "check every generated header in the repository)")
     ap.add_argument("-o", "--output", type=Path, default=None,
                     help="output header path (default: src/choreo_script.h "
                          "next to the script if src/ exists, else "
                          "choreo_script.h)")
+    ap.add_argument("--check", action="store_true",
+                    help="exit 1 if a committed header does not match what "
+                         "its script generates; write nothing")
     args = ap.parse_args()
 
+    if args.script is None:
+        if not args.check:
+            ap.error("a script is required unless --check is given")
+        pairs = discover_pairs()
+        if not pairs:
+            print("choreoc: no generated headers found", file=sys.stderr)
+            return 1
+        return 0 if all([check_pair(s, h) for s, h in pairs]) else 1
+
+    out = args.output if args.output is not None \
+        else default_output(args.script)
+
+    if args.check:
+        return 0 if check_pair(args.script, out) else 1
+
     try:
-        script = parse_file(args.script)
+        script, text = render(args.script, out)
     except (ScriptError, OSError) as e:
         print(f"choreoc: {e}", file=sys.stderr)
         return 1
 
-    out = args.output
-    if out is None:
-        src_dir = args.script.parent / "src"
-        out = (src_dir if src_dir.is_dir() else args.script.parent) \
-              / "choreo_script.h"
-
-    try:
-        repo = Path(__file__).resolve().parent.parent.parent.parent
-        rel_script = args.script.resolve().relative_to(repo)
-        rel_out = out.resolve().relative_to(repo)
-        regen = f"python3 tapestry/sdk/tools/choreoc.py {rel_script} -o {rel_out}"
-    except ValueError:
-        regen = f"python3 choreoc.py {args.script} -o {out}"
-
-    out.write_text(emit_header(script, args.script.name, regen))
+    out.write_text(text)
     total_s = script.total_timeout_ms / 1000.0
     print(f"choreoc: \"{script.name}\" — {len(script.steps)} step(s), "
           f"total time bound {total_s:g} s → {out}")

@@ -676,10 +676,27 @@ int main(void)
              * (possibly corrupt) position estimate (2026-07-19 flight 2).
              * Requiring ≥ QUORUM_UP_MS of SUSTAINED freshness means at
              * least two consecutive gossip frames: real contact, not a
-             * lucky packet.  Loss is immediate.  Only quorum_state — the
-             * one field choreo_tick() reads — is overridden below; scr's
-             * own role/task_slot/abort bookkeeping keeps tracking the
-             * real, undebounced quorum history. */
+             * lucky packet.  Loss is immediate.  At this example's
+             * thresholds (quorum_min = quorum_target = 1) that is the same
+             * verdict scr_tick() computes, plus a confirmation delay on the
+             * up-transition that peer counts cannot express.
+             *
+             * The debounce is applied to a COPY handed to choreo_tick(),
+             * never written back into scr: quorum_state is the only field
+             * L6/L7 reads, and mutating the live struct would leave
+             * scr_get_quorum() reporting the debounced view while
+             * _prev_quorum_state and scr_get_abort_state() tracked the real
+             * history — a state the L5 contract says cannot happen, and a
+             * trap for whoever wires in the abort protocol.
+             *
+             * This debounce belongs inside L5, not here: deciding whether
+             * the collective has quorum is L5's job, and an obligation
+             * every element main loop has to remember is one a new element
+             * main loop will forget.  It lives here only because moving it
+             * makes scr_tick() time-dependent (today it is a pure function
+             * of the world model) and delays SCR_ABORT_CLEARED by
+             * QUORUM_UP_MS — a change to the L5→L6 contract that wants
+             * flight validation, not a refactor.  Deferred past 0.9.0. */
 #define QUORUM_UP_MS 2000
             float nearest_m = -1.0f;
             for (int i = 0; i < MAX_ELEMENTS; i++) {
@@ -703,8 +720,9 @@ int main(void)
             }
             bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
             log_quorum_up = quorum_up;
-            scr.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY
-                                         : SCR_QUORUM_LOST;
+            scr_state_t scr_view = scr;
+            scr_view.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY
+                                              : SCR_QUORUM_LOST;
 
             /* Station-compatibility check, once per contact: stations
              * closer than ~2× the separation floor mean station-keeping
@@ -724,7 +742,7 @@ int main(void)
             }
             was_up = quorum_up;
 
-            choreo_tick(&wm, &scr);
+            choreo_tick(&wm, &scr_view);
             own_state.goal_achieved = choreo_goal_achieved();
 
             static int last_step = -2;

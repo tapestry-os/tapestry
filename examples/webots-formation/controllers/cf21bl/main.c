@@ -241,10 +241,11 @@ int main(int argc, char **argv)
 
             /* Real L5: recompute quorum/role/task_slot/abort from the
              * actual world model, then apply the SUSTAINED-freshness
-             * debounce on top — see QUORUM_UP_MS above. Only quorum_state
-             * (the field choreo_tick() reads) is overridden; scr's own
-             * role/task_slot/abort bookkeeping keeps tracking the real,
-             * undebounced quorum history. */
+             * debounce on top — see QUORUM_UP_MS above. The debounce goes
+             * into a COPY handed to L6/L7, never back into scr, so
+             * scr_get_quorum() and scr_get_abort_state() cannot disagree
+             * about quorum history; same rationale as cf21bl-formation's
+             * main.c, which carries the full comment. */
             scr_tick(&scr, &wm);
             if (scr.fresh_count >= 1) {
                 if (fresh_streak_ms < QUORUM_UP_MS) {
@@ -255,14 +256,18 @@ int main(int argc, char **argv)
             }
             bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
             log_quorum_up = quorum_up;
-            scr.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY : SCR_QUORUM_LOST;
+            scr_state_t scr_view = scr;
+            scr_view.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY : SCR_QUORUM_LOST;
 
-            choreo_tick(&wm, &scr);
+            choreo_tick(&wm, &scr_view);
 
+            /* Capture the VIEW, not scr: the replay harness re-drives the
+             * Python engine against exactly what choreo_tick() saw, so the
+             * recorded quorum_state has to be the debounced one. */
             const tapestry_bse_directive_t *dir = choreo_get_directive();
             choreo_telemetry_write(telemetry, telemetry_tick,
                                    (double)telemetry_tick * WM_CYCLE_MS / 1000.0,
-                                   &wm, &scr, dir);
+                                   &wm, &scr_view, dir);
             telemetry_tick++;
 
             if (choreo_script_step() != last_step) {
@@ -356,6 +361,16 @@ int main(int argc, char **argv)
         if (gossip_accum_ms >= DEMO_GOSSIP_MS) {
             gossip_accum_ms = 0;
             own_state.update_seq++;
+            /* Publish this element's own-goal achievement so peers can
+             * aggregate the scope="all" collective predicate
+             * (choreo_collective_achieved()). Refreshed here, at the send,
+             * rather than beside choreo_tick(): this loop keeps gossiping
+             * after landing (see above), and a landed element must report
+             * the achievement state it actually finished on, not the one it
+             * held on its last airborne tick. Every element main loop that
+             * gossips has to do this — without it the bit is permanently 0
+             * and a scope="all" step can never advance on achievement. */
+            own_state.goal_achieved = choreo_goal_achieved();
             gossip_send(&own_state, TAPESTRY_QOS_SOFT_RT);
         }
     }
