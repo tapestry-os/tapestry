@@ -54,6 +54,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   added and nothing knew to keep it in sync
 
 ### Changed
+- **L6/L7 interface prepared for a queueing implementation** — no behavior
+  change; three adjustments so a prioritised-goal-queue BSE can drop in
+  behind the same headers without a breaking release. (1)
+  `bse_submit_intent()` documented that the *displaced* intent's fate is
+  implementation-defined; it previously promised the achievement predicate
+  and every activation capture would be reset, which a preempting
+  implementation must not do. The reference implementation still discards,
+  as before. (2) The state an intent accumulates while active — achievement
+  progress, HOLD station, EXCHANGE snapshot and arc progress, MOVE centroid
+  offset — is now grouped as `bse_activation_t` in `bse.c` rather than
+  fourteen loose statics, since that is exactly what a preempting engine has
+  to stack; tick-scoped values are deliberately left outside it. (3)
+  `choreo_goal_t` and `tapestry_bse_intent_t` gain a caller-assigned
+  `id` (0 = anonymous, opaque to Tapestry, unread by this implementation),
+  so per-goal cancel and preemption reporting can be added later without
+  changing `choreo_submit_goal()`'s return convention — every one of its
+  call sites tests it against 0 today. Also documented that a preempted
+  goal reports as `SUSPENDED` rather than a new lifecycle state, so
+  `choreo_state_t` need never grow a member and break existing switches
 - **Status banners rewritten across `sdk/README.md`, `choreo.h`, `bse.h`,
   `bse.c`, `choreo.c` and their Python mirrors** — feature ready for v1.0 release. They now itemize the feature scope: what L6/L7
   implement today, and which capabilities (physics planner, ML runtime,
