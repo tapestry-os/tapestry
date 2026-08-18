@@ -17,11 +17,9 @@ Usage:
 """
 
 import argparse
-import sys
 
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
 
 QUORUM_NAMES = {0: 'LOST', 1: 'DEGRADED', 2: 'HEALTHY'}
 ROLE_NAMES   = {0: 'NONE', 1: 'FOLLOWER', 2: 'LEADER'}
@@ -82,7 +80,7 @@ def make_figure(csvs: list[str], labels: list[str], out: str | None):
 
     ax_fresh, ax_quorum, ax_role, ax_leader, ax_age = axes
 
-    for path, lbl in zip(csvs, labels):
+    for path, lbl in zip(csvs, labels, strict=True):
         df = load(path)
         plot_run(axes, df, label_prefix=lbl if len(csvs) > 1 else '')
 

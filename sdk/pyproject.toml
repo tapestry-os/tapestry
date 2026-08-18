@@ -1,0 +1,76 @@
+# pyproject.toml — configuration for the Python SDK's tooling.
+#
+# Tapestry ships no Python package: the SDK (python/tapestry), the tools
+# (tools/) and the simulation orchestrators are run in place from a source
+# checkout, standard library only — "no venv, nothing to install"
+# (tools/choreoc.py).  There is deliberately no [project] or
+# [build-system] table here; this file only configures the test runner and
+# the linter — pytest and ruff, development tools that CI installs into
+# its own job and that firmware builds, the script compiler and
+# choreo_sim never see.
+#
+# It lives in sdk/ rather than the repository root so the config sits with
+# the code it governs.  Two consequences worth knowing:
+#
+#   * ruff must be pointed at this file explicitly:
+#
+#         ruff check --config sdk/pyproject.toml .
+#
+#     Left to itself ruff resolves settings per file from the nearest
+#     config in an ancestor directory, which would govern sdk/ and leave
+#     everything outside it (the tapestry-*-sim orchestrators,
+#     tapestry-os/tools) on ruff's built-in defaults.  Those defaults are
+#     not stable across releases: 0.14.2 — the version Zephyr pins in
+#     scripts/requirements-compliance.txt, so the one a set-up workspace
+#     already has — is pyflakes plus the pycodestyle errors and those files
+#     pass, while 0.16.3 defaults to a far wider set (isort,
+#     flake8-simplify, bandit, ...) and reports 17 findings in them.  CI
+#     installs ruff unpinned, so without --config the lint would pass
+#     locally and fail in CI purely because of a version bump nobody made.
+#     --config applies this rule set to every file instead, whatever the
+#     installed ruff's defaults happen to be.
+#
+#   * pytest finds a config by searching UPWARD, so a bare `pytest` at the
+#     repository root does not read this file.  It still collects and
+#     passes the suite; it just runs without testpaths/addopts.  CI runs
+#     `pytest sdk/tests`, which does find it — as does a bare `pytest`
+#     from inside sdk/.
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+# The SDK is not installable, so the suite reaches it the same way the
+# tools do — see tests/conftest.py, which puts python/ and tools/ on
+# sys.path.
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+# tomllib (script_toml.py) requires 3.11; CONTRIBUTING.md asks for 3.12.
+target-version = "py311"
+line-length = 100
+extend-exclude = ["build", "*/build/*"]
+
+[tool.ruff.lint]
+# Deliberately narrow: pyflakes (F) and the error subset of pycodestyle
+# catch real defects — undefined names, unused imports, shadowed
+# bindings — while bugbear (B) catches the runtime traps.  Style rules
+# that would rewrite this codebase's deliberate formatting (aligned
+# assignments, typing.List over list, hand-wrapped signatures) are NOT
+# enabled: the goal is a lint that only ever fires on something worth
+# fixing, so a red run always means a real problem.
+select = ["E4", "E7", "E9", "F", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Both CLI tools must put python/ on sys.path before importing the tapestry
+# package — they are run from a checkout, not installed — so the import
+# cannot come first.  Ditto the tests' conftest-driven path setup.
+#
+# The leading **/ is load-bearing.  Ruff anchors these globs at whatever it
+# considers the project root, which is the repository root under
+# --config sdk/pyproject.toml but sdk/ itself for a bare `ruff check .` run
+# from inside sdk/.  A bare "tools/*.py" matches only the second, and
+# "sdk/tools/*.py" only the first; "**/tools/*.py" matches both, so the
+# exemptions do not silently lapse depending on how ruff was invoked.
+"**/tools/*.py"    = ["E402"]
+"**/examples/*.py" = ["E402"]
+"**/tests/*.py"    = ["E402"]

@@ -167,7 +167,8 @@ def plot(paths: list[str], labels: list[str], out: str | None):
     regions = partition_regions(datasets[0])
     legend_handles = []
 
-    for ds_idx, (df, label) in enumerate(zip(datasets, labels)):
+    for ds_idx, (df, label) in enumerate(zip(datasets, labels,
+                                             strict=True)):
         color = COLORS[ds_idx % len(COLORS)]
         legend_handles.append(mpatches.Patch(color=color, label=label))
 

@@ -42,21 +42,31 @@ choreo_telemetry_t *choreo_telemetry_open(element_id_t element_id)
 
 /* Appends one wm_entries JSON element to buf (bounds-checked via the
  * caller's remaining-space bookkeeping). Mirrors the fields
- * sdk/python/tapestry expects in its wm_entries dicts (bse.py's BSE class
- * docstring): id, x, y, is_active, is_stale, is_self. */
+ * sdk/python/tapestry expects in its wm_entries dicts (choreo.py's Choreo
+ * class docstring): id, x, y, is_active, is_stale, is_self, achieved.
+ *
+ * "achieved" is the peer's gossiped own-goal predicate, and it is not
+ * optional: a step with scope="all" advances on
+ * choreo_collective_achieved(), which reads exactly this bit.  Omitting it
+ * made the Python replay engine see every peer as never-achieved, so a
+ * scope="all" step that advanced on achievement in flight replayed as
+ * advancing on its timeout instead — a divergence in the harness, not in
+ * the engine it exists to check. */
 static int append_entry_json(char *buf, size_t bufsz, size_t off,
                              const wm_entry_t *e, element_id_t id,
                              bool first)
 {
     return snprintf(buf + off, bufsz > off ? bufsz - off : 0,
                     "%s{\"id\":%u,\"x\":%.4f,\"y\":%.4f,"
-                    "\"is_active\":%s,\"is_stale\":%s,\"is_self\":%s}",
+                    "\"is_active\":%s,\"is_stale\":%s,\"is_self\":%s,"
+                    "\"achieved\":%s}",
                     first ? "" : ",",
                     (unsigned)id,
                     (double)e->state.position.x, (double)e->state.position.y,
                     e->is_active ? "true" : "false",
                     e->is_stale  ? "true" : "false",
-                    e->is_self   ? "true" : "false");
+                    e->is_self   ? "true" : "false",
+                    e->state.goal_achieved ? "true" : "false");
 }
 
 /* Writes s as one RFC 4180 CSV field: wrapped in double quotes, with every
