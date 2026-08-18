@@ -63,6 +63,18 @@
  *               suspended (station capture and station-keeping need no
  *               peers); PEER-referential goals (EXCHANGE) are frozen.
  *               Resumes automatically to RUNNING when quorum recovers.
+ *
+ *               SUSPENDED is deliberately defined as "paused, preserved,
+ *               resumes automatically" rather than as "quorum lost".  An
+ *               implementation with a prioritised goal queue reports a
+ *               preempted goal as SUSPENDED too: the semantics are the
+ *               same from the application's side, only the cause differs.
+ *               This enum is therefore not expected to grow a PREEMPTED
+ *               member — adding one would break exhaustive switches in
+ *               existing applications for no gain.  A caller that needs to
+ *               distinguish the causes should read the goal's identity
+ *               (choreo_goal_t::id) and the monitor/telemetry path, not
+ *               the lifecycle state.
  *   TERMINATED  choreo_terminate() called; goal cleared.  Transitions
  *               immediately back to IDLE — callers polling goal_status()
  *               will see IDLE, not TERMINATED, in steady-state.
@@ -148,6 +160,23 @@ typedef struct {
                                             (see bse.h; arc is the default)      */
     float                 achieve_eps;   /* achievement radius (0 → BSE default)  */
     uint32_t              achieve_hold_ms; /* sustain time (0 → BSE default)      */
+
+    /*
+     * Caller-assigned goal identity.  Opaque to Tapestry: the SDK never
+     * generates, interprets, or requires it, and 0 means "anonymous" —
+     * the behavior of every goal written before this field existed.
+     *
+     * It exists so that goal identity does not have to be retrofitted onto
+     * choreo_submit_goal()'s return value later.  This implementation runs
+     * one goal at a time, so an application can always say "the current
+     * goal"; an implementation with a prioritised goal queue cannot, and
+     * needs a way for callers to name which goal to cancel, and a way to
+     * report which goal preempted which.  Assigning that name here keeps
+     * both additive: no existing signature changes, and no call site has
+     * to be touched.  Carried through to tapestry_bse_intent_t::id so L6
+     * can attribute a directive to the goal that produced it.
+     */
+    uint16_t              id;
 } choreo_goal_t;
 
 /* ── Script: an ordered sequence of goals (minimal Choreo container) ─────── */

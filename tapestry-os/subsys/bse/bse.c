@@ -49,33 +49,55 @@ static element_id_t            s_self_id;
 static tapestry_bse_intent_t   s_intent;
 static tapestry_bse_directive_t s_directive;
 
-/* ── Achievement predicate state ──────────────────────────────────────────── */
+/* ── Per-activation state ─────────────────────────────────────────────────── */
+/*
+ * bse_activation_t — everything an intent accumulates between the moment it
+ * becomes active and the moment it is displaced.  Grouped rather than left
+ * as loose file-scope statics for one reason: this is exactly the state a
+ * preempting BSE has to save and restore.
+ *
+ * This reference implementation holds a single activation and resets it on
+ * every bse_submit_intent(), so a displaced intent is simply forgotten (see
+ * the contract in bse.h — the discard is this implementation's behavior,
+ * not a promise of the interface).  An implementation supporting a
+ * prioritised goal queue keeps a stack of these instead and restores the
+ * preempted entry when the preempting intent completes; nothing outside
+ * this struct needs to be saved for that to work.
+ *
+ * Note what is deliberately NOT here: s_goal_pt / s_goal_pt_valid are
+ * recomputed from scratch by every bse_tick(), so they are tick-scoped, not
+ * activation-scoped, and a resumed intent regenerates them on its first
+ * tick back.
+ */
+typedef struct {
+    /* Feedback controller (achievement predicate) */
+    bool     achieved;
+    uint32_t achieve_accum_ms;
 
-static bool     s_achieved;
-static bool     s_goal_pt_valid;    /* goal point computed this tick        */
+    /* HOLD: own station, captured at activation */
+    bool                hold_captured;
+    tapestry_position_t hold_station;
+
+    /* EXCHANGE: frozen snapshot + arc progress */
+    bool                ex_captured;
+    tapestry_position_t ex_dest;       /* destination station (snapshot) */
+    tapestry_position_t ex_centroid;   /* snapshot centroid              */
+    float               ex_theta0;     /* own start angle about centroid */
+    float               ex_dtheta;     /* total CCW angle to travel      */
+    float               ex_r0;         /* own start radius               */
+    float               ex_r1;         /* destination radius             */
+    float               ex_progress;   /* radians travelled so far       */
+
+    /* MOVE: own offset from the participant centroid, snapshot at activation */
+    bool                move_captured;
+    tapestry_position_t move_offset;   /* own anchor - snapshot centroid */
+} bse_activation_t;
+
+static bse_activation_t s_act;
+
+/* Tick-scoped: recomputed by every bse_tick(), never carried across one. */
+static bool                s_goal_pt_valid;   /* goal point computed this tick */
 static tapestry_position_t s_goal_pt;
-static uint32_t s_achieve_accum_ms;
-
-/* ── HOLD station capture ─────────────────────────────────────────────────── */
-
-static bool                s_hold_captured;
-static tapestry_position_t s_hold_station;
-
-/* ── EXCHANGE snapshot + arc state ───────────────────────────────────────── */
-
-static bool                s_ex_captured;
-static tapestry_position_t s_ex_dest;       /* destination station (snapshot) */
-static tapestry_position_t s_ex_centroid;   /* snapshot centroid              */
-static float               s_ex_theta0;     /* own start angle about centroid */
-static float               s_ex_dtheta;     /* total CCW angle to travel      */
-static float               s_ex_r0;         /* own start radius               */
-static float               s_ex_r1;         /* destination radius             */
-static float               s_ex_progress;   /* radians travelled so far       */
-
-/* ── MOVE offset capture (shape + drift translation) ─────────────────────── */
-
-static bool                s_move_captured;
-static tapestry_position_t s_move_offset;   /* own anchor - snapshot centroid */
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
@@ -175,20 +197,20 @@ static bool exchange_capture(const world_model_t *wm)
 
     tapestry_position_t own = pos[own_rank];
 
-    s_ex_centroid.x = cx;
-    s_ex_centroid.y = cy;
-    s_ex_dest       = pos[dest];
-    s_ex_theta0     = atan2f(own.y - cy, own.x - cx);
-    s_ex_r0         = sqrtf((own.x - cx) * (own.x - cx)
+    s_act.ex_centroid.x = cx;
+    s_act.ex_centroid.y = cy;
+    s_act.ex_dest       = pos[dest];
+    s_act.ex_theta0     = atan2f(own.y - cy, own.x - cx);
+    s_act.ex_r0         = sqrtf((own.x - cx) * (own.x - cx)
                             + (own.y - cy) * (own.y - cy));
-    s_ex_r1         = sqrtf((s_ex_dest.x - cx) * (s_ex_dest.x - cx)
-                            + (s_ex_dest.y - cy) * (s_ex_dest.y - cy));
+    s_act.ex_r1         = sqrtf((s_act.ex_dest.x - cx) * (s_act.ex_dest.x - cx)
+                            + (s_act.ex_dest.y - cy) * (s_act.ex_dest.y - cy));
 
     /* CCW angular travel to the destination station, in (0, 2π].  All
      * elements rotate the same direction, so pairwise angular offsets —
      * and therefore separation — are preserved throughout the maneuver. */
-    float theta1 = atan2f(s_ex_dest.y - cy, s_ex_dest.x - cx);
-    float dtheta = theta1 - s_ex_theta0;
+    float theta1 = atan2f(s_act.ex_dest.y - cy, s_act.ex_dest.x - cx);
+    float dtheta = theta1 - s_act.ex_theta0;
     while (dtheta <= 0.0f) {
         dtheta += 2.0f * BSE_PI;
     }
@@ -206,29 +228,29 @@ static bool exchange_capture(const world_model_t *wm)
         dtheta = 0.0f;
     }
 
-    s_ex_dtheta   = dtheta;
-    s_ex_progress = 0.0f;
-    s_ex_captured = true;
+    s_act.ex_dtheta   = dtheta;
+    s_act.ex_progress = 0.0f;
+    s_act.ex_captured = true;
     return true;
 }
 
 /* Advance the arc by one tick and return the commanded target. */
 static tapestry_position_t exchange_arc_target(void)
 {
-    s_ex_progress += TAPESTRY_BSE_EXCHANGE_OMEGA_RADPS
+    s_act.ex_progress += TAPESTRY_BSE_EXCHANGE_OMEGA_RADPS
                      * ((float)WM_CYCLE_MS * 0.001f);
 
-    if (s_ex_dtheta <= 0.0f || s_ex_progress >= s_ex_dtheta) {
-        return s_ex_dest;   /* arc complete — exact snapshot station */
+    if (s_act.ex_dtheta <= 0.0f || s_act.ex_progress >= s_act.ex_dtheta) {
+        return s_act.ex_dest;   /* arc complete — exact snapshot station */
     }
 
-    float frac  = s_ex_progress / s_ex_dtheta;
-    float theta = s_ex_theta0 + s_ex_progress;
-    float r     = s_ex_r0 + (s_ex_r1 - s_ex_r0) * frac;
+    float frac  = s_act.ex_progress / s_act.ex_dtheta;
+    float theta = s_act.ex_theta0 + s_act.ex_progress;
+    float r     = s_act.ex_r0 + (s_act.ex_r1 - s_act.ex_r0) * frac;
 
     tapestry_position_t t;
-    t.x = s_ex_centroid.x + r * cosf(theta);
-    t.y = s_ex_centroid.y + r * sinf(theta);
+    t.x = s_act.ex_centroid.x + r * cosf(theta);
+    t.y = s_act.ex_centroid.y + r * sinf(theta);
     return t;
 }
 
@@ -242,12 +264,12 @@ void bse_init(element_id_t self_id)
     s_intent.type    = TAPESTRY_BSE_INTENT_IDLE;
     s_directive.type = TAPESTRY_BSE_DIRECTIVE_IDLE;
 
-    s_achieved         = false;
+    s_act.achieved         = false;
     s_goal_pt_valid    = false;
-    s_achieve_accum_ms = 0;
-    s_hold_captured    = false;
-    s_ex_captured      = false;
-    s_move_captured    = false;
+    s_act.achieve_accum_ms = 0;
+    s_act.hold_captured    = false;
+    s_act.ex_captured      = false;
+    s_act.move_captured    = false;
 }
 
 int bse_submit_intent(const tapestry_bse_intent_t *intent)
@@ -258,12 +280,12 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
     s_intent = *intent;
 
     /* New goal — reset captures and the achievement predicate. */
-    s_achieved         = false;
+    s_act.achieved         = false;
     s_goal_pt_valid    = false;
-    s_achieve_accum_ms = 0;
-    s_hold_captured    = false;
-    s_ex_captured      = false;
-    s_move_captured    = false;
+    s_act.achieve_accum_ms = 0;
+    s_act.hold_captured    = false;
+    s_act.ex_captured      = false;
+    s_act.move_captured    = false;
 
     /* An IDLE intent (quiescence) takes effect immediately, not at the next
      * tick — choreo_terminate() submits it and then stops ticking the BSE,
@@ -289,24 +311,24 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
     case TAPESTRY_BSE_INTENT_HOLD: {
         /* Coordinate-free: the station is wherever the element is when the
          * goal activates.  Captured once, then actively station-kept. */
-        if (!s_hold_captured) {
+        if (!s_act.hold_captured) {
             tapestry_position_t own;
             if (!own_position(wm, &own)) {
                 s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
                 break;
             }
-            s_hold_station  = own;
-            s_hold_captured = true;
+            s_act.hold_station  = own;
+            s_act.hold_captured = true;
         }
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
-        s_directive.target = s_hold_station;
-        s_goal_pt          = s_hold_station;
+        s_directive.target = s_act.hold_station;
+        s_goal_pt          = s_act.hold_station;
         s_goal_pt_valid    = true;
         break;
     }
 
     case TAPESTRY_BSE_INTENT_EXCHANGE: {
-        if (!s_ex_captured && !exchange_capture(wm)) {
+        if (!s_act.ex_captured && !exchange_capture(wm)) {
             /* No fresh peer visible — cannot know whose station to take.
              * Hold and retry the capture next tick. */
             s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
@@ -318,9 +340,9 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * once the arc itself has completed — otherwise a body tracking the
          * arc perfectly "achieves" while still up to eps short of the
          * station, and settles offset from it. */
-        s_goal_pt          = s_ex_dest;
-        s_goal_pt_valid    = (s_ex_dtheta <= 0.0f
-                              || s_ex_progress >= s_ex_dtheta);
+        s_goal_pt          = s_act.ex_dest;
+        s_goal_pt_valid    = (s_act.ex_dtheta <= 0.0f
+                              || s_act.ex_progress >= s_act.ex_dtheta);
 
         /* Occupied destination (see the OCCUPIED_M/STANDOFF_M rationale in
          * bse.h): hold a standoff point on the approach line and defer
@@ -343,8 +365,8 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
                 if (!e->is_active || e->is_self || e->is_stale) {
                     continue;
                 }
-                float dx = e->state.position.x - s_ex_dest.x;
-                float dy = e->state.position.y - s_ex_dest.y;
+                float dx = e->state.position.x - s_act.ex_dest.x;
+                float dy = e->state.position.y - s_act.ex_dest.y;
                 if (sqrtf(dx * dx + dy * dy)
                         < TAPESTRY_BSE_EXCHANGE_OCCUPIED_M) {
                     occupied = true;
@@ -354,13 +376,13 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             if (occupied) {
                 tapestry_position_t own;
                 if (own_position(wm, &own)) {
-                    float dx = own.x - s_ex_dest.x;
-                    float dy = own.y - s_ex_dest.y;
+                    float dx = own.x - s_act.ex_dest.x;
+                    float dy = own.y - s_act.ex_dest.y;
                     float d  = sqrtf(dx * dx + dy * dy);
                     if (d > 1e-3f) {
-                        s_directive.target.x = s_ex_dest.x
+                        s_directive.target.x = s_act.ex_dest.x
                             + dx / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
-                        s_directive.target.y = s_ex_dest.y
+                        s_directive.target.y = s_act.ex_dest.y
                             + dy / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
                     }
                 }
@@ -443,7 +465,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * element has offset (0,0) — MOVE degenerates to CONVERGE, which
          * is correct: there is no formation to preserve.
          */
-        if (!s_move_captured) {
+        if (!s_act.move_captured) {
             element_id_t        ids[MAX_ELEMENTS];
             tapestry_position_t pos[MAX_ELEMENTS];
             int                 rank;
@@ -459,13 +481,13 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             }
             cx /= (float)count;
             cy /= (float)count;
-            s_move_offset.x = pos[rank].x - cx;
-            s_move_offset.y = pos[rank].y - cy;
-            s_move_captured = true;
+            s_act.move_offset.x = pos[rank].x - cx;
+            s_act.move_offset.y = pos[rank].y - cy;
+            s_act.move_captured = true;
         }
         s_directive.type     = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
-        s_directive.target.x = s_intent.target.x + s_move_offset.x;
-        s_directive.target.y = s_intent.target.y + s_move_offset.y;
+        s_directive.target.x = s_intent.target.x + s_act.move_offset.x;
+        s_directive.target.y = s_intent.target.y + s_act.move_offset.y;
         s_goal_pt             = s_directive.target;
         s_goal_pt_valid       = true;
         break;
@@ -493,9 +515,9 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 
     /* ── Feedback controller (minimal): achievement predicate ───────────── */
 
-    if (s_intent.type == TAPESTRY_BSE_INTENT_HOLD && s_hold_captured) {
+    if (s_intent.type == TAPESTRY_BSE_INTENT_HOLD && s_act.hold_captured) {
         /* Staying is the goal — trivially achieved; duration governs. */
-        s_achieved = true;
+        s_act.achieved = true;
     } else if (s_goal_pt_valid) {
         float    eps  = s_intent.achieve_eps > 0.0f
                         ? s_intent.achieve_eps
@@ -509,15 +531,15 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             float dx = own.x - s_goal_pt.x;
             float dy = own.y - s_goal_pt.y;
             if (sqrtf(dx * dx + dy * dy) <= eps) {
-                s_achieve_accum_ms += WM_CYCLE_MS;
+                s_act.achieve_accum_ms += WM_CYCLE_MS;
             } else {
-                s_achieve_accum_ms = 0;
+                s_act.achieve_accum_ms = 0;
             }
-            s_achieved = s_achieve_accum_ms >= hold;
+            s_act.achieved = s_act.achieve_accum_ms >= hold;
         }
     } else {
-        s_achieve_accum_ms = 0;
-        s_achieved         = false;
+        s_act.achieve_accum_ms = 0;
+        s_act.achieved         = false;
     }
 }
 
@@ -528,5 +550,5 @@ const tapestry_bse_directive_t *bse_get_directive(void)
 
 bool bse_goal_achieved(void)
 {
-    return s_achieved;
+    return s_act.achieved;
 }

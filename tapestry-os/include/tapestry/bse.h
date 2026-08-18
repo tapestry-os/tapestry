@@ -180,6 +180,13 @@ typedef struct {
      * the goal point for achieve_hold_ms.  See bse_goal_achieved(). */
     float                      achieve_eps;
     uint32_t                   achieve_hold_ms;
+
+    /* Identity of the L7 goal this intent came from, copied verbatim from
+     * choreo_goal_t::id.  Opaque here: this implementation never reads it.
+     * It is carried so a BSE that queues intents can report which goal a
+     * directive belongs to, and which goal preempted which, without the
+     * intent type having to change later.  0 = anonymous. */
+    uint16_t                   id;
 } tapestry_bse_intent_t;
 
 /* ── Directive: L6 → main loop ────────────────────────────────────────────── */
@@ -227,8 +234,21 @@ void bse_init(element_id_t self_id);
 
 /*
  * bse_submit_intent — Accept a new intent from L7.
- * Replaces any current intent immediately; resets the achievement predicate
- * and any captured HOLD station / EXCHANGE snapshot.
+ *
+ * The submitted intent becomes the active one immediately: the next
+ * bse_tick() decomposes it, and bse_goal_achieved() reports against it.
+ *
+ * What happens to the DISPLACED intent is implementation-defined and must
+ * not be relied on.  This reference implementation discards it — the
+ * achievement predicate and every activation capture (HOLD station,
+ * EXCHANGE snapshot and arc progress, MOVE centroid offset) are reset, so
+ * re-submitting a previously active intent starts it over.  An
+ * implementation that supports a prioritised goal queue may instead
+ * preserve the displaced intent's activation state and resume it when the
+ * preempting intent completes, which is why callers must treat resumption
+ * as neither guaranteed nor forbidden.  See bse_activation_t in bse.c for
+ * exactly which state that covers.
+ *
  * Returns 0 on success, -1 if intent is NULL.
  */
 int bse_submit_intent(const tapestry_bse_intent_t *intent);

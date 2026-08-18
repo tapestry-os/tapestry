@@ -89,6 +89,27 @@ void wm_init(world_model_t *wm,
     wm->owner_id          = owner_id;
     wm->consistency_bias  = consistency_bias;
 
+    /*
+     * entries[] is indexed by element ID directly.  Every peer ID that
+     * arrives over the wire is range-checked before it is used as an index
+     * (wm_receive_gossip, wm_get_entry, wm_reconcile); owner_id is the one
+     * index that comes from the application instead, so it is validated
+     * here — once, where it enters the system — and the owner-indexed call
+     * sites below rely on that.
+     *
+     * An out-of-range owner (a hand-configured element ID, or
+     * ELEMENT_ID_INVALID propagated from a failed identity negotiation)
+     * previously wrote past the end of entries[].  Refuse instead: the
+     * model stays inert — no self entry, no known elements — so callers
+     * degrade to "own position unknown" (L6 holds) rather than corrupting
+     * whatever follows the world model in memory.
+     */
+    if (owner_id >= MAX_ELEMENTS) {
+        wm->owner_id = ELEMENT_ID_INVALID;
+        recompute_metric(wm);
+        return;
+    }
+
     /* Own entry is always authoritative and always active */
     wm_entry_t *self = &wm->entries[owner_id];
     self->state        = *own_state;
@@ -105,6 +126,10 @@ void wm_init(world_model_t *wm,
 
 void wm_update_self(world_model_t *wm, element_state_t *own_state)
 {
+    if (wm->owner_id >= MAX_ELEMENTS) {
+        return;   /* inert model — see the owner_id validation in wm_init */
+    }
+
     wm_entry_t *self = &wm->entries[wm->owner_id];
 
     self->state        = *own_state;
@@ -278,7 +303,12 @@ uint8_t wm_check_collisions(const world_model_t *wm,
                              uint8_t max_events)
 {
     uint8_t count = 0;
-    uint32_t own_clock = wm->entries[wm->owner_id].state.logical_clock;
+    /* Inert model (see wm_init): no self entry to read a clock from, and
+     * the loop below finds no non-self active entries either, so the zero
+     * is never actually stamped onto an event. */
+    uint32_t own_clock = (wm->owner_id < MAX_ELEMENTS)
+                         ? wm->entries[wm->owner_id].state.logical_clock
+                         : 0u;
 
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         if (count >= max_events) {

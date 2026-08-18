@@ -83,7 +83,19 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
      * Self is always included as a candidate in the election but is NOT
      * counted toward fresh_count (which measures external reachability).
      */
-    element_id_t candidates[MAX_ELEMENTS];
+    /*
+     * Sized MAX_ELEMENTS + 1, not MAX_ELEMENTS.  For a well-formed own_id in
+     * [0, MAX_ELEMENTS) — the range csm.h documents — self occupies one of
+     * the MAX_ELEMENTS peer slots, because the loop below skips i == own_id,
+     * so MAX_ELEMENTS entries are exactly enough.  An out-of-range own_id
+     * (API misuse: a hand-configured element ID, or ELEMENT_ID_INVALID
+     * propagated from a failed identity negotiation) skips nothing, and
+     * self + MAX_ELEMENTS peers would write one entry past the end of a
+     * MAX_ELEMENTS array.  The extra slot bounds that to a bad election
+     * rather than a stack smash; such an element is already non-functional,
+     * since the world model indexes entries by ID.
+     */
+    element_id_t candidates[MAX_ELEMENTS + 1];
     uint8_t      n_candidates = 0;
     uint8_t      fresh_count  = 0;
 

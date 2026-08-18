@@ -85,6 +85,7 @@ static tapestry_bse_intent_t goal_to_intent(const choreo_goal_t *goal)
     intent.direct_path     = goal->direct_path;
     intent.achieve_eps     = goal->achieve_eps;
     intent.achieve_hold_ms = goal->achieve_hold_ms;
+    intent.id              = goal->id;   /* opaque; see choreo_goal_t::id */
     return intent;
 }
 

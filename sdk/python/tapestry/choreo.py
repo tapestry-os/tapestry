@@ -104,6 +104,12 @@ class Goal:
     direct_path:     bool = False  # EXCHANGE beeline vs arc (see bse.py)
     achieve_eps:     float = 0.0 # achievement radius (0 → BSE default)
     achieve_hold_ms: int = 0     # sustain time, ms (0 → BSE default)
+    id:              int = 0     # caller-assigned goal identity; 0 = anonymous.
+                                 # Opaque to Tapestry — never generated or
+                                 # interpreted here. Mirrors choreo_goal_t::id;
+                                 # see choreo.h for why it exists (goal identity
+                                 # for queueing/preemption, reserved additively
+                                 # so no signature has to change later).
 
 
 @dataclass
@@ -441,4 +447,5 @@ class Choreo:
             direct_path     = goal.direct_path,
             achieve_eps     = goal.achieve_eps,
             achieve_hold_ms = goal.achieve_hold_ms,
+            id              = goal.id,   # opaque; see Goal.id
         )

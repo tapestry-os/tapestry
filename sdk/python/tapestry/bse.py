@@ -102,6 +102,8 @@ class BSEIntent:
     direct_path: bool = False      # EXCHANGE beeline vs centroid arc
     achieve_eps: float = 0.0       # 0 → ACHIEVE_EPS_DEFAULT
     achieve_hold_ms: int = 0       # 0 → ACHIEVE_HOLD_MS_DEFAULT
+    id: int = 0                    # originating goal identity; opaque, unread
+                                   # here. Mirrors tapestry_bse_intent_t::id
 
 
 @dataclass

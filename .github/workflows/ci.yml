@@ -36,6 +36,20 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: python3 tapestry/tapestry-os/tools/gen_wire_protocol.py --check
 
+      # Same guarantee for Choreo scripts: every committed choreo_script.h
+      # must match what its .choreo.toml generates today.  These headers are
+      # committed so firmware builds never need Python, which also means a
+      # script edit that isn't recompiled ships silently — and one already
+      # did: examples/webots-formation's copy sat a release behind
+      # examples/cf21bl-formation's, so the simulation ran a different
+      # script than the hardware demo it claimed to mirror.  No arguments:
+      # choreoc discovers every generated header and recovers its source
+      # from its own banner, so a new example is covered without touching
+      # this file.
+      - name: Check Choreo script headers are up to date
+        working-directory: ${{ github.workspace }}
+        run: python3 tapestry/sdk/tools/choreoc.py --check
+
       # Sets up a west workspace at $GITHUB_WORKSPACE, installs the
       # Zephyr SDK, and exports ZEPHYR_BASE.  The app-path tells the
       # action where the west.yml manifest lives.
