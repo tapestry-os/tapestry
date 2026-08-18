@@ -7,8 +7,7 @@ scope. Backed by the BSE engine from sdk/python/tapestry/bse.py.
 """
 
 import errno as _errno
-from .bse import (BSE, BSEIntent, BSEIntentType,
-                  BSEShape, BSEDirective, BSEDirectiveType)
+from .bse import BSE, BSEIntent, BSEIntentType, BSEShape, BSEDirective
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Optional, List

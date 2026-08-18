@@ -5,6 +5,62 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Python test suite for the Choreographer SDK, enforced in CI** — 227
+  pytest tests (`sdk/tests/`) across `bse.py`, `choreo.py`,
+  `script_toml.py`, `choreoc.py` and `choreo_sim.py`.
+  Covers the L6 geometry and achievement predicate (`FORM` shapes, `MOVE`
+  rigid translation, the `EXCHANGE` snapshot/arc/standoff rules), the L7
+  lifecycle, capability gate, script validation and quorum suspension
+  (including the per-goal exception that keeps `HOLD` ticking while
+  suspended), every `.choreo.toml` accept and reject path, the emitted C
+  of `choreoc`, and both `choreo_sim` modes. The `.choreo.toml` tests
+  assert the error an author gets back, not just the value produced — a
+  parser that accepts a typo silently is the failure that matters on the
+  authoring surface. A new `python` CI job runs them plus `ruff` 
+- **L3 gossip wire round-trip tests (`tapestry-os/tests/transport/`)** —
+  18 ztests driving `gossip_send`/`gossip_drain` through a loopback
+  transceiver, so real bytes are packed, transmitted and unpacked. Every
+  other suite stubs the wire: the `scope = "all"` tests write
+  `wm.entries[N].state.goal_achieved` directly, proving the consumer of a
+  gossiped bit correct while assuming the bit ever arrives. Covers
+  full-field round trip, the `achieved` bit in both polarities, multi-peer
+  drain without cross-wiring, the frame-size and field-order wire
+  contract, and rejection of version-mismatched, truncated and own-id
+  frames
+- **Authenticated and relay framing built and run in CI** — the transport
+  suite is built three ways (default, `auth.conf`, `relay.conf`), adding
+  four tests each for HMAC sign-and-verify (tampered payload and corrupt
+  tag both rejected) and for two-hop relay (TTL decrement, exhausted TTL,
+  duplicate-clock suppression). `CONFIG_TAPESTRY_WIRE_AUTH_ENABLED` and
+  `CONFIG_TAPESTRY_MESH_RELAY` were previously compiled by nothing at all
+  — not an untested feature but an unknown-broken one, as the fix below
+  shows. Both still default to `n` and remain enabled by no application
+
+### Changed
+- **Gossip authentication ported from the legacy Mbed TLS MD API to PSA
+  Crypto** — `hmac4_sign()` now uses `psa_mac_compute()` with
+  `PSA_ALG_HMAC(PSA_ALG_SHA_256)`. Wire bytes are unchanged: the tag is
+  the same truncated HMAC-SHA256. One behavior change, confined to builds
+  with `CONFIG_TAPESTRY_WIRE_AUTH_ENABLED=y`: `tx_frame()` now drops a
+  frame whose tag cannot be computed instead of transmitting it with an
+  uninitialised tag, since emitting unauthenticated frames would present
+  a broken key as ordinary packet loss. With authentication off — the
+  default, and every shipping configuration — `tx_frame()` is unchanged
+
+### Fixed
+- **Recorded telemetry omitted the gossiped `achieved` bit** —
+  `choreo_telemetry.c` wrote six of the seven `wm_entries` fields the
+  Python engine reads, leaving out `achieved`. Replaying a capture of the
+  shipped `change-partners` script therefore saw every peer as
+  never-achieved, so its `scope = "all"` exchange step replayed on its
+  timeout rather than on achievement and reported 81 divergences that
+  were the recorder's fault, not the engine's. `choreo_sim --replay` now
+  also warns when a recording predates the field. This was the last
+  unchecked hop in a chain whose other end was fixed in 0.9.0: the bit is
+  computed at L6, published by the application, carried on the wire,
+  aggregated by L7 — and every hop had been inspected on its own
+
 ## [0.9.0] — 2026-08-16
 
 ### Added
@@ -14,7 +70,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   abort protocol are computed from the actual world model instead of being
   synthesized from raw L4 freshness. Note that `SUSPENDED` is additionally
   gated by an application-level debounce: both apps overwrite
-  `scr_state_t::quorum_state` after `scr_tick()` with a sustained-freshness signal (`QUORUM_UP_MS`, 2 s) before handing it to `choreo_tick()`. At the thresholds both apps configure (`quorum_min` = `quorum_target` = 1) this yields the same HEALTHY/LOST verdict L5 computes, plus a 2 s confirmation before an up-transition is believed — quorum loss is still immediate. The debounce is applied to a copy handed to `choreo_tick()`, never written back into the live `scr_state_t`, so L5's own accessors stay mutually consistent. Hysteresis on quorum acquisition belongs inside L5 rather than being repeated per application — deciding whether the collective has quorum is L5's responsibility, and an obligation carried by every element main loop is one every new element main loop can forget (TODO). Enforced real-world geofence and mission-duration landing backstops.
+  `scr_state_t::quorum_state` after `scr_tick()` with a sustained-freshness 
+  signal (`QUORUM_UP_MS`, 2 s) before handing it to `choreo_tick()`. At the 
+  thresholds both apps configure (`quorum_min` = `quorum_target` = 1) this 
+  yields the same HEALTHY/LOST verdict L5 computes, plus a 2 s confirmation 
+  before an up-transition is believed — quorum loss is still immediate. The
+   debounce is applied to a copy handed to `choreo_tick()`, never written back
+   into the live `scr_state_t`, so L5's own accessors stay mutually consistent.
+   Hysteresis on quorum acquisition belongs inside L5 rather than being 
+  repeated per application — deciding whether the collective has quorum is 
+  L5's responsibility, and an obligation carried by every element main loop is 
+  one every new element main loop can forget (TODO). Enforced real-world 
+  geofence and mission-duration landing backstops.
 - **Collective achievement (`scope = "all"`)** — each element now gossips
   an `achieved` bit every cycle (`tapestry_gossip_frame_t` gains an
   `achieved` field, a wire-compatible append — no `TAPESTRY_WIRE_VERSION`

@@ -41,7 +41,9 @@ choreo_telemetry_t *choreo_telemetry_open(element_id_t element_id);
 
 /* Writes one row for the current tick: wm's per-element snapshot (as seen
  * by this element, from its own world model — id/position/active/stale
- * flags), scr's role/quorum/fresh_count, dir (the directive computed by
+ * flags plus each peer's gossiped goal_achieved bit, which is what a
+ * scope="all" step advances on and therefore a replay input, not a
+ * nicety), scr's role/quorum/fresh_count, dir (the directive computed by
  * this tick's choreo_tick()), and the current choreo_script_step() /
  * choreo_script_complete() / choreo_current_goal_type() /
  * choreo_goal_achieved() globals. No-op if telemetry is NULL. */

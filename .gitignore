@@ -58,6 +58,10 @@ dkms.conf
 build/
 __pycache__/
 *.pyc
+
+# Python tooling caches (pytest and ruff write these wherever they run)
+.pytest_cache/
+.ruff_cache/
 wifi.conf
 
 # west workspace metadata (created by west init one level above the repo)
@@ -70,6 +74,12 @@ wifi.conf
 tmp/
 *.csv
 *.png
+
+# ...except the committed replay fixture: choreo_sim --replay needs a
+# recording to run against, and this one is checked in so CI can exercise
+# the replay path without Webots or a captured flight.  Regenerate with
+# `python3 sdk/tests/helpers.py`.
+!sdk/tests/data/*.csv
 
 # Webots: per-user project-state cache and the compiled controller binary
 # (Makefile.include names it after the controller directory, no extension)

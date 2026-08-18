@@ -1,0 +1,8 @@
+# Kconfig — L3 transport test application
+#
+# Pulls in the transport subsystem's own symbols so the auth and relay
+# builds can turn on CONFIG_TAPESTRY_WIRE_AUTH_ENABLED /
+# CONFIG_TAPESTRY_MESH_RELAY from a .conf overlay.
+
+source "Kconfig.zephyr"
+rsource "../../subsys/transport/Kconfig"

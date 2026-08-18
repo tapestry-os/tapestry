@@ -37,17 +37,76 @@ LOG_MODULE_REGISTER(gossip, LOG_LEVEL_WRN);
 /* ── Optional HMAC-SHA256 authentication ─────────────────────────────────── */
 
 #ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
-#include <mbedtls/md.h>
+#include <psa/crypto.h>
 
-static void hmac4_sign(const uint8_t *data, size_t len, uint8_t *out4)
+/*
+ * The tag is HMAC-SHA256 over the frame, truncated to its first
+ * TAPESTRY_WIRE_AUTH_TAG_SIZE bytes — unchanged on the wire.
+ *
+ * Computed through the PSA Crypto API rather than the legacy mbedtls_md_*
+ * one.  That is not a style preference: Mbed TLS 4.x (what Zephyr 4.4
+ * ships) moved the whole of <mbedtls/md.h> behind
+ * MBEDTLS_DECLARE_PRIVATE_IDENTIFIERS, so mbedtls_md_hmac() is no longer
+ * public and this file did not compile at all with authentication turned
+ * on.  Nothing noticed because CONFIG_TAPESTRY_WIRE_AUTH_ENABLED defaults
+ * to n and no application, test or CI job had ever set it — see
+ * tapestry-os/tests/transport, which now builds and runs this path.
+ */
+#define AUTH_ALG PSA_ALG_HMAC(PSA_ALG_SHA_256)
+
+static mbedtls_svc_key_id_t auth_key;
+static bool                 auth_key_ready;
+
+/* Import the pre-shared deployment key on first use.  Lazy rather than an
+ * init hook so transport_init() keeps its signature and a build with auth
+ * disabled pays nothing at all. */
+static bool auth_key_load(void)
 {
-    const char *key    = CONFIG_TAPESTRY_WIRE_AUTH_KEY;
-    uint8_t     digest[32];
+    if (auth_key_ready) {
+        return true;
+    }
+    if (psa_crypto_init() != PSA_SUCCESS) {
+        LOG_ERR("psa_crypto_init failed — gossip cannot be authenticated");
+        return false;
+    }
 
-    mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
-                    (const uint8_t *)key, strlen(key),
-                    data, len, digest);
-    memcpy(out4, digest, TAPESTRY_WIRE_AUTH_TAG_SIZE);
+    const char          *key  = CONFIG_TAPESTRY_WIRE_AUTH_KEY;
+    psa_key_attributes_t attr = PSA_KEY_ATTRIBUTES_INIT;
+
+    psa_set_key_usage_flags(&attr, PSA_KEY_USAGE_SIGN_MESSAGE);
+    psa_set_key_algorithm(&attr, AUTH_ALG);
+    psa_set_key_type(&attr, PSA_KEY_TYPE_HMAC);
+
+    if (psa_import_key(&attr, (const uint8_t *)key, strlen(key),
+                       &auth_key) != PSA_SUCCESS) {
+        LOG_ERR("HMAC key import failed — check "
+                "CONFIG_TAPESTRY_WIRE_AUTH_KEY");
+        return false;
+    }
+    auth_key_ready = true;
+    return true;
+}
+
+/* Returns false if no tag could be computed.  Callers must then drop the
+ * frame: transmitting or accepting one unauthenticated would silently turn
+ * authentication off for the whole deployment. */
+static bool hmac4_sign(const uint8_t *data, size_t len, uint8_t *out4)
+{
+    uint8_t mac[PSA_HASH_LENGTH(PSA_ALG_SHA_256)];
+    size_t  mac_len = 0;
+
+    if (!auth_key_load()) {
+        return false;
+    }
+    if (psa_mac_compute(auth_key, AUTH_ALG, data, len,
+                        mac, sizeof(mac), &mac_len) != PSA_SUCCESS) {
+        return false;
+    }
+    if (mac_len < TAPESTRY_WIRE_AUTH_TAG_SIZE) {
+        return false;
+    }
+    memcpy(out4, mac, TAPESTRY_WIRE_AUTH_TAG_SIZE);
+    return true;
 }
 
 /* Constant-time comparison for the 4-byte tag to resist timing attacks. */
@@ -55,7 +114,10 @@ static bool hmac4_verify(const uint8_t *data, size_t data_len,
                           const uint8_t *tag)
 {
     uint8_t expected[TAPESTRY_WIRE_AUTH_TAG_SIZE];
-    hmac4_sign(data, data_len, expected);
+
+    if (!hmac4_sign(data, data_len, expected)) {
+        return false;   /* cannot verify — must not accept */
+    }
 
     uint8_t diff = 0;
     for (int i = 0; i < (int)TAPESTRY_WIRE_AUTH_TAG_SIZE; i++) {
@@ -93,7 +155,13 @@ static void tx_frame(const tapestry_gossip_frame_t *f)
 #ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
     uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE];
     memcpy(wire, f, sizeof(*f));
-    hmac4_sign(wire, sizeof(*f), wire + sizeof(*f));
+    if (!hmac4_sign(wire, sizeof(*f), wire + sizeof(*f))) {
+        /* Better a missed gossip cycle than an unauthenticated frame: a
+         * peer would reject it anyway, and emitting one would mask a
+         * broken key as ordinary packet loss. */
+        LOG_ERR("frame not sent — HMAC tag could not be computed");
+        return;
+    }
 
     for (int i = 0; i < g_n; i++) {
         g_transceivers[i]->tx(wire, (uint16_t)TAPESTRY_GOSSIP_WIRE_SIZE);

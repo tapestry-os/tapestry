@@ -72,7 +72,7 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
 from tapestry.bse import BSEDirectiveType
-from tapestry.choreo import Choreo
+from tapestry.choreo import Choreo, ChoreoScope
 from tapestry.script_toml import ScriptError, load_steps, parse_file, to_choreo_steps
 
 # Float comparison tolerance — positions round-trip through the CSV at 4
@@ -114,6 +114,12 @@ def parse_wm_entries(wm_json: str) -> list:
         e["is_active"] = bool(e["is_active"])
         e["is_stale"] = bool(e["is_stale"])
         e["is_self"] = bool(e["is_self"])
+        # Peers' gossiped own-goal predicate — what a scope="all" step
+        # advances on.  Recordings made before choreo_telemetry.c started
+        # writing it have no such key; defaulting to False keeps them
+        # readable, and replay() warns rather than reporting the resulting
+        # advance-on-timeout as an engine divergence.
+        e["achieved"] = bool(e.get("achieved", False))
     return entries
 
 
@@ -133,6 +139,20 @@ def replay(script_path: Path, telemetry_path: Path,
         print(f"choreo_sim: {telemetry_path} has no data rows",
               file=sys.stderr)
         return 1, []
+
+    # A scope="all" step advances on peers' gossiped achievement bits, so a
+    # recording that predates choreo_telemetry.c writing them cannot be
+    # replayed faithfully: every peer reads as never-achieved and the step
+    # advances on its timeout instead.  Say so up front — otherwise the
+    # divergence report blames the engine for a gap in the recording.
+    if any(st.scope == ChoreoScope.ALL and st.advance_on_achieved
+           for st in steps) and '"achieved"' not in rows[0].get("wm_json", ""):
+        print(f"choreo_sim: WARNING — {script_path.name} has a scope=\"all\" "
+              f"step but {telemetry_path.name} records no per-peer "
+              f"'achieved' bit; peers will read as never-achieved and that "
+              f"step will replay on its timeout.  Re-capture with a build "
+              f"that includes the choreo_telemetry.c 'achieved' field.",
+              file=sys.stderr)
 
     element_id = int(rows[0]["element_id"])
     choreo = Choreo(element_id=element_id, capabilities=None)
@@ -193,18 +213,21 @@ def replay(script_path: Path, telemetry_path: Path,
             directive_target=tuple(replayed_dir.target),
         ))
 
-        mismatches = []
-
-        def check(name, recorded, replayed):
-            if recorded != replayed:
-                mismatches.append((name, recorded, replayed))
-
-        check("script_step", int(row["script_step"]), choreo.script_step())
-        check("script_complete", bool(int(row["script_complete"])),
-              choreo.script_complete())
-        check("goal_achieved", bool(int(row["goal_achieved"])),
-              choreo.goal_achieved())
-        check("directive_type", recorded_dir_type, int(replayed_dir.type))
+        # Every scalar field, recorded vs. replayed.  A plain list of
+        # triples rather than a closure appending to an enclosing list:
+        # a nested function that captures a per-iteration binding is the
+        # classic late-binding trap, and there is nothing here it buys.
+        compared = [
+            ("script_step", int(row["script_step"]), choreo.script_step()),
+            ("script_complete", bool(int(row["script_complete"])),
+             choreo.script_complete()),
+            ("goal_achieved", bool(int(row["goal_achieved"])),
+             choreo.goal_achieved()),
+            ("directive_type", recorded_dir_type, int(replayed_dir.type)),
+        ]
+        mismatches = [(name, recorded, replayed)
+                      for name, recorded, replayed in compared
+                      if recorded != replayed]
 
         dx = abs(recorded_dir_target[0] - replayed_dir.target[0])
         dy = abs(recorded_dir_target[1] - replayed_dir.target[1])

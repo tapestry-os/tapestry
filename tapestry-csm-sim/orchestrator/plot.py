@@ -32,7 +32,6 @@ import sys
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import numpy as np
 
 
 # ── Color palette ───────────────────────────────────────────────────────────
@@ -148,12 +147,14 @@ def plot(paths: list[str], labels: list[str], out: str | None):
 
     legend_handles = []
 
-    for ds_idx, (df, label) in enumerate(zip(datasets, labels)):
+    for ds_idx, (df, label) in enumerate(zip(datasets, labels,
+                                             strict=True)):
         color = COLORS[ds_idx % len(COLORS)]
         handle = mpatches.Patch(color=color, label=label)
         legend_handles.append(handle)
 
-        for ax, (col, ylabel, ylim, hline) in zip(axes, panels):
+        for ax, (col, ylabel, ylim, hline) in zip(axes, panels,
+                                                  strict=True):
             # mean_position_error oscillates at the gossip interval (500 ms)
             # due to intra-island belief refreshes; smooth over 1.5 s.
             smooth = 1.5 if col == 'mean_position_error' else 0.0
@@ -170,7 +171,7 @@ def plot(paths: list[str], labels: list[str], out: str | None):
     axes[-1].set_xlabel('Wall time (s)', fontsize=9)
 
     # Metric labels on panels
-    for ax, (_, ylabel, _, _) in zip(axes, panels):
+    for ax, (_, ylabel, _, _) in zip(axes, panels, strict=True):
         ax.set_ylabel(ylabel, fontsize=9)
 
     fig.legend(handles=legend_handles, loc='upper right',

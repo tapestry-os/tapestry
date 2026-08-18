@@ -168,10 +168,10 @@ def parse_duration_ms(value, where: str) -> int:
                 ms = float(v[:-1]) * 1000.0
             else:
                 ms = float(v) * 1000.0
-        except ValueError:
+        except ValueError as e:
             raise ScriptError(f"{where}: cannot parse duration {value!r} "
                               f"(use e.g. \"30s\", \"500ms\", \"45min\", "
-                              f"\"2h\", or seconds)")
+                              f"\"2h\", or seconds)") from e
     else:
         raise ScriptError(f"{where}: cannot parse duration {value!r}")
     if ms <= 0:
@@ -196,10 +196,10 @@ def parse_length_m(value, where: str) -> float:
                 m = float(v[:-1])
             else:
                 m = float(v)
-        except ValueError:
+        except ValueError as e:
             raise ScriptError(f"{where}: cannot parse length {value!r} "
                               f"(use e.g. \"25cm\", \"0.25m\", \"500um\", "
-                              f"or meters)")
+                              f"or meters)") from e
     else:
         raise ScriptError(f"{where}: cannot parse length {value!r}")
     if m <= 0:
