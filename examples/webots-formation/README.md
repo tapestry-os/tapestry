@@ -96,6 +96,10 @@ expects `WEBOTS_HOME` to be the bundle root for library/include paths but
 differ by `/Contents`, which is easy to get wrong — if `make` fails with
 `webots/robot.h file not found`, this is almost always why.)
 
+CI bypasses the real Webots install by instead running
+`ci-check/` which catches compile/link breakage in the L3-L7 core and
+in this controller's own code.
+
 ## Porting to a different element
 
 Reusable as-is, no changes needed:

@@ -20,31 +20,12 @@
 # COMMON holds the substrate-agnostic pieces shared by every controller in
 # this example (see ../common/ and ../../README.md's "Porting to a
 # different element" section) — nothing in this Makefile beyond
-# COMMON/C_SOURCES/INCLUDE is specific to the cf21bl substrate.
+# COMMON/C_SOURCES/INCLUDE is specific to the cf21bl substrate. That list
+# lives in sources.mk, shared with ../../ci-check/Makefile (a header-stub,
+# compile-only build with no Webots install, run from a directory that
+# contains no real substrate code at all — see that file).
 
-TAPESTRY_ROOT     = ../../../..
-TAPESTRY_OS       = $(TAPESTRY_ROOT)/tapestry-os
-TAPESTRY_SDK      = $(TAPESTRY_ROOT)/sdk
-TAPESTRY_TRANSPORT = $(TAPESTRY_OS)/subsys/transport
-COMMON            = ../common
-
-C_SOURCES = main.c \
-            substrate_webots.c \
-            pid_controller.c \
-            choreo_telemetry.c \
-            $(COMMON)/transceiver_udp_posix.c \
-            $(COMMON)/tracker.c \
-            $(TAPESTRY_OS)/subsys/csm/world_model.c \
-            $(TAPESTRY_OS)/subsys/scr/scr.c \
-            $(TAPESTRY_OS)/subsys/bse/bse.c \
-            $(TAPESTRY_OS)/subsys/choreo/choreo.c \
-            $(TAPESTRY_TRANSPORT)/gossip.c
-
-INCLUDE += -I$(TAPESTRY_OS)/include \
-           -I$(TAPESTRY_SDK)/include \
-           -I$(TAPESTRY_TRANSPORT) \
-           -I$(COMMON) \
-           -I$(COMMON)/zephyr_shim
+include sources.mk
 
 ### Do not modify: this includes Webots global Makefile.include
 null :=
