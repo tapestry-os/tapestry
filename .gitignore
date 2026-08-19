@@ -85,3 +85,6 @@ tmp/
 # (Makefile.include names it after the controller directory, no extension)
 *.wbproj
 examples/webots-formation/controllers/cf21bl/cf21bl
+
+# ci-check/ (header-stub compile check, no Webots install — see that dir)
+examples/webots-formation/ci-check/build/

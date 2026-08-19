@@ -6,6 +6,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **CI compile check for `examples/webots-formation`** — rather than 
+  an actual Webots install (~1 GB), a new sibling directory
+  `ci-check/` compiles and links the same L3-L7 core sources (pulled in
+  unmodified from `controllers/cf21bl/` and `controllers/common/`) against
+  header stubs for the ~10 `wb_*` calls this controller actually makes
 - **Python test suite for the Choreographer SDK, enforced in CI** — 227
   pytest tests (`sdk/tests/`) across `bse.py`, `choreo.py`,
   `script_toml.py`, `choreoc.py` and `choreo_sim.py`.

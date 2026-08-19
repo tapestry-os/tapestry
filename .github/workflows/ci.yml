@@ -392,3 +392,28 @@ jobs:
           west build -b crazyflie21bl \
             --build-dir tapestry/tapestry-scr-hw/build/hw-cf21bl \
             tapestry/tapestry-scr-hw
+
+  # ── webots-formation (plain host C, no Zephyr) ────────────────────────
+  # This is not a Zephyr/west build (see examples/webots-formation/README.md's
+  # "Architecture" section) and the real Makefile needs an actual Webots
+  # install (~1 GB) for its headers and libcontroller — too heavy to ask of
+  # every CI run. examples/webots-formation/ci-check/ compiles and links the
+  # same L3-L7 core sources (pulled in unmodified from controllers/cf21bl/
+  # and controllers/common/) against header stubs for the ~10 Webots device
+  # calls this controller actually makes, catching compile/link breakage
+  # without installing Webots; it never runs the resulting binary. Building
+  # against the real SDK before trusting a change to the Webots device calls
+  # themselves is still on you — see ci-check/Makefile's own comment.
+  webots-formation:
+    name: webots-formation compile check (header stubs, no Webots install)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout Tapestry
+        uses: actions/checkout@v7
+        with:
+          path: tapestry
+
+      - name: Build cf21bl controller against Webots header stubs
+        working-directory: tapestry/examples/webots-formation/ci-check
+        run: make
