@@ -18,7 +18,8 @@
  *     snapshot centroid so mutual separation is preserved by construction.
  *   - HOLD: captures own position at activation and station-keeps there.
  *   - Feedback controller (minimal): achievement predicate — own position
- *     within achieve_eps of the goal point for achieve_hold_ms.
+ *     within achieve_eps of the goal point for achieve_hold_ms, for every
+ *     goal type except DISPERSE, which has no single goal point (see below).
  *   - For MOVE: offset-preserving translation — the
  *     formation's shape is preserved while its centroid travels to
  *     intent.target (own offset from the participant centroid is snapshot
@@ -27,6 +28,9 @@
  *   - For CONVERGE: emits MOVE_TO_POINT to intent.target for all elements
  *     (deliberately collapses the formation — this is the "gather" goal).
  *   - For DISPERSE: emits MAINTAIN_SPRING with intent.radius as spacing.
+ *     Achievement predicate is nearest-fresh-trusted-peer distance >=
+ *     spacing - achieve_eps, sustained for achieve_hold_ms; vacuously
+ *     achieved with no peer visible.
  *   - For IDLE / unknown: emits IDLE.
  *
  * What this does NOT do:
@@ -114,10 +118,17 @@ static bool own_position(const world_model_t *wm, tapestry_position_t *out)
     return false;
 }
 
-/* Collect self + fresh active peers, ID-sorted.  Returns count; fills ids[]
- * and positions[] in sorted order, and writes self's rank to *own_rank
- * (-1 if self entry missing). */
+/* Collect self + fresh, trusted active peers, ID-sorted.  Returns count;
+ * fills ids[] and positions[] in sorted order, and writes self's rank to
+ * *own_rank (-1 if self entry missing).
+ *
+ * Trust-filtered via scr_peer_is_trusted() — the same whitelist/anomaly
+ * check scr_tick() applies when building its own candidate set — so the
+ * rank and count computed here agree with scr->task_slot/swarm_size, and an
+ * anomaly-excluded or non-whitelisted peer cannot steer formation geometry
+ * (centroid, arc, vertex assignment) despite being excluded from quorum. */
 static int collect_participants(const world_model_t *wm,
+                                const scr_state_t *scr,
                                 element_id_t ids[MAX_ELEMENTS],
                                 tapestry_position_t pos[MAX_ELEMENTS],
                                 int *own_rank)
@@ -127,7 +138,8 @@ static int collect_participants(const world_model_t *wm,
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
         bool participant = e->is_self ||
-                           (e->is_active && !e->is_stale);
+                           (e->is_active && !e->is_stale &&
+                            scr_peer_is_trusted(scr, e->state.id));
         if (!participant) {
             continue;
         }
@@ -173,13 +185,13 @@ static int collect_participants(const world_model_t *wm,
  * snapshots differ by at most one gossip interval of peer motion, which
  * the achievement epsilon absorbs.  Frozen targets — never live-chasing.
  */
-static bool exchange_capture(const world_model_t *wm)
+static bool exchange_capture(const world_model_t *wm, const scr_state_t *scr)
 {
     element_id_t        ids[MAX_ELEMENTS];
     tapestry_position_t pos[MAX_ELEMENTS];
     int                 own_rank;
 
-    int n = collect_participants(wm, ids, pos, &own_rank);
+    int n = collect_participants(wm, scr, ids, pos, &own_rank);
     if (n < 2 || own_rank < 0) {
         return false;
     }
@@ -298,8 +310,6 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
 
 void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 {
-    (void)scr;   /* not used for directive synthesis in this implementation */
-
     s_goal_pt_valid = false;
 
     switch (s_intent.type) {
@@ -328,7 +338,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
     }
 
     case TAPESTRY_BSE_INTENT_EXCHANGE: {
-        if (!s_act.ex_captured && !exchange_capture(wm)) {
+        if (!s_act.ex_captured && !exchange_capture(wm, scr)) {
             /* No fresh peer visible — cannot know whose station to take.
              * Hold and retry the capture next tick. */
             s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
@@ -395,19 +405,23 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
     case TAPESTRY_BSE_INTENT_FORM: {
         /*
          * Task decomposition (L6): map FORM intent onto a per-element vertex.
-         * Each element independently sorts the active participant set and
-         * claims the vertex at its own rank, producing a collision-free
-         * geometry assignment without coordination messages.
-         * L5 provides task_slot (an ordinal in the sorted peer list) but
-         * does not perform this decomposition; the geometry mapping is L6's
-         * sole responsibility.
+         * rank/count come directly from L5's scr_state_t — task_slot is the
+         * element's ordinal in L5's own trusted-fresh-peer sort, swarm_size
+         * its count (scr.h) — rather than being re-derived from a second,
+         * independently-filtered participant scan.  Reusing L5's own values
+         * guarantees the vertex assignment agrees with L5's quorum/election
+         * view by construction — no second copy of the trust-filtering/
+         * sorting logic to keep in lockstep with scr.c's — so an anomaly-
+         * excluded or unwhitelisted peer that L5 already excludes from
+         * candidates cannot end up claiming a vertex here.  Callers must
+         * scr_tick() before bse_tick() for this to reflect the current wm;
+         * task_slot/swarm_size are valid only when quorum >= DEGRADED
+         * (scr.h) — swarm_size == 0 otherwise, handled below like the prior
+         * "no participants" case.
          */
-        element_id_t        ids[MAX_ELEMENTS];
-        tapestry_position_t pos[MAX_ELEMENTS];
-        int                 rank;
-
-        int count = collect_participants(wm, ids, pos, &rank);
-        if (rank < 0 || count == 0) {
+        int rank  = scr_get_task_slot(scr);
+        int count = scr_get_swarm_size(scr);
+        if (count == 0) {
             s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
             break;
         }
@@ -469,7 +483,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             element_id_t        ids[MAX_ELEMENTS];
             tapestry_position_t pos[MAX_ELEMENTS];
             int                 rank;
-            int count = collect_participants(wm, ids, pos, &rank);
+            int count = collect_participants(wm, scr, ids, pos, &rank);
             if (rank < 0 || count == 0) {
                 s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
                 break;
@@ -518,6 +532,47 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
     if (s_intent.type == TAPESTRY_BSE_INTENT_HOLD && s_act.hold_captured) {
         /* Staying is the goal — trivially achieved; duration governs. */
         s_act.achieved = true;
+    } else if (s_intent.type == TAPESTRY_BSE_INTENT_DISPERSE) {
+        /* DISPERSE has no single goal point — achievement is "spread out",
+         * measured as this element's nearest fresh trusted peer being at
+         * least spacing (less eps slack) away, sustained for the hold
+         * duration.  Vacuously achieved with no peer visible (nothing to
+         * disperse from), matching choreo_collective_achieved()'s solo
+         * convention. Without this, bse_goal_achieved() was permanently
+         * false for DISPERSE, and a script step with
+         * advance_on_achieved=true and no timeout would never advance. */
+        float    eps  = s_intent.achieve_eps > 0.0f
+                        ? s_intent.achieve_eps
+                        : TAPESTRY_BSE_ACHIEVE_EPS_DEFAULT;
+        uint32_t hold = s_intent.achieve_hold_ms > 0u
+                        ? s_intent.achieve_hold_ms
+                        : TAPESTRY_BSE_ACHIEVE_HOLD_MS_DEFAULT;
+
+        tapestry_position_t own;
+        if (own_position(wm, &own)) {
+            float min_dist  = -1.0f;
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                const wm_entry_t *e = &wm->entries[i];
+                if (e->is_self || !e->is_active || e->is_stale ||
+                    !scr_peer_is_trusted(scr, e->state.id)) {
+                    continue;
+                }
+                float dx = e->state.position.x - own.x;
+                float dy = e->state.position.y - own.y;
+                float d  = sqrtf(dx * dx + dy * dy);
+                if (min_dist < 0.0f || d < min_dist) {
+                    min_dist = d;
+                }
+            }
+            bool spread = min_dist < 0.0f
+                          || min_dist >= (s_directive.spacing - eps);
+            if (spread) {
+                s_act.achieve_accum_ms += WM_CYCLE_MS;
+            } else {
+                s_act.achieve_accum_ms = 0;
+            }
+            s_act.achieved = s_act.achieve_accum_ms >= hold;
+        }
     } else if (s_goal_pt_valid) {
         float    eps  = s_intent.achieve_eps > 0.0f
                         ? s_intent.achieve_eps

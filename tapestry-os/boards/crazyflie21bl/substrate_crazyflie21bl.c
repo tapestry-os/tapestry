@@ -24,11 +24,13 @@
  *   HARVEST  → disarmed; same as SLEEP.
  *
  * Signal → LED brightness:
- *   NONE     → 0   (off)
- *   IDLE     → 64  (dim blue-ish — status LED is single-color on CF2.1)
- *   ACTIVE   → 255 (bright)
- *   DEGRADED → 128 (medium)
- *   FAILED   → fast blink driven by Zephyr LED blink API (TODO)
+ *   NONE     → 0     (off)
+ *   IDLE     → 64    (dim blue-ish — status LED is single-color on CF2.1)
+ *   ACTIVE   → 255   (bright)
+ *   DEGRADED → 128   (medium)
+ *   FAILED   → blink (250 ms, driven by a k_timer — cf21bl_set_led() only
+ *              toggles the LED pin on/off, so FAILED cannot be distinguished
+ *              from the other always-on states by brightness alone)
  */
 
 #include <stdbool.h>
@@ -38,6 +40,9 @@
 #ifdef CONFIG_CF21BL_STABILIZER
 #include "cf21bl_stabilizer.h"
 #endif
+#include <zephyr/kernel.h>
+
+#define CF21BL_FAILED_BLINK_MS 250
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
 
@@ -57,13 +62,31 @@ void substrate_move(const substrate_twist_t *twist)
 #endif
 }
 
+static void failed_blink_fn(struct k_timer *t)
+{
+    ARG_UNUSED(t);
+    static bool s_led_on;
+    s_led_on = !s_led_on;
+    cf21bl_set_led(s_led_on ? 255 : 0);
+}
+
+static K_TIMER_DEFINE(failed_blink_timer, failed_blink_fn, NULL);
+
 void substrate_set_signal(substrate_signal_t signal)
 {
+    if (signal == SUBSTRATE_SIGNAL_FAILED) {
+        k_timer_start(&failed_blink_timer,
+                      K_MSEC(CF21BL_FAILED_BLINK_MS),
+                      K_MSEC(CF21BL_FAILED_BLINK_MS));
+        return;
+    }
+    /* No-op if not running. */
+    k_timer_stop(&failed_blink_timer);
+
     switch (signal) {
     case SUBSTRATE_SIGNAL_ACTIVE:   cf21bl_set_led(255); break;
     case SUBSTRATE_SIGNAL_DEGRADED: cf21bl_set_led(128); break;
     case SUBSTRATE_SIGNAL_IDLE:     cf21bl_set_led(64);  break;
-    case SUBSTRATE_SIGNAL_FAILED:   cf21bl_set_led(32);  break;  /* TODO: blink */
     case SUBSTRATE_SIGNAL_NONE:
     default:                        cf21bl_set_led(0);   break;
     }

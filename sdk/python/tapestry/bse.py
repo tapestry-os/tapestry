@@ -21,7 +21,9 @@ Intent → directive mapping
                                 element has zero offset and degenerates to
                                 CONVERGE)
   CONVERGE  → MOVE_TO_POINT   — all elements to target (collapses formation)
-  DISPERSE  → MAINTAIN_SPRING — spring-field with intent.radius spacing
+  DISPERSE  → MAINTAIN_SPRING — spring-field with intent.radius spacing;
+                                achieved once nearest fresh peer is at
+                                least spacing away, sustained (see below)
   HOLD      → MOVE_TO_POINT   — own position captured at activation
                                 (coordinate-free station-keeping)
   EXCHANGE  → MOVE_TO_POINT   — rotate stations by slot_shift around the
@@ -31,8 +33,10 @@ Intent → directive mapping
                                 snapshot centroid, preserving separation
 
 Achievement (bse.goal_achieved()): own position within achieve_eps of the
-goal point, sustained for achieve_hold_ms.  HOLD is trivially achieved;
-IDLE and DISPERSE never are (timeout-only goals).
+goal point, sustained for achieve_hold_ms.  HOLD is trivially achieved.
+DISPERSE has no single goal point — achievement is nearest-fresh-peer
+distance >= spacing - achieve_eps, sustained for achieve_hold_ms; vacuously
+achieved with no peer visible.  IDLE never achieves (timeout-only goal).
 
 Usage (one instance per simulated element):
 
@@ -345,6 +349,9 @@ class BSE:
             # Staying is the goal — trivially achieved; duration governs.
             self._achieved = True
             return
+        if self._intent.type == BSEIntentType.DISPERSE:
+            self._tick_disperse_achievement(wm_entries)
+            return
         if self._goal_pt is None:
             self._achieve_accum = 0
             self._achieved = False
@@ -357,6 +364,34 @@ class BSE:
             return
         if math.hypot(own[0] - self._goal_pt[0],
                       own[1] - self._goal_pt[1]) <= eps:
+            self._achieve_accum += WM_CYCLE_MS
+        else:
+            self._achieve_accum = 0
+        self._achieved = self._achieve_accum >= hold
+
+    def _tick_disperse_achievement(self, wm_entries: List[dict]) -> None:
+        """DISPERSE has no single goal point — achievement is "spread out":
+        this element's nearest fresh active peer at least spacing (less eps
+        slack) away, sustained for achieve_hold_ms.  Vacuously achieved with
+        no peer visible (nothing to disperse from), matching the collective-
+        achievement solo convention.  Without this, goal_achieved() was
+        permanently False for DISPERSE, and a script step with
+        advance_on_achieved=True and no timeout would never advance."""
+        eps  = self._intent.achieve_eps or ACHIEVE_EPS_DEFAULT
+        hold = self._intent.achieve_hold_ms or ACHIEVE_HOLD_MS_DEFAULT
+        own  = self._own_position(wm_entries)
+        if own is None:
+            return
+        min_dist = None
+        for e in wm_entries:
+            if e.get('is_self', False) or not e.get('is_active') or e.get('is_stale'):
+                continue
+            d = math.hypot(float(e.get('x', 0.0)) - own[0],
+                            float(e.get('y', 0.0)) - own[1])
+            if min_dist is None or d < min_dist:
+                min_dist = d
+        spread = min_dist is None or min_dist >= (self._directive.spacing - eps)
+        if spread:
             self._achieve_accum += WM_CYCLE_MS
         else:
             self._achieve_accum = 0

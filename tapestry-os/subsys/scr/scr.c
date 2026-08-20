@@ -11,25 +11,6 @@
 /* ── Internal helpers ─────────────────────────────────────────────────────── */
 
 /*
- * peer_is_trusted — Returns true if peer_id passes whitelist and anomaly
- * checks.  Self is always trusted and should never be passed here.
- */
-static bool peer_is_trusted(const scr_state_t *scr, element_id_t id)
-{
-    if (id >= 32u) {
-        return false;
-    }
-    if (scr->peer_whitelist_mask != 0u &&
-        !(scr->peer_whitelist_mask & (1u << id))) {
-        return false;
-    }
-    if (scr->anomaly_mask & (1u << id)) {
-        return false;
-    }
-    return true;
-}
-
-/*
  * insertion_sort_ids — Sort element_id_t array in-place, ascending.
  * N is bounded by MAX_ELEMENTS (32); insertion sort is appropriate.
  */
@@ -105,7 +86,7 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
         if (i == scr->own_id) {
             continue;
         }
-        if (!peer_is_trusted(scr, i)) {
+        if (!scr_peer_is_trusted(scr, i)) {
             continue;
         }
         const wm_entry_t *e = wm_get_entry(wm, i);
@@ -275,6 +256,21 @@ scr_abort_state_t scr_get_abort_state(const scr_state_t *scr)
 void scr_set_peer_whitelist(scr_state_t *scr, uint32_t mask)
 {
     scr->peer_whitelist_mask = mask;
+}
+
+bool scr_peer_is_trusted(const scr_state_t *scr, element_id_t id)
+{
+    if (id >= 32u) {
+        return false;
+    }
+    if (scr->peer_whitelist_mask != 0u &&
+        !(scr->peer_whitelist_mask & (1u << id))) {
+        return false;
+    }
+    if (scr->anomaly_mask & (1u << id)) {
+        return false;
+    }
+    return true;
 }
 
 void scr_report_anomaly(scr_state_t *scr, element_id_t peer_id)

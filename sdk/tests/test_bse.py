@@ -186,11 +186,27 @@ def test_disperse_falls_back_to_the_default_spacing_at_radius_zero():
     assert d.spacing == 30.0
 
 
-def test_disperse_is_never_achieved():
-    """No point goal — DISPERSE is timeout-governed (bse.h)."""
+def test_disperse_is_vacuously_achieved_solo():
+    """No peer to disperse from — achieved once the hold duration elapses,
+    same convention as choreo_collective_achieved()'s solo case."""
     b = run(0, BSEIntent(type=BSEIntentType.DISPERSE, radius=5.0), solo(),
             ticks=100)
+    assert b.goal_achieved() is True
+
+
+def test_disperse_is_not_achieved_while_a_peer_is_within_spacing():
+    """Peer 1.0 apart, spacing requested is 5.0 — never spread enough."""
+    b = run(0, BSEIntent(type=BSEIntentType.DISPERSE, radius=5.0),
+            wm([(0, 0), (1, 0)], self_id=0), ticks=100)
     assert b.goal_achieved() is False
+
+
+def test_disperse_is_achieved_once_the_nearest_peer_clears_spacing():
+    """Peer 5.0 apart, spacing requested is 5.0 — right at the boundary,
+    within the default eps slack — achieved after the hold duration."""
+    b = run(0, BSEIntent(type=BSEIntentType.DISPERSE, radius=5.0),
+            wm([(0, 0), (5, 0)], self_id=0), ticks=100)
+    assert b.goal_achieved() is True
 
 
 # ── HOLD ─────────────────────────────────────────────────────────────────────

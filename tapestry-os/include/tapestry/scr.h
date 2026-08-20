@@ -187,6 +187,18 @@ scr_abort_state_t  scr_get_abort_state(const scr_state_t *scr);
 /* Restrict election candidates to a trusted set.  mask=0 allows all (default). */
 void scr_set_peer_whitelist(scr_state_t *scr, uint32_t mask);
 
+/*
+ * scr_peer_is_trusted — whitelist + anomaly check for a single peer_id, the
+ * same test scr_tick() applies when building its candidate set.  Exposed so
+ * callers building their own peer set from the world model (L6's FORM/
+ * EXCHANGE/MOVE participant collection) can apply identical filtering —
+ * otherwise an anomaly-excluded or non-whitelisted peer counted by L6 but
+ * not L5 diverges the two layers' rank/count and lets that peer still
+ * influence geometry despite being excluded from quorum and leader election.
+ * Self should never be passed here (always trusted).
+ */
+bool scr_peer_is_trusted(const scr_state_t *scr, element_id_t id);
+
 /* Exclude peer_id from election until cleared (e.g. on auth failure). */
 void scr_report_anomaly(scr_state_t *scr, element_id_t peer_id);
 
