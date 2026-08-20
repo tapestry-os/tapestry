@@ -41,8 +41,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `CONFIG_TAPESTRY_MESH_RELAY` were previously compiled by nothing at all
   — not an untested feature but an unknown-broken one, as the fix below
   shows. Both still default to `n` and remain enabled by no application
+- **Compile-only CI build combining `CONFIG_BT=y` with
+  `CONFIG_TAPESTRY_WIRE_AUTH_ENABLED=y`** (`bbc_microbit_v2`, `hw-build`
+  job) — the auth/relay coverage added above links `gossip.c` against a
+  loopback transceiver, never `transceiver_ble.c`, so the `BUILD_ASSERT`
+  in `transceiver_ble.c` guarding the 29-byte BLE advertising payload
+  (exactly full once the 4-byte auth tag is appended) had never actually
+  been evaluated by any build in this repo. This is the one CI build
+  where both symbols compile together
+- **QoS tiers now do something** — `TAPESTRY_QOS_BEST_EFFORT`/`SOFT_RT`/
+  `HARD_RT` were previously accepted by `gossip_send`/`transport_send` and
+  discarded; they are now packed onto the wire (see the `relay_qos` change
+  below) and acted on in two places: the relay ring buffer evicts the
+  lowest-tier queued frame to admit a higher-tier incoming one instead of
+  dropping it outright, and `runtime.c` (plus `cf21bl-formation` and
+  `webots-formation`'s controller, which run their own main loops instead
+  of `runtime.c`) sends a `HARD_RT` frame immediately on the
+  `SCR_ABORT_TRIGGERED` quorum-loss edge rather than waiting up to
+  `GOSSIP_INTERVAL_MS` for the next scheduled cycle. `BEST_EFFORT` has no
+  sender yet — telemetry doesn't travel over gossip — and stays defined
+  but unused
+- **`tapestry-os/tests/transport/` gains 2 tests** (18 → 20): the QoS tier
+  round-trips through `relay_qos` without disturbing `hop_count`, and a
+  `HARD_RT` frame evicts a queued `SOFT_RT` one when the relay queue (depth
+  8) is full rather than being dropped for capacity
 
 ### Changed
+- **`tapestry_gossip_frame_t`'s `hop_count` byte repacked into `relay_qos`**
+  (`hop_count` bits [1:0], qos tier bits [3:2]) to carry the QoS tier
+  without growing the frame — the BLE advertising payload has zero spare
+  bytes (see the `BUILD_ASSERT` entry above). `TAPESTRY_WIRE_VERSION`
+  bumped 1 → 2: a v1 sender's hop_count values happen to decode under v2
+  unchanged (upper bits were always zero), but the version check rejects
+  the mismatch anyway rather than rely on that coincidence, since a v2
+  sender's qos bits would misparse as an out-of-range v1 hop_count. All
+  three Python wire mirrors regenerated (`gen_wire_protocol.py`); the two
+  orchestrator `protocol.py` copies hand-gained `pack_relay_qos()`/
+  `unpack_relay_qos()` since the generator only derives struct.Struct
+  formats, not field-level codecs
 - **Gossip authentication ported from the legacy Mbed TLS MD API to PSA
   Crypto** — `hmac4_sign()` now uses `psa_mac_compute()` with
   `PSA_ALG_HMAC(PSA_ALG_SHA_256)`. Wire bytes are unchanged: the tag is
@@ -52,6 +88,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uninitialised tag, since emitting unauthenticated frames would present
   a broken key as ordinary packet loss. With authentication off — the
   default, and every shipping configuration — `tx_frame()` is unchanged
+- **README and `SECURITY.md` L3 claims brought in line with what's
+  actually implemented** — README's architecture table claimed
+  "routing" and "encryption" at L3; the real behavior is a 2-hop
+  opportunistic relay flood (no routing table or topology awareness) and
+  optional HMAC authentication (no encryption). `SECURITY.md` still
+  listed gossip authentication as unimplemented, which stopped being true
+  once `CONFIG_TAPESTRY_WIRE_AUTH_ENABLED` landed — it's now described as
+  present but off by default and unused by any shipping configuration
 
 ### Fixed
 - **Recorded telemetry omitted the gossiped `achieved` bit** —

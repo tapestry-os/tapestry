@@ -24,7 +24,7 @@ as the platform to write it.
   L6  Behavior Synthesis Engine    Translates intent into collective behavioral plans
   L5  Swarm Coordination Runtime   Quorum-based coordination, role assignment, lightweight BFT
   L4  Collective State Manager     Distributed world model; aggregated shared state
-  L3  Inter-Element Communication  Mesh networking, routing, encryption; substrate-agnostic
+  L3  Inter-Element Communication  Gossip + opportunistic relay, optional authentication; substrate-agnostic
   L2  Element Runtime              Per-element OS: scheduling, power, actuation, local sensing
   L1  Physical Substrate Interface HAL motor drivers, sensor buses, communication transceivers
 ```
@@ -128,7 +128,7 @@ tapestry/
 │   │   └── power.c/.h             L2 power state machine (active/idle/sleep/harvest)
 │   └── subsys/transport/
 │       ├── transport.c            Transceiver registry and multiplexer
-│       ├── gossip.c/.h            Wire framing, relay, HMAC auth
+│       ├── gossip.c/.h            Wire framing, relay + QoS eviction, HMAC auth
 │       ├── transceiver_ble.c/.h   BLE advertising backend (Zephyr bt_* API)
 │       ├── transceiver_udp.c/.h   UDP broadcast backend (Zephyr zsock_* API)
 │       └── net_init.c/.h          WiFi / Ethernet bring-up (Zephyr net_mgmt)

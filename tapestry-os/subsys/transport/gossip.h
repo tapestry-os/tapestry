@@ -20,8 +20,10 @@ void gossip_register_transceivers(const tapestry_transceiver_t * const *t,
                                   int n);
 
 /* Pack own_state into a gossip frame and transmit via all registered
- * transceivers.  qos_tier is TAPESTRY_QOS_* from wire.h; reserved for
- * future transport-layer prioritization (not carried in the wire frame). */
+ * transceivers.  qos_tier is TAPESTRY_QOS_* from wire.h, packed into the
+ * frame's relay_qos byte alongside hop_count — see wire.h. Read by the
+ * relay ring buffer (gossip_drain/relay_enqueue) to decide which queued
+ * frame to evict under pressure. */
 void gossip_send(const element_state_t *own_state, uint8_t qos_tier);
 
 /* Drain all pending received frames from all registered transceivers into wm.

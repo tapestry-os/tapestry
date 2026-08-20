@@ -3,8 +3,8 @@
  *
  * Owns the per-element cycle for the full L4+L5+L6 stack:
  *   transport_drain → wm_tick → wm_update_self → scr_tick
- *   (→ choreo_tick via L5 on_tick hook) → election tracking
- *   → gossip send → telemetry → power policy
+ *   (→ choreo_tick via L5 on_tick hook) → HARD_RT gossip on quorum-loss
+ *   edge → election tracking → gossip send → telemetry → power policy
  *
  * Applications call tapestry_runtime_tick() once per WM_CYCLE_MS and then
  * read tapestry_runtime_scr() to drive substrate_move() and
@@ -26,10 +26,11 @@ static element_state_t s_own;
 static world_model_t   s_wm;
 static scr_state_t     s_scr;
 
-static uint32_t     s_gossip_accum_ms;
-static uint32_t     s_election_count;
-static element_id_t s_last_leader;
-static bool         s_ready;
+static uint32_t         s_gossip_accum_ms;
+static uint32_t         s_election_count;
+static element_id_t     s_last_leader;
+static scr_abort_state_t s_last_abort_state;
+static bool              s_ready;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
@@ -59,10 +60,11 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
     choreo_init(cfg->self_id);
     tapestry_power_init();
 
-    s_gossip_accum_ms = 0;
-    s_election_count  = 0;
-    s_last_leader     = ELEMENT_ID_INVALID;
-    s_ready           = true;
+    s_gossip_accum_ms  = 0;
+    s_election_count   = 0;
+    s_last_leader      = ELEMENT_ID_INVALID;
+    s_last_abort_state = SCR_ABORT_NONE;
+    s_ready            = true;
 
     LOG_INF("runtime: element %u at (%.1f, %.1f) quorum=%u/%u",
             (unsigned)cfg->self_id,
@@ -90,6 +92,25 @@ void tapestry_runtime_tick(void)
 
     /* 4. Recompute L5 role and quorum; on_tick hook fires choreo_tick (L6) */
     scr_tick(&s_scr, &s_wm);
+
+    /* 4b. Quorum-loss abort fires as a level signal held for as long as
+     * quorum stays LOST (see scr.h), so this must catch the NONE/CLEARED
+     * -> TRIGGERED edge specifically — a level check would re-fire every
+     * tick for the whole outage instead of once. HARD_RT jumps the gossip
+     * cycle immediately rather than waiting up to GOSSIP_INTERVAL_MS, so
+     * peers learn about the abort as fast as the radio allows. */
+    scr_abort_state_t abort_state = scr_get_abort_state(&s_scr);
+
+    if (abort_state == SCR_ABORT_TRIGGERED &&
+        s_last_abort_state != SCR_ABORT_TRIGGERED) {
+        s_own.update_seq++;
+        s_own.goal_achieved = choreo_goal_achieved();
+        LOG_WRN("quorum LOST — sending HARD_RT gossip now (element %u)",
+                (unsigned)s_own.id);
+        transport_send(&s_own, TAPESTRY_QOS_HARD_RT);
+        s_gossip_accum_ms = 0;
+    }
+    s_last_abort_state = abort_state;
 
     /* 5. Track leader changes for telemetry election counter */
     if (s_scr.leader_id != s_last_leader) {

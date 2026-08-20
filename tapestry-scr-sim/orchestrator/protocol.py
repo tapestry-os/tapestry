@@ -28,14 +28,14 @@ LOOPBACK          = "127.0.0.1"
 # decode() rejects a header whose version does not match —
 # see wire.h's "Wire schema version" section for why.
 
-WIRE_VERSION = 1
+WIRE_VERSION = 2
 
 MSG_GOSSIP     = 1
 MSG_METRIC     = 2
 MSG_SCR_METRIC = 4
 
 HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
-GOSSIP_FMT     = struct.Struct('<BffIIBBBBB')  # 22 bytes: id,x,y,logical_clock,update_seq,energy_level,health_flags,hop_count,achieved,version
+GOSSIP_FMT     = struct.Struct('<BffIIBBBBB')  # 22 bytes: id,x,y,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,version
 METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
 SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
 # === END GENERATED WIRE PROTOCOL ===
@@ -52,6 +52,31 @@ CTRL_FMT = struct.Struct('<BB')   # ctrl_type, value — 2 bytes
 
 ELEMENT_ID_INVALID = 0xFF
 
+# ── QoS tiers + relay_qos packing (mirror wire.h) ──────────────────────────────
+# Not part of the GENERATED block above: gen_wire_protocol.py only parses
+# tapestry_msg_type_t, not arbitrary #define constants — these are hand-
+# maintained, update alongside wire.h's "QoS delivery tiers" section.
+
+QOS_BEST_EFFORT = 0
+QOS_SOFT_RT     = 1
+QOS_HARD_RT     = 2
+
+_RELAY_QOS_HOP_MASK  = 0x03   # bits [1:0]: hop_count 0-2
+_RELAY_QOS_QOS_SHIFT = 2
+_RELAY_QOS_QOS_MASK  = 0x0C   # bits [3:2]: qos tier 0-2
+
+
+def pack_relay_qos(hop_count: int, qos: int) -> int:
+    return (hop_count & _RELAY_QOS_HOP_MASK) | \
+           ((qos << _RELAY_QOS_QOS_SHIFT) & _RELAY_QOS_QOS_MASK)
+
+
+def unpack_relay_qos(relay_qos: int) -> tuple[int, int]:
+    """Returns (hop_count, qos)."""
+    hop = relay_qos & _RELAY_QOS_HOP_MASK
+    qos = (relay_qos & _RELAY_QOS_QOS_MASK) >> _RELAY_QOS_QOS_SHIFT
+    return hop, qos
+
 # ── Encode ────────────────────────────────────────────────────────────────────
 
 def encode_gossip(state: dict) -> bytes:
@@ -64,7 +89,7 @@ def encode_gossip(state: dict) -> bytes:
         state['update_seq'],
         state.get('energy_level', 100),
         state.get('health_flags', 0),
-        state.get('hop_count', 0),
+        pack_relay_qos(state.get('hop_count', 0), state.get('qos', QOS_SOFT_RT)),
         1 if state.get('achieved') else 0,
         WIRE_VERSION,
     )
@@ -104,7 +129,7 @@ def decode(data: bytes) -> dict | None:
         return None
 
     if msg_type == MSG_GOSSIP and len(payload) >= GOSSIP_FMT.size:
-        id_, x, y, clock, seq, energy, health, hop, achieved, frame_version = \
+        id_, x, y, clock, seq, energy, health, relay_qos, achieved, frame_version = \
             GOSSIP_FMT.unpack_from(payload)
         # Checked here too, not just the header above: BLE and syslink P2P
         # carry this frame with no header wrapper at all on real hardware,
@@ -115,6 +140,7 @@ def decode(data: bytes) -> dict | None:
             log.warning("gossip frame version mismatch: id=%d wire=%d "
                         "(expected %d)", id_, frame_version, WIRE_VERSION)
             return None
+        hop, qos = unpack_relay_qos(relay_qos)
         return {
             'type':          'gossip',
             'src_id':        src_id,
@@ -126,6 +152,7 @@ def decode(data: bytes) -> dict | None:
             'energy_level':  energy,
             'health_flags':  health,
             'hop_count':     hop,
+            'qos':           qos,
             'achieved':      bool(achieved),
         }
 

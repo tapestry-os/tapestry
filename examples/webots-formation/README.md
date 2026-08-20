@@ -168,6 +168,27 @@ line (`... pos=(x,y) tgt=(x,y) goal=(x,y) ... step=N q=H`) — `pos` should visi
 approach `goal` each second, and `q` should read `H` (healthy quorum) once every drone
 is gossiping (`peers N-1/N-1`).
 
+## Testing HARD_RT quorum-loss gossip
+
+On a real (undebounced) quorum-loss edge — `scr_get_abort_state()` transitioning to
+`SCR_ABORT_TRIGGERED` — the surviving drone sends its next gossip frame immediately at
+`TAPESTRY_QOS_HARD_RT` instead of waiting up to `GOSSIP_INTERVAL_MS` for the next
+scheduled cycle (`tapestry-os/subsys/transport/gossip.c`'s relay queue also treats
+`HARD_RT` as higher priority than the `SOFT_RT` used by every other send site). To see
+it fire: with two drones flying (`worlds/change_partners.wbt`), kill or remove one
+drone's controller process mid-flight (or otherwise stop its gossip) and watch the
+survivor's console for:
+
+```
+id=<N> quorum LOST — sending HARD_RT gossip now
+```
+
+It should print on the same tick the survivor's peer entry crosses from fresh to
+stale-enough-to-drop-quorum (`WM_STALE_THRESHOLD_MS`), not up to `GOSSIP_INTERVAL_MS`
+later — that gap is the entire point of the HARD_RT path. It should print exactly once
+per outage (`scr_get_abort_state()` holds `SCR_ABORT_TRIGGERED` for as long as quorum
+stays LOST; the trigger fires on the edge into that state, not on every tick it holds).
+
 ## Telemetry capture / offline replay
 
 Set `TAPESTRY_TELEMETRY_DIR` before launching Webots to record each drone's

@@ -362,6 +362,36 @@ jobs:
             --build-dir tapestry/tapestry-scr-hw/build/hw-mb \
             tapestry/tapestry-scr-hw
 
+      # bbc_microbit_v2 is the only Phase 2 target whose board .conf sets
+      # CONFIG_BT=y, so it's the only build that can compile
+      # transceiver_ble.c at all — and the auth/relay CI above only ever
+      # links gossip.c against a loopback transceiver, never transceiver_ble.c.
+      # That means the BUILD_ASSERT in transceiver_ble.c guarding the
+      # 29-byte BLE advertising payload (exactly full once the 4-byte auth
+      # tag is added — see that file's budget comment) had never actually
+      # been evaluated by any build in this repo. This is the one place
+      # CONFIG_BT=y and CONFIG_TAPESTRY_WIRE_AUTH_ENABLED=y compile
+      # together, so it's what makes that guard real instead of aspirational.
+      - name: Build Phase 2 element — bbc_microbit_v2 (auth enabled)
+        working-directory: ${{ github.workspace }}
+        run: |
+          printf '%s\n' \
+            'CONFIG_MBEDTLS=y' \
+            'CONFIG_MBEDTLS_BUILTIN=y' \
+            'CONFIG_MBEDTLS_PSA_CRYPTO_C=y' \
+            'CONFIG_PSA_WANT_ALG_HMAC=y' \
+            'CONFIG_PSA_WANT_ALG_SHA_256=y' \
+            'CONFIG_PSA_WANT_KEY_TYPE_HMAC=y' \
+            'CONFIG_MBEDTLS_ENABLE_HEAP=y' \
+            'CONFIG_MBEDTLS_HEAP_SIZE=8192' \
+            'CONFIG_TAPESTRY_WIRE_AUTH_ENABLED=y' \
+            'CONFIG_TAPESTRY_WIRE_AUTH_KEY="tapestry-ci-test-key"' \
+            > /tmp/ci_auth.conf
+          west build -b bbc_microbit_v2 \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-mb-auth \
+            --extra-conf /tmp/ci_auth.conf \
+            tapestry/tapestry-scr-hw
+
       # ── cutebot-formation example ─────────────────────────────────────
       # L4-only formation demo; compile-only (flashing requires physical hardware).
 
