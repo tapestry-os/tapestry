@@ -355,6 +355,7 @@ ZTEST_SUITE(formation_field, NULL, NULL, NULL, NULL, NULL);
  * (both run the same CCW rule, so the pair stays antipodal).
  */
 
+#include <errno.h>
 #include <tapestry/choreo.h>
 
 static void wm_set_self(int slot, element_id_t id, float x, float y)
@@ -853,6 +854,157 @@ ZTEST(choreo_script, test_scope_all_ignores_stale_peer)
 
     zassert_true(choreo_script_complete(),
                  "a stale peer's unachieved bit must not block scope=all");
+}
+
+/* ── Goal queue: preemption + resume ───────────────────────────────────────
+ * choreo_preempt_goal() saves the running goal (and, for a script, its
+ * exact step/timer position) instead of discarding it; choreo_terminate()
+ * (and therefore choreo_cancel_goal()) resumes it automatically once the
+ * preempting goal ends, instead of going to IDLE. */
+
+ZTEST(choreo_script, test_preempt_resumes_hold_station)
+{
+    choreo_init(0);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    wm_reset();
+    wm_set_self(0, 0, 5.0f, 5.0f);
+
+    choreo_goal_t hold_goal = { .type = CHOREO_GOAL_HOLD };
+    zassert_equal(choreo_submit_goal(&hold_goal), 0, "submit HOLD failed");
+    choreo_tick(&wm, &scr);   /* capture the (5,5) station */
+    zassert_false(choreo_is_preempted(), "nothing parked yet");
+
+    choreo_goal_t rth = { .type = CHOREO_GOAL_CONVERGE, .target = {0.0f, 0.0f} };
+    zassert_equal(choreo_preempt_goal(&rth), 0, "preempt failed");
+    zassert_true(choreo_is_preempted(), "preempt must park the HOLD goal");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_CONVERGE,
+                  "the preempting goal must be active");
+
+    /* A second preempt while one is already parked is rejected — depth 1. */
+    choreo_goal_t another = { .type = CHOREO_GOAL_CONVERGE, .target = {1.0f, 1.0f} };
+    zassert_equal(choreo_preempt_goal(&another), -EBUSY,
+                  "a second preempt must be rejected while one is parked");
+
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 0.0f, EPS,
+                   "preempting CONVERGE target x");
+    zassert_within(choreo_get_directive()->target.y, 0.0f, EPS,
+                   "preempting CONVERGE target y");
+
+    /* Cancelling the preempting goal resumes HOLD at its ORIGINALLY
+     * captured (5,5) station — not a fresh capture at wherever self is
+     * now — proving the saved activation state, not just the goal type,
+     * survives the round trip. */
+    choreo_cancel_goal();
+    zassert_false(choreo_is_preempted(), "nothing parked after resume");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "HOLD must be active again after resume");
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 5.0f, EPS,
+                   "resumed HOLD station x must be the ORIGINAL capture");
+    zassert_within(choreo_get_directive()->target.y, 5.0f, EPS,
+                   "resumed HOLD station y must be the ORIGINAL capture");
+}
+
+ZTEST(choreo_script, test_preempt_mid_script_resumes_at_same_step)
+{
+    choreo_init(0);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 100000 },
+    };
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit script failed");
+    zassert_equal(choreo_script_step(), 0, "must start at step 0");
+
+    for (int i = 0; i < 5; i++) {
+        choreo_tick(&wm, &scr);   /* 500 ms of the 100000 ms step elapsed */
+    }
+
+    choreo_goal_t rth = { .type = CHOREO_GOAL_CONVERGE, .target = {9.0f, 9.0f} };
+    zassert_equal(choreo_preempt_goal(&rth), 0, "preempt mid-script failed");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_CONVERGE,
+                  "preempting goal must be active");
+
+    /* Run the preempting goal for far longer than the parked step's
+     * remaining budget would tolerate if its timer kept accumulating. */
+    for (int i = 0; i < 200; i++) {
+        choreo_tick(&wm, &scr);
+    }
+
+    choreo_cancel_goal();   /* resume the parked script */
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "resumed script's HOLD step must be active");
+    zassert_equal(choreo_script_step(), 0,
+                  "must resume at the SAME step, not advance");
+
+    /* If step_ms had kept accumulating during the 200 preempting ticks
+     * (20000 ms), 500+20000 = 20500 ms would already be well past this
+     * check point; confirm the step is still short of its 100000 ms
+     * bound after only ~99000 ms more (99500 ms since the step started,
+     * counting only pre- and post-preemption HOLD ticks). */
+    for (int i = 0; i < 990; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_equal(choreo_script_step(), 0,
+                  "step_ms must not have counted the preempting goal's runtime");
+    zassert_false(choreo_script_complete(), "not yet due");
+
+    for (int i = 0; i < 10; i++) {
+        choreo_tick(&wm, &scr);   /* push past 100000 ms total HOLD time */
+    }
+    zassert_true(choreo_script_complete(),
+                 "script must complete once its OWN accumulated time is due");
+}
+
+ZTEST(choreo_script, test_preempt_from_idle_rejected)
+{
+    choreo_init(0);
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE, .target = {1.0f, 1.0f} };
+    zassert_equal(choreo_preempt_goal(&g), -1,
+                  "preempt with nothing running must be rejected");
+}
+
+ZTEST(choreo_script, test_ordinary_submit_while_preempted_drops_parked_goal)
+{
+    choreo_init(0);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    choreo_goal_t hold_goal = { .type = CHOREO_GOAL_HOLD };
+    choreo_submit_goal(&hold_goal);
+    choreo_tick(&wm, &scr);
+
+    choreo_goal_t rth = { .type = CHOREO_GOAL_CONVERGE, .target = {0.0f, 0.0f} };
+    choreo_preempt_goal(&rth);
+    zassert_true(choreo_is_preempted(), "preempted");
+
+    /* An ORDINARY submit — not choreo_preempt_goal() — always fully
+     * replaces everything, including anything parked. */
+    choreo_goal_t fresh = { .type = CHOREO_GOAL_CONVERGE, .target = {3.0f, 3.0f} };
+    zassert_equal(choreo_submit_goal(&fresh), 0, "ordinary submit failed");
+    zassert_false(choreo_is_preempted(),
+                  "ordinary submit must drop the parked goal, not stack on it");
+
+    /* A subsequent preempt must succeed — the stack must genuinely be
+     * empty, not just reporting empty while still logically full. */
+    choreo_goal_t another = { .type = CHOREO_GOAL_CONVERGE, .target = {1.0f, 1.0f} };
+    zassert_equal(choreo_preempt_goal(&another), 0,
+                  "preempt after a dropping submit must succeed (stack truly empty)");
+
+    /* Cancelling now resumes `fresh`, not the long-gone HOLD. */
+    choreo_cancel_goal();
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_CONVERGE,
+                  "must resume the goal from the dropping submit, not the discarded HOLD");
 }
 
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

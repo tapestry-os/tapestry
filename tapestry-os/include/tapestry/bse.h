@@ -239,19 +239,54 @@ void bse_init(element_id_t self_id);
  * bse_tick() decomposes it, and bse_goal_achieved() reports against it.
  *
  * What happens to the DISPLACED intent is implementation-defined and must
- * not be relied on.  This reference implementation discards it — the
- * achievement predicate and every activation capture (HOLD station,
- * EXCHANGE snapshot and arc progress, MOVE centroid offset) are reset, so
- * re-submitting a previously active intent starts it over.  An
- * implementation that supports a prioritised goal queue may instead
- * preserve the displaced intent's activation state and resume it when the
- * preempting intent completes, which is why callers must treat resumption
- * as neither guaranteed nor forbidden.  See bse_activation_t in bse.c for
- * exactly which state that covers.
+ * not be relied on.  This function always discards it — the achievement
+ * predicate and every activation capture (HOLD station, EXCHANGE snapshot
+ * and arc progress, MOVE centroid offset) are reset, so re-submitting a
+ * previously active intent starts it over.  It also discards anything
+ * bse_preempt_intent() had parked (an ordinary submit always fully
+ * replaces everything).  Use bse_preempt_intent() below for the
+ * alternative: preserve the displaced intent's activation state and
+ * resume it later.  See bse_activation_t in bse.c for exactly which state
+ * that covers.
  *
  * Returns 0 on success, -1 if intent is NULL.
  */
 int bse_submit_intent(const tapestry_bse_intent_t *intent);
+
+/*
+ * bse_preempt_intent — Like bse_submit_intent(), but saves the displaced
+ * intent and its full activation state instead of discarding it, and
+ * bse_resume_intent() restores it verbatim (HOLD station, EXCHANGE
+ * snapshot/arc progress, MOVE offset, achievement accumulator all survive
+ * the round trip). Bounded stack, depth 1 in this implementation — a
+ * second preempt while one is already parked returns -1; nest deeper by
+ * raising BSE_MAX_PREEMPT_DEPTH in bse.c.
+ *
+ * The preempting intent becomes active immediately, exactly like
+ * bse_submit_intent(). L7 (choreo.c) owns the POLICY of when to call this
+ * instead of bse_submit_intent() — priority comparison, if any, happens
+ * there; this is pure mechanism.
+ *
+ * Returns 0 on success, -1 if intent is NULL or the stack is full.
+ */
+int bse_preempt_intent(const tapestry_bse_intent_t *intent);
+
+/*
+ * bse_resume_intent — Pop the most recently preempted intent back to
+ * active, restoring its saved activation state exactly as it was at the
+ * moment it was displaced. The intent that was active before this call is
+ * discarded (same semantics as bse_submit_intent() displacing it) — call
+ * bse_preempt_intent() again first if it also needs to survive.
+ *
+ * Returns 0 on success, -1 if nothing is parked.
+ */
+int bse_resume_intent(void);
+
+/*
+ * bse_has_parked_intent — True if bse_preempt_intent() has saved an intent
+ * that bse_resume_intent() would restore.
+ */
+bool bse_has_parked_intent(void);
 
 /*
  * bse_tick — Recompute per-element directive from current world state.

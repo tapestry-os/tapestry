@@ -60,13 +60,12 @@ static tapestry_bse_directive_t s_directive;
  * as loose file-scope statics for one reason: this is exactly the state a
  * preempting BSE has to save and restore.
  *
- * This reference implementation holds a single activation and resets it on
- * every bse_submit_intent(), so a displaced intent is simply forgotten (see
- * the contract in bse.h — the discard is this implementation's behavior,
- * not a promise of the interface).  An implementation supporting a
- * prioritised goal queue keeps a stack of these instead and restores the
- * preempted entry when the preempting intent completes; nothing outside
- * this struct needs to be saved for that to work.
+ * bse_submit_intent() resets this on every call, so a displaced intent is
+ * simply forgotten. bse_preempt_intent()/bse_resume_intent() (below)
+ * instead push/pop this struct on a bounded stack (s_parked_act) and
+ * restore the preempted entry when the preempting intent completes —
+ * nothing outside this struct needs to be saved for that to work, which is
+ * why the push/pop pair only ever touches s_intent and this struct.
  *
  * Note what is deliberately NOT here: s_goal_pt / s_goal_pt_valid are
  * recomputed from scratch by every bse_tick(), so they are tick-scoped, not
@@ -102,6 +101,25 @@ static bse_activation_t s_act;
 /* Tick-scoped: recomputed by every bse_tick(), never carried across one. */
 static bool                s_goal_pt_valid;   /* goal point computed this tick */
 static tapestry_position_t s_goal_pt;
+
+/* ── Preemption stack ─────────────────────────────────────────────────────── */
+/*
+ * bse_preempt_intent()/bse_resume_intent() implement the extension point
+ * bse_submit_intent()'s doc comment and bse_activation_t's comment above
+ * describe: instead of discarding the displaced intent, save it and restore
+ * it verbatim when the preempting intent completes.  A bounded stack, not a
+ * singleton, on purpose — BSE_MAX_PREEMPT_DEPTH is 1 today (matches
+ * choreo.c's CHOREO_MAX_PREEMPT_DEPTH), but nesting to N-deep later is
+ * raising this constant and loosening one bound check, not a redesign: the
+ * push/pop shape and s_intent/s_act split already generalize.  Tick-scoped
+ * state (s_goal_pt/s_goal_pt_valid) is deliberately NOT saved here — it is
+ * recomputed by every bse_tick() regardless of which intent is active, so
+ * there is nothing to preserve across a push/pop.
+ */
+#define BSE_MAX_PREEMPT_DEPTH 1
+static tapestry_bse_intent_t s_parked_intent[BSE_MAX_PREEMPT_DEPTH];
+static bse_activation_t      s_parked_act[BSE_MAX_PREEMPT_DEPTH];
+static int                   s_parked_depth;
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
@@ -268,6 +286,18 @@ static tapestry_position_t exchange_arc_target(void)
 
 /* ── API ──────────────────────────────────────────────────────────────────── */
 
+/* Shared by bse_init(), bse_submit_intent(), and bse_preempt_intent() — a
+ * fresh intent always starts with a clean activation. */
+static void reset_activation(void)
+{
+    s_act.achieved         = false;
+    s_goal_pt_valid        = false;
+    s_act.achieve_accum_ms = 0;
+    s_act.hold_captured    = false;
+    s_act.ex_captured      = false;
+    s_act.move_captured    = false;
+}
+
 void bse_init(element_id_t self_id)
 {
     s_self_id = self_id;
@@ -275,13 +305,9 @@ void bse_init(element_id_t self_id)
     memset(&s_directive, 0, sizeof(s_directive));
     s_intent.type    = TAPESTRY_BSE_INTENT_IDLE;
     s_directive.type = TAPESTRY_BSE_DIRECTIVE_IDLE;
+    s_parked_depth   = 0;
 
-    s_act.achieved         = false;
-    s_goal_pt_valid    = false;
-    s_act.achieve_accum_ms = 0;
-    s_act.hold_captured    = false;
-    s_act.ex_captured      = false;
-    s_act.move_captured    = false;
+    reset_activation();
 }
 
 int bse_submit_intent(const tapestry_bse_intent_t *intent)
@@ -290,14 +316,15 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
         return -1;
     }
     s_intent = *intent;
+    reset_activation();
 
-    /* New goal — reset captures and the achievement predicate. */
-    s_act.achieved         = false;
-    s_goal_pt_valid    = false;
-    s_act.achieve_accum_ms = 0;
-    s_act.hold_captured    = false;
-    s_act.ex_captured      = false;
-    s_act.move_captured    = false;
+    /* An ordinary submit always fully discards — including anything
+     * bse_preempt_intent() had parked.  Only bse_preempt_intent()/
+     * bse_resume_intent() grow/shrink the parked stack; this is the
+     * "hard reset to exactly this one intent" path (see choreo.c's
+     * terminate_hard(), which relies on this to drop a parked goal on an
+     * ordinary new submission even if a preemption happens to be active). */
+    s_parked_depth = 0;
 
     /* An IDLE intent (quiescence) takes effect immediately, not at the next
      * tick — choreo_terminate() submits it and then stops ticking the BSE,
@@ -306,6 +333,49 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
         s_directive.type = TAPESTRY_BSE_DIRECTIVE_IDLE;
     }
     return 0;
+}
+
+int bse_preempt_intent(const tapestry_bse_intent_t *intent)
+{
+    if (intent == NULL) {
+        return -1;
+    }
+    if (s_parked_depth >= BSE_MAX_PREEMPT_DEPTH) {
+        return -1;   /* stack full */
+    }
+    s_parked_intent[s_parked_depth] = s_intent;
+    s_parked_act[s_parked_depth]    = s_act;
+    s_parked_depth++;
+
+    s_intent = *intent;
+    reset_activation();
+
+    if (s_intent.type == TAPESTRY_BSE_INTENT_IDLE) {
+        s_directive.type = TAPESTRY_BSE_DIRECTIVE_IDLE;
+    }
+    return 0;
+}
+
+int bse_resume_intent(void)
+{
+    if (s_parked_depth <= 0) {
+        return -1;   /* nothing parked */
+    }
+    s_parked_depth--;
+    s_intent = s_parked_intent[s_parked_depth];
+    s_act    = s_parked_act[s_parked_depth];
+
+    /* Tick-scoped goal point was never saved (see the preemption-stack
+     * comment above) — invalidate rather than leave it referencing the
+     * intent that was active a moment ago. bse_tick() recomputes it fresh
+     * on the next tick either way. */
+    s_goal_pt_valid = false;
+    return 0;
+}
+
+bool bse_has_parked_intent(void)
+{
+    return s_parked_depth > 0;
 }
 
 void bse_tick(const world_model_t *wm, const scr_state_t *scr)

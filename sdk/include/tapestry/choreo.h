@@ -273,20 +273,29 @@ int choreo_configure(const choreo_goal_t *goal);
 int choreo_deploy(void);
 
 /*
- * choreo_terminate — Abort the current goal or script and return to IDLE.
+ * choreo_terminate — Abort the current goal or script.
  *
- * Valid from any state.  Submits an IDLE intent to the BSE (the quiescence
- * signal), clears any active script, passes through TERMINATED, and settles
- * in IDLE.  choreo_script_complete() is unaffected — it keeps reporting
- * whether the most recent script ran to completion.
+ * Valid from any state.  If choreo_preempt_goal() has a goal parked, this
+ * RESUMES it instead of going to IDLE: the parked goal (and, if it was a
+ * script, its exact step/timer position) becomes active again, exactly as
+ * it was at the moment it was preempted, and this returns to RUNNING —
+ * repeated calls unwind one preemption level at a time.  With nothing
+ * parked (the only case before this feature existed, and the common case
+ * today), behavior is unchanged: submits an IDLE intent to the BSE (the
+ * quiescence signal), clears any active script, passes through TERMINATED,
+ * and settles in IDLE.  choreo_script_complete() is unaffected either way —
+ * it keeps reporting whether the most recent script ran to completion.
  */
 void choreo_terminate(void);
 
 /*
  * choreo_submit_goal — One-shot convenience: configure + deploy.
  *
- * Calls choreo_terminate() first if a goal is already active, then calls
- * choreo_configure(goal) followed by choreo_deploy().
+ * Unconditionally fully resets state first if anything is active —
+ * including discarding any goal parked by choreo_preempt_goal(), unlike
+ * choreo_terminate() — then calls choreo_configure(goal) followed by
+ * choreo_deploy().  An ordinary new submission always replaces everything;
+ * use choreo_preempt_goal() when the previous goal should survive.
  *
  * Returns 0 on success, -1 on invalid goal, -EPERM on capability mismatch.
  */
@@ -295,15 +304,55 @@ int choreo_submit_goal(const choreo_goal_t *goal);
 /*
  * choreo_submit_script — Load and start a goal sequence.
  *
- * Terminates any active goal or script, validates every step up front
- * (goal validity, capability requirements, and that each step can advance),
- * then deploys step 0.  The steps array must remain valid while the script
- * runs (typically a static const array in the application).
+ * Unconditionally fully resets state first (see choreo_submit_goal() —
+ * same "always replaces everything, including any parked goal" rule),
+ * validates every step up front (goal validity, capability requirements,
+ * and that each step can advance), then deploys step 0.  The steps array
+ * must remain valid while the script runs (typically a static const array
+ * in the application).
  *
  * Returns 0 on success, -1 on invalid arguments or an unadvanceable step,
  * -EPERM if any step's required_caps are unsatisfied.
  */
 int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps);
+
+/*
+ * choreo_preempt_goal — Run `goal` immediately, preserving the currently
+ * active goal (or script, including its exact step/timer position) to
+ * resume automatically later — via choreo_terminate() / choreo_cancel_goal()
+ * once `goal` is done, or naturally when a preempting script (not
+ * supported here — `goal` is always a single goal) would complete.
+ *
+ * Unlike choreo_submit_goal(), this does NOT discard what was running: it
+ * is the mechanism side of a goal queue with preemption (v1.0 scope: one
+ * level deep — a second choreo_preempt_goal() call while one is already
+ * parked returns -EBUSY; nest deeper is a future extension, not a
+ * redesign). The preempting goal itself cannot be preempted again by
+ * anything other than choreo_terminate()/choreo_cancel_goal() resuming
+ * what it displaced.
+ *
+ * Requires an active goal (RUNNING or SUSPENDED) to preempt — returns -1
+ * from IDLE/CONFIGURED/TERMINATED, since there is nothing to preserve.
+ *
+ * Returns 0 on success, -1 if goal is NULL, type is CHOREO_GOAL_NONE, or
+ * nothing is active to preempt; -EBUSY if something is already parked;
+ * -EPERM on capability mismatch.
+ */
+int choreo_preempt_goal(const choreo_goal_t *goal);
+
+/*
+ * choreo_is_preempted — True if choreo_preempt_goal() has a goal parked
+ * that choreo_terminate()/choreo_cancel_goal() would resume.
+ */
+bool choreo_is_preempted(void);
+
+/*
+ * choreo_parked_goal_id — The choreo_goal_t::id of the parked goal (see
+ * that field's doc for why it exists: naming which goal to resume, and
+ * reporting which goal preempted which). 0 if nothing is parked, or if the
+ * parked goal never set an id.
+ */
+uint16_t choreo_parked_goal_id(void);
 
 /*
  * choreo_script_step — Current step index, or -1 if no script is active
@@ -336,8 +385,9 @@ bool choreo_goal_achieved(void);
 bool choreo_collective_achieved(const world_model_t *wm);
 
 /*
- * choreo_cancel_goal — Cancel the current goal and return to IDLE.
- * Thin wrapper around choreo_terminate().
+ * choreo_cancel_goal — Cancel the current goal.
+ * Thin wrapper around choreo_terminate() — see that function for the
+ * "resumes a parked goal instead of going to IDLE, if one exists" behavior.
  */
 void choreo_cancel_goal(void);
 
