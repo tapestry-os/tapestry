@@ -73,7 +73,8 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->update_seq    = own_state->update_seq;
     p->energy_level  = own_state->energy_level;
     p->health_flags  = own_state->health_flags;
-    p->hop_count     = 0;   /* relay not used in sim */
+    p->relay_qos     = TAPESTRY_PACK_RELAY_QOS(0u, TAPESTRY_QOS_SOFT_RT);
+                             /* hop_count=0: relay not used in sim */
     p->achieved      = own_state->goal_achieved ? 1u : 0u;
     p->version       = TAPESTRY_WIRE_VERSION;
 

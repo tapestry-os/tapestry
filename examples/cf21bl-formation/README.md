@@ -315,6 +315,13 @@ Approximate timeline from simultaneous power-on: line by ~25 s; id=1 airborne
 Every trigger above is per-drone local state — one drone landing never
 affects another's flight.
 
+Separately, on a real quorum-loss edge (a peer's gossip actually going stale, not one
+of the local triggers above) this drone gossips its own state immediately at
+`TAPESTRY_QOS_HARD_RT` instead of waiting for the next scheduled cycle, so a peer
+losing quorum is heard about as fast as the radio allows — watch flight logs for
+`quorum LOST — sending HARD_RT gossip now`. See `examples/webots-formation/README.md`'s
+"Testing HARD_RT quorum-loss gossip" for how to exercise this without flying.
+
 ## Flight checklist
 
 1. Flash all three drones with IDs 0, 1, 2 (same BS calibration on all three).

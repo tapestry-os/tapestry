@@ -31,9 +31,14 @@ swarms. The current implementation (L3–L5) is designed for trusted,
 contained environments — lab benches, research deployments, and known
 hardware. It does **not** implement:
 
-- Encrypted gossip transport (UDP broadcast is plaintext).
-- Authentication of gossip messages (any peer can inject state).
+- Encrypted gossip transport (UDP/BLE payloads are plaintext).
 - Isolation between elements sharing a broadcast domain.
+
+Authentication of gossip messages (`CONFIG_TAPESTRY_WIRE_AUTH_ENABLED`, a
+4-byte truncated HMAC-SHA256 tag per frame) exists but is off by default and
+enabled by no example, board overlay, or shipping configuration — any peer
+can inject state unless a deployment turns it on and sets a real
+`CONFIG_TAPESTRY_WIRE_AUTH_KEY`.
 
 These are known limitations appropriate for the current development stage.
 Any findings related to them are welcome as issues rather than vulnerabilities.

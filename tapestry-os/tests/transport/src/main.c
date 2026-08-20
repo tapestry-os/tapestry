@@ -300,7 +300,7 @@ ZTEST(gossip_wire, test_the_achieved_bit_round_trips_false)
 
 /*
  * The achieved bit is carried in its own byte and must not be confused with
- * the neighbouring hop_count / health_flags bytes.
+ * the neighbouring relay_qos / health_flags bytes.
  */
 ZTEST(gossip_wire, test_the_achieved_bit_occupies_its_own_wire_byte)
 {
@@ -315,6 +315,30 @@ ZTEST(gossip_wire, test_the_achieved_bit_occupies_its_own_wire_byte)
     zassert_equal(f->health_flags,
                   ELEMENT_HEALTH_LOW_BATTERY | ELEMENT_HEALTH_DEGRADED,
                   "health_flags must not be clobbered by achieved");
+}
+
+/*
+ * The QoS tier passed to gossip_send() must survive onto the wire, packed
+ * into relay_qos alongside hop_count without disturbing it — both fields
+ * share one byte (wire.h's TAPESTRY_PACK_RELAY_QOS).
+ */
+ZTEST(gossip_wire, test_qos_tier_is_packed_into_relay_qos_without_disturbing_hop_count)
+{
+    element_state_t own = sender_state(3, false);
+
+    gossip_send(&own, TAPESTRY_QOS_HARD_RT);
+
+    const tapestry_gossip_frame_t *f =
+        (const tapestry_gossip_frame_t *)loop_last();
+
+    zassert_equal(TAPESTRY_QOS_TIER(f->relay_qos), TAPESTRY_QOS_HARD_RT,
+                  "qos tier must round-trip onto the wire");
+    zassert_equal(TAPESTRY_HOP_COUNT(f->relay_qos),
+                  IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u,
+                  "packing qos must not disturb hop_count's bits");
+    zassert_equal(f->relay_qos & ~(TAPESTRY_RELAY_QOS_HOP_MASK |
+                                   TAPESTRY_RELAY_QOS_QOS_MASK), 0u,
+                  "bits [7:4] of relay_qos are reserved and must be zero");
 }
 
 /*
@@ -537,7 +561,7 @@ ZTEST(gossip_wire, test_relay_frames_start_with_two_hops)
     const tapestry_gossip_frame_t *f =
         (const tapestry_gossip_frame_t *)loop_last();
 
-    zassert_equal(f->hop_count, 2u,
+    zassert_equal(TAPESTRY_HOP_COUNT(f->relay_qos), 2u,
                   "first-party frames start at hop_count 2 with relay on");
 }
 
@@ -568,7 +592,8 @@ ZTEST(gossip_wire, test_a_received_frame_is_re_advertised_with_one_less_hop)
         (const tapestry_gossip_frame_t *)loop_last();
 
     zassert_equal(r->id, 9, "the relay must preserve the ORIGINATOR's id");
-    zassert_equal(r->hop_count, 1u, "hop_count must be decremented");
+    zassert_equal(TAPESTRY_HOP_COUNT(r->relay_qos), 1u,
+                  "hop_count must be decremented");
     zassert_true(r->achieved == 1u,
                  "a relayed frame must carry the originator's achieved bit — "
                  "an element two hops out reads it for scope=\"all\"");
@@ -586,7 +611,8 @@ ZTEST(gossip_wire, test_an_exhausted_ttl_is_not_relayed)
     receiver_init(&wm, 0);
     peer.logical_clock = 0x2000u;
     gossip_send(&peer, TAPESTRY_QOS_SOFT_RT);
-    ((tapestry_gossip_frame_t *)loop_last())->hop_count = 0u;
+    ((tapestry_gossip_frame_t *)loop_last())->relay_qos =
+        TAPESTRY_PACK_RELAY_QOS(0u, TAPESTRY_QOS_SOFT_RT);
 
     zassert_equal(gossip_drain(&wm, 0), 1, "the frame is still applied");
 
@@ -632,6 +658,71 @@ ZTEST(gossip_wire, test_a_repeated_clock_is_relayed_only_once)
                   "a clock already relayed must not be relayed again — two "
                   "elements relaying each other would otherwise amplify "
                   "every frame indefinitely");
+}
+
+/*
+ * Priority under pressure: when the relay queue (depth 8) is full, a
+ * higher-qos incoming frame must evict the lowest-qos queued frame rather
+ * than being dropped itself — a HARD_RT frame must never be the one
+ * silently lost.
+ */
+ZTEST(gossip_wire, test_a_higher_qos_frame_evicts_the_lowest_qos_queued_frame)
+{
+    world_model_t wm;
+
+    receiver_init(&wm, 0);
+
+    /* Element ids 21-29, used nowhere else in this suite: relay_clock[] is
+     * a file-static in gossip.c with no per-test reset hook (see
+     * suite_before's comment), so a prior test's frame for a REUSED id
+     * could already have set relay_clock[id] above whatever this test
+     * sends, silently suppressing the enqueue this test depends on.
+     * Ids never touched elsewhere start at relay_clock's zero default,
+     * so any positive logical_clock here is unambiguously newer. */
+
+    /* Fill the relay queue with 8 distinct-id SOFT_RT frames. */
+    for (element_id_t id = 21; id <= 28; id++) {
+        element_state_t peer = sender_state(id, false);
+
+        peer.logical_clock = 1u;
+        gossip_send(&peer, TAPESTRY_QOS_SOFT_RT);
+        zassert_equal(gossip_drain(&wm, 0), 1, "peer %u applied", id);
+    }
+
+    /* One more, higher-qos, distinct id: the queue is already full, so
+     * this must evict a queued SOFT_RT frame instead of being dropped. */
+    element_state_t urgent = sender_state(29, false);
+
+    urgent.logical_clock = 1u;
+    gossip_send(&urgent, TAPESTRY_QOS_HARD_RT);
+    zassert_equal(gossip_drain(&wm, 0), 1, "urgent peer applied");
+
+    /* Reclaim the loopback's own fixed depth (LOOP_DEPTH) before the
+     * flush — it is a test-harness limit, unrelated to the relay ring
+     * buffer under test, and the 9 sends above already used most of it. */
+    loop_reset();
+
+    k_msleep(RELAY_JITTER_SETTLE_MS);
+    gossip_relay_flush();
+
+    int relayed_count = 0;
+    bool saw_urgent    = false;
+
+    for (int i = loop_head; i < loop_tail; i++) {
+        const tapestry_gossip_frame_t *r =
+            (const tapestry_gossip_frame_t *)loop_buf[i];
+
+        relayed_count++;
+        if (r->id == 29) {
+            saw_urgent = true;
+        }
+    }
+    zassert_equal(relayed_count, 8,
+                  "queue depth still caps relayed frames at 8 — one SOFT_RT "
+                  "frame must have been evicted, not appended past capacity");
+    zassert_true(saw_urgent,
+                 "the HARD_RT frame must be relayed — it must not be the "
+                 "one dropped for capacity");
 }
 
 #endif /* CONFIG_TAPESTRY_MESH_RELAY */

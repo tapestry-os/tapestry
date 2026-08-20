@@ -745,6 +745,27 @@ int main(void)
             choreo_tick(&wm, &scr_view);
             own_state.goal_achieved = choreo_goal_achieved();
 
+            /* HARD_RT gossip on the REAL (undebounced) quorum-loss edge —
+             * scr_view's QUORUM_UP_MS softening above is for L6/L7 only;
+             * the wire signal that this element's quorum just failed
+             * should not wait on that confirmation delay. Fires once per
+             * outage, not every tick it persists — scr_get_abort_state()
+             * is a level held for the whole LOST period (see scr.h), so
+             * this checks the NONE/CLEARED -> TRIGGERED edge specifically.
+             * Mirrors tapestry-os/subsys/runtime/runtime.c's step 4b. */
+            static scr_abort_state_t last_abort_state;
+            scr_abort_state_t abort_state = scr_get_abort_state(&scr);
+
+            if (abort_state == SCR_ABORT_TRIGGERED &&
+                last_abort_state != SCR_ABORT_TRIGGERED) {
+                own_state.update_seq++;
+                LOG_WRN("id=%u quorum LOST — sending HARD_RT gossip now",
+                        (unsigned)element_id);
+                transport_send(&own_state, TAPESTRY_QOS_HARD_RT);
+                gossip_accum = 0;
+            }
+            last_abort_state = abort_state;
+
             static int last_step = -2;
             if (choreo_script_step() != last_step) {
                 last_step = choreo_script_step();

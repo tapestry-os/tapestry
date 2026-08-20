@@ -261,6 +261,32 @@ int main(int argc, char **argv)
 
             choreo_tick(&wm, &scr_view);
 
+            /* HARD_RT gossip on the REAL (undebounced) quorum-loss edge —
+             * scr_view's QUORUM_UP_MS softening above is for L6/L7 only;
+             * the wire signal that this element's quorum just failed
+             * should not wait on that confirmation delay. Fires once per
+             * outage, not every tick it persists — scr_get_abort_state()
+             * is a level held for the whole LOST period (see scr.h), so
+             * this checks the NONE/CLEARED -> TRIGGERED edge specifically.
+             * Same rationale as cf21bl-formation's main.c, which carries
+             * the full comment; mirrors tapestry-os/subsys/runtime/
+             * runtime.c's step 4b. */
+            {
+                static scr_abort_state_t last_abort_state;
+                scr_abort_state_t abort_state = scr_get_abort_state(&scr);
+
+                if (abort_state == SCR_ABORT_TRIGGERED &&
+                    last_abort_state != SCR_ABORT_TRIGGERED) {
+                    own_state.update_seq++;
+                    own_state.goal_achieved = choreo_goal_achieved();
+                    printf("id=%u quorum LOST — sending HARD_RT gossip now\n",
+                           (unsigned)element_id);
+                    gossip_send(&own_state, TAPESTRY_QOS_HARD_RT);
+                    gossip_accum_ms = 0;
+                }
+                last_abort_state = abort_state;
+            }
+
             /* Capture the VIEW, not scr: the replay harness re-drives the
              * Python engine against exactly what choreo_tick() saw, so the
              * recorded quorum_state has to be the debounced one. */

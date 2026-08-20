@@ -44,14 +44,20 @@
 
 /* ── QoS delivery tiers ──────────────────────────────────────────────────── */
 /*
- * Placeholder constants — not yet implemented.
- * Passed to gossip_send / transport_send as qos_tier but not carried in the
- * gossip wire frame and not acted on by any receiver.  Reserved for future
- * transport-layer prioritization (relay queue ordering, drop policy, etc.).
- * All call sites currently hardcode TAPESTRY_QOS_SOFT_RT.
+ * Carried on the wire in the low bits of the gossip frame's relay_qos byte
+ * (see below) and acted on in two places:
+ *   - gossip.c's relay ring buffer admits a higher-tier frame by evicting
+ *     the lowest-tier queued frame instead of dropping the incoming one,
+ *     so a HARD_RT frame is never the one silently lost under pressure.
+ *   - runtime.c sends a HARD_RT frame immediately on SCR_ABORT_TRIGGERED
+ *     (quorum just dropped below DEGRADED) instead of waiting for the next
+ *     scheduled GOSSIP_INTERVAL_MS cycle.
+ * TAPESTRY_QOS_BEST_EFFORT has no current sender: telemetry travels its own
+ * separate channel (transport_send_telemetry()), not gossip. It is defined
+ * and carried on the wire but not used by any call site today.
  */
 
-#define TAPESTRY_QOS_BEST_EFFORT  0u   /* Background telemetry                */
+#define TAPESTRY_QOS_BEST_EFFORT  0u   /* Background telemetry (unused today) */
 #define TAPESTRY_QOS_SOFT_RT      1u   /* Coordination gossip                 */
 #define TAPESTRY_QOS_HARD_RT      2u   /* Emergency / control frames          */
 
@@ -83,8 +89,19 @@
  * only guards translation errors — it is not a compatibility mechanism:
  * there is no negotiation, and a version bump is a breaking change for any
  * peer still on the old one.
+ *
+ * v2: tapestry_gossip_frame_t's hop_count byte was repacked into relay_qos
+ * (hop_count in bits [1:0], qos tier in bits [3:2] — see "QoS delivery
+ * tiers" above) to carry the QoS tier without growing the frame, which
+ * matters because the BLE advertising payload has zero spare bytes (see
+ * transceiver_ble.c's budget comment).  A v1 sender's hop_count values are
+ * always 0-2 with the upper bits always zero, which happens to decode under
+ * v2 as an unchanged hop_count and qos=BEST_EFFORT — but the version check
+ * still rejects the mismatch rather than rely on that coincidence, since a
+ * v2 sender's qos bits would misparse as a v1 hop_count outside its
+ * expected 0-2 range.
  */
-#define TAPESTRY_WIRE_VERSION   1u
+#define TAPESTRY_WIRE_VERSION   2u
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 
@@ -117,12 +134,19 @@ typedef struct {
  * Python format: struct.Struct('<BffIIBBBBB')
  * Size: 22 bytes
  * Fields: id, x, y, logical_clock, update_seq,
- *         energy_level, health_flags, hop_count, achieved, version
+ *         energy_level, health_flags, relay_qos, achieved, version
  *
- * hop_count: relay TTL.  First-party frames start at 2 when
+ * relay_qos: hop_count (bits [1:0]) and qos tier (bits [3:2]) packed into
+ *   one byte — see TAPESTRY_HOP_COUNT() / TAPESTRY_QOS_TIER() /
+ *   TAPESTRY_PACK_RELAY_QOS() below. Bits [7:4] are reserved and must be 0.
+ *
+ *   hop_count is the relay TTL.  First-party frames start at 2 when
  *   CONFIG_TAPESTRY_MESH_RELAY is enabled (0 otherwise).  Each relay node
  *   decrements by 1 before re-advertising; frames with hop_count == 0 are
  *   never re-advertised, capping relay depth at two hops.
+ *
+ *   qos tier is one of TAPESTRY_QOS_* above.  Used by the relay ring buffer
+ *   to decide which queued frame to evict under pressure — see gossip.c.
  *
  * achieved: this element's L6/L7 own-goal achievement predicate
  *   (choreo_goal_achieved()) as of its last gossip send — 0 or 1.  Lets
@@ -149,12 +173,28 @@ typedef struct {
     uint32_t update_seq;
     uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
     uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see csm.h)    */
-    uint8_t  hop_count;            /* Relay TTL: 2 first-party, 0 = no relay  */
+    uint8_t  relay_qos;            /* hop_count[1:0] | qos_tier[3:2] — packed */
     uint8_t  achieved;             /* own-goal achievement predicate, 0/1     */
     uint8_t  version;              /* TAPESTRY_WIRE_VERSION — see above       */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
 #define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 22 */
+
+/* ── relay_qos packing ───────────────────────────────────────────────────── */
+
+#define TAPESTRY_RELAY_QOS_HOP_MASK    0x03u   /* bits [1:0]: hop_count 0-2 */
+#define TAPESTRY_RELAY_QOS_QOS_SHIFT   2u
+#define TAPESTRY_RELAY_QOS_QOS_MASK    0x0Cu   /* bits [3:2]: qos tier 0-2  */
+
+#define TAPESTRY_HOP_COUNT(relay_qos) \
+    ((uint8_t)((relay_qos) & TAPESTRY_RELAY_QOS_HOP_MASK))
+
+#define TAPESTRY_QOS_TIER(relay_qos) \
+    ((uint8_t)(((relay_qos) & TAPESTRY_RELAY_QOS_QOS_MASK) >> TAPESTRY_RELAY_QOS_QOS_SHIFT))
+
+#define TAPESTRY_PACK_RELAY_QOS(hop_count, qos_tier) \
+    ((uint8_t)(((hop_count) & TAPESTRY_RELAY_QOS_HOP_MASK) | \
+               (((qos_tier) << TAPESTRY_RELAY_QOS_QOS_SHIFT) & TAPESTRY_RELAY_QOS_QOS_MASK)))
 
 /* Full on-wire size: frame + optional HMAC auth tag */
 #define TAPESTRY_GOSSIP_WIRE_SIZE    \

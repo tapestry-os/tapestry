@@ -16,8 +16,11 @@
  *   logical_clock than we last relayed for that id.  gossip_relay_flush
  *   re-transmits the queued frames (hop_count decremented) after a random
  *   0-50 ms jitter window to reduce collision probability on dense networks.
- *   The relay ring buffer holds at most RELAY_QUEUE_DEPTH frames; excess frames
- *   are dropped silently to bound static RAM usage.
+ *   The relay ring buffer holds at most RELAY_QUEUE_DEPTH frames; under
+ *   pressure the lowest-QoS-tier queued frame is evicted to admit a
+ *   higher-tier incoming one (see relay_enqueue) — only when no queued
+ *   frame outranks the incoming one is it dropped, so a HARD_RT frame is
+ *   never the one silently lost.
  */
 
 #include "gossip.h"
@@ -189,18 +192,51 @@ static uint8_t relay_q_count;
 /* Absolute uptime (ms) after which gossip_relay_flush may transmit. */
 static uint32_t relay_flush_at_ms;
 
+/* Enqueue f for relay with its hop_count decremented, preserving its qos
+ * tier.  Pulled out of relay_enqueue so both the normal-append and the
+ * evict-and-replace paths pack the byte identically. */
+static void relay_q_store(uint8_t slot, const tapestry_gossip_frame_t *f)
+{
+    uint8_t hop = TAPESTRY_HOP_COUNT(f->relay_qos);
+    uint8_t qos = TAPESTRY_QOS_TIER(f->relay_qos);
+
+    relay_q[slot] = *f;
+    relay_q[slot].relay_qos = TAPESTRY_PACK_RELAY_QOS(hop - 1u, qos);
+}
+
 static void relay_enqueue(const tapestry_gossip_frame_t *f)
 {
     if (relay_q_count >= RELAY_QUEUE_DEPTH) {
-        LOG_DBG("relay queue full — frame for id %u dropped", f->id);
+        /* Full: evict the lowest-qos queued frame if the incoming one
+         * outranks it, so a HARD_RT frame is never the one silently
+         * dropped while a lower-tier frame holds a slot. Ties keep the
+         * queued frame (drop the incoming one) rather than churn the
+         * queue for no gain. */
+        uint8_t worst = 0;
+        for (uint8_t i = 1; i < RELAY_QUEUE_DEPTH; i++) {
+            if (TAPESTRY_QOS_TIER(relay_q[i].relay_qos) <
+                TAPESTRY_QOS_TIER(relay_q[worst].relay_qos)) {
+                worst = i;
+            }
+        }
+        uint8_t incoming_qos = TAPESTRY_QOS_TIER(f->relay_qos);
+        uint8_t worst_qos    = TAPESTRY_QOS_TIER(relay_q[worst].relay_qos);
+
+        if (incoming_qos <= worst_qos) {
+            LOG_DBG("relay queue full — frame for id %u dropped (qos %u)",
+                    f->id, incoming_qos);
+            return;
+        }
+        LOG_DBG("relay queue full — evicting id %u (qos %u) to admit id %u "
+                "(qos %u)", relay_q[worst].id, worst_qos, f->id, incoming_qos);
+        relay_q_store(worst, f);
         return;
     }
     if (relay_q_count == 0) {
         /* Randomise flush time on first enqueue to spread re-advertisements. */
         relay_flush_at_ms = k_uptime_get_32() + (sys_rand32_get() % 50u);
     }
-    relay_q[relay_q_count] = *f;
-    relay_q[relay_q_count].hop_count--;
+    relay_q_store(relay_q_count, f);
     relay_q_count++;
 }
 
@@ -210,6 +246,8 @@ static void relay_enqueue(const tapestry_gossip_frame_t *f)
 
 void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
 {
+    uint8_t hop = IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u;
+
     tapestry_gossip_frame_t f = {
         .id            = own_state->id,
         .x             = own_state->position.x,
@@ -218,7 +256,7 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
         .update_seq    = own_state->update_seq,
         .energy_level  = own_state->energy_level,
         .health_flags  = own_state->health_flags,
-        .hop_count     = IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) ? 2u : 0u,
+        .relay_qos     = TAPESTRY_PACK_RELAY_QOS(hop, qos_tier),
         .achieved      = own_state->goal_achieved ? 1u : 0u,
         .version       = TAPESTRY_WIRE_VERSION,
     };
@@ -309,7 +347,7 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
             /* Queue for relay if the frame has hops remaining and carries a
              * strictly newer clock than we last relayed for this id.
              * Bounds-check id before indexing relay_clock[]. */
-            if (g->hop_count > 0 &&
+            if (TAPESTRY_HOP_COUNT(g->relay_qos) > 0 &&
                 g->id < MAX_ELEMENTS &&
                 g->logical_clock > relay_clock[g->id]) {
                 relay_clock[g->id] = g->logical_clock;
@@ -381,8 +419,9 @@ void gossip_relay_flush(void)
 
     for (uint8_t i = 0; i < relay_q_count; i++) {
         tx_frame(&relay_q[i]);
-        LOG_DBG("relayed frame: id=%u hop_count=%u clock=%u",
-                relay_q[i].id, relay_q[i].hop_count,
+        LOG_DBG("relayed frame: id=%u hop_count=%u qos=%u clock=%u",
+                relay_q[i].id, TAPESTRY_HOP_COUNT(relay_q[i].relay_qos),
+                TAPESTRY_QOS_TIER(relay_q[i].relay_qos),
                 relay_q[i].logical_clock);
     }
     relay_q_count = 0;
