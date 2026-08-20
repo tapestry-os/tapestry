@@ -142,6 +142,11 @@ static element_state_t sender_state(element_id_t id, bool achieved)
     s.id               = id;
     s.position.x       = 12.25f;      /* exact in binary32 — no rounding    */
     s.position.y       = -3.5f;       /* signed, to catch a sign-dropping   */
+    s.position.z       = 6.25f;       /* exact, distinct from x/y           */
+    s.orientation.w    = 0.5f;        /* exact; not identity, and every     */
+    s.orientation.x    = -0.5f;       /* component distinct/signed so a     */
+    s.orientation.y    = 0.25f;       /* pack/unpack that crosses two of    */
+    s.orientation.z    = -0.25f;      /* these cannot produce these by luck */
     s.logical_clock    = 0x0A0B0C0Du; /* all four bytes distinct            */
     s.update_seq       = 0xDEADBEEFu;
     s.energy_level     = 77u;
@@ -199,9 +204,9 @@ ZTEST_SUITE(gossip_wire, NULL, NULL, suite_before, NULL, NULL);
  */
 ZTEST(gossip_wire, test_frame_sizes_match_the_documented_wire_contract)
 {
-    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 22u,
-                  "gossip frame must stay 22 bytes (wire.h documents "
-                  "'<BffIIBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
+    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 42u,
+                  "gossip frame must stay 42 bytes (wire.h v3 documents "
+                  "'<BfffffffIIBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
     zassert_equal(TAPESTRY_MSG_HEADER_SIZE, 5u,
                   "message header must stay 5 bytes ('<BBBH'); got %u",
                   TAPESTRY_MSG_HEADER_SIZE);
@@ -245,6 +250,14 @@ ZTEST(gossip_wire, test_every_state_field_survives_the_round_trip)
                  "position.x should survive unchanged (exact in binary32)");
     zassert_true(e->state.position.y == -3.5f,
                  "position.y should survive unchanged, sign included");
+    zassert_true(e->state.position.z == 6.25f,
+                 "position.z should survive unchanged");
+    zassert_true(e->state.orientation.w ==  0.5f &&
+                 e->state.orientation.x == -0.5f &&
+                 e->state.orientation.y ==  0.25f &&
+                 e->state.orientation.z == -0.25f,
+                 "orientation (qw,qx,qy,qz) should survive unchanged, "
+                 "signs included, with no cross-wiring between components");
     /* The world model applies the Lamport receive rule on the way in —
      * merged = max(local, received) + 1, and local is 0 for an entry we
      * have never seen — so the stored clock is the sent one plus one.

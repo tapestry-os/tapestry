@@ -35,6 +35,7 @@ static bool   g_have_prev_xy;
 static double g_prev_x, g_prev_y;
 
 static float g_last_x, g_last_y, g_last_z, g_last_yaw;
+static float g_last_roll, g_last_pitch;
 
 int substrate_init(void)
 {
@@ -115,7 +116,9 @@ void substrate_webots_step(double dt)
     g_last_x = (float)pos[0];
     g_last_y = (float)pos[1];
     g_last_z = (float)pos[2];
-    g_last_yaw = (float)yaw;
+    g_last_yaw   = (float)yaw;
+    g_last_roll  = (float)rpy[0];
+    g_last_pitch = (float)rpy[1];
 
     g_height_desired += g_latched_twist.linear.z * ALT_RATE_MPS * dt;
     if (g_height_desired < ALT_MIN_M) { g_height_desired = ALT_MIN_M; }
@@ -150,6 +153,28 @@ void substrate_webots_get_position(float *x, float *y, float *z)
 float substrate_webots_get_yaw(void)
 {
     return g_last_yaw;
+}
+
+/*
+ * ZYX intrinsic (aerospace yaw-pitch-roll) Euler-to-quaternion conversion,
+ * standard formula (see e.g. Wikipedia "Conversion between quaternions and
+ * Euler angles", ZYX convention). w-first, matching substrate_quat_t and
+ * orientation_t (csm.h).
+ */
+void substrate_webots_get_orientation(substrate_quat_t *q)
+{
+    double roll  = (double)g_last_roll;
+    double pitch = (double)g_last_pitch;
+    double yaw   = (double)g_last_yaw;
+
+    double cr = cos(roll  * 0.5), sr = sin(roll  * 0.5);
+    double cp = cos(pitch * 0.5), sp = sin(pitch * 0.5);
+    double cy = cos(yaw   * 0.5), sy = sin(yaw   * 0.5);
+
+    q->w = (float)(cr * cp * cy + sr * sp * sy);
+    q->x = (float)(sr * cp * cy - cr * sp * sy);
+    q->y = (float)(cr * sp * cy + sr * cp * sy);
+    q->z = (float)(cr * cp * sy - sr * sp * cy);
 }
 
 void substrate_set_signal(substrate_signal_t signal)

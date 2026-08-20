@@ -129,7 +129,7 @@ tapestry/
 │   └── subsys/transport/
 │       ├── transport.c            Transceiver registry and multiplexer
 │       ├── gossip.c/.h            Wire framing, relay + QoS eviction, HMAC auth
-│       ├── transceiver_ble.c/.h   BLE advertising backend (Zephyr bt_* API)
+│       ├── transceiver_ble.c/.h   BLE extended-advertising backend (Bluetooth 5.0+)
 │       ├── transceiver_udp.c/.h   UDP broadcast backend (Zephyr zsock_* API)
 │       └── net_init.c/.h          WiFi / Ethernet bring-up (Zephyr net_mgmt)
 │

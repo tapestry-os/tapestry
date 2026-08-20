@@ -58,7 +58,68 @@ typedef uint8_t element_id_t;
 typedef struct {
     float x;
     float y;
+    float z;
 } position_t;
+
+/* ── Orientation ─────────────────────────────────────────────────────────── */
+/*
+ * Unit quaternion, w-first — same field order/convention as
+ * substrate_quat_t (substrate.h), which this mirrors rather than reuses:
+ * CSM (L4) does not depend on substrate (L1) headers, the same way
+ * position_t has never reused an L1 position type. Application code
+ * converts between the two at the point where sensor output becomes
+ * gossiped state.
+ *
+ * Identity ({1,0,0,0} — see orientation_identity()) means "no orientation
+ * data available" as much as it means "no rotation" — elements with no
+ * attitude sensing gossip identity rather than a fabricated estimate.
+ *
+ * Reference frame — REQUIRED for orientation to be meaningful across
+ * elements, not just loggable per-element:
+ *
+ *   orientation_t is expressed in the SAME world frame as position_t on
+ *   that platform — never a local/body frame, and never "wherever this
+ *   element happened to be pointed at boot". Identity means "aligned
+ *   with this platform's world +X/+Y/+Z axes", the same axes position.x/
+ *   y/z are already measured against (Webots' world frame; the shared
+ *   lighthouse world frame on cf21bl hardware — see
+ *   examples/cf21bl-formation/formation.h's units note). Tying the two
+ *   together this way means no new convention has to be invented per
+ *   platform: whatever already makes two elements' POSITIONS comparable
+ *   makes their ORIENTATIONS comparable too.
+ *
+ *   If a platform's world frame is genuinely geographically anchored
+ *   (a real compass/magnetometer reference, not just an arbitrary
+ *   simulation or lab-calibrated frame) then that frame's axes MUST be
+ *   ENU: +X = East, +Y = North, +Z = Up. No current platform in this
+ *   repo has that (Webots' world frame is simulation-arbitrary; cf21bl
+ *   hardware has no magnetometer — BMI088 is accel+gyro only), so this
+ *   is not yet exercised by any code path, only documented for when it
+ *   is — do not assume ENU for a lighthouse- or Webots-referenced
+ *   platform.
+ *
+ *   A platform wiring up a real attitude estimate for the first time
+ *   must calibrate its zero-reference to this world frame, not just
+ *   report raw sensor output — see
+ *   examples/cf21bl-formation/README.md's "Known limitations" for what
+ *   that means concretely on that platform (the existing "nose along
+ *   lighthouse world +X" boot placement is the calibration hook that
+ *   would make this correct, IF the eventual accessor takes its zero
+ *   from that same moment).
+ */
+
+typedef struct {
+    float w;
+    float x;
+    float y;
+    float z;
+} orientation_t;
+
+static inline orientation_t orientation_identity(void)
+{
+    orientation_t q = {1.0f, 0.0f, 0.0f, 0.0f};
+    return q;
+}
 
 /* ── Element health flags (health_flags bitmask) ─────────────────────────── */
 
@@ -76,7 +137,9 @@ typedef struct {
 
 typedef struct {
     element_id_t  id;               /* Unique identifier [0, MAX_ELEMENTS)    */
-    position_t    position;         /* Current 2D position in world space      */
+    position_t    position;         /* Current 3D position in world space      */
+    orientation_t orientation;      /* Current attitude (unit quaternion) —   */
+                                    /* orientation_identity() when unsensed    */
     uint32_t      logical_clock;    /* Lamport clock — incremented each update */
     uint8_t       partition_island; /* Orchestrator-assigned partition group;  */
                                     /* elements in different islands cannot    */
@@ -108,15 +171,32 @@ typedef struct {
 
 /* ── Position utilities ──────────────────────────────────────────────────── */
 
+/*
+ * 3D Euclidean distance. Every caller (formation.c's spring field and
+ * emergency repulsion, wm_check_collisions, wm_nearest_elements) gets z
+ * folded in uniformly — including the MIN_SEPARATION-class safety checks.
+ * That is a deliberate, explicit choice, not an oversight: on platforms
+ * where altitude is independently held constant per element (e.g.
+ * cf21bl-formation's per-ID cruise-altitude staggering), folding a fixed
+ * altitude difference into the distance metric measurably weakens
+ * horizontal-proximity detection versus the 2D-only math this was
+ * flight-tested against, and has NOT itself been re-validated in flight —
+ * see that example's README "Known limitations".
+ */
 static inline float position_distance(const position_t *a, const position_t *b)
 {
     float dx = a->x - b->x;
     float dy = a->y - b->y;
+    float dz = a->z - b->z;
     /* sqrtf requires <math.h> in the including .c file */
     extern float sqrtf(float);
-    return sqrtf(dx * dx + dy * dy);
+    return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
+/* Clamps x/y to the abstract [0, WORLD_SIZE] sim world only — z (altitude)
+ * has no equivalent bound here; callers that need one define their own
+ * (e.g. cf21bl-formation's DEMO_ARENA_LIMIT_M is a different, meters-scale
+ * space entirely — see formation.h). */
 static inline void position_clamp(position_t *p)
 {
     if (p->x < 0.0f) p->x = 0.0f;

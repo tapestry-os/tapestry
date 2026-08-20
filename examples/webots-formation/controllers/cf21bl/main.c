@@ -155,7 +155,11 @@ int main(int argc, char **argv)
     uint32_t telemetry_tick = 0;
 
     element_state_t own_state = {0};
-    own_state.id = element_id;
+    own_state.id          = element_id;
+    own_state.orientation = orientation_identity();  /* overwritten with real
+                                                       * ground truth below,
+                                                       * once substrate_webots_
+                                                       * step() has run once */
 
     world_model_t wm;
     wm_init(&wm, element_id, &own_state, 0.0f);
@@ -192,8 +196,17 @@ int main(int argc, char **argv)
 
         float px, py, pz;
         substrate_webots_get_position(&px, &py, &pz);
-        position_t own_pos_m = { px, py };
+        position_t own_pos_m = { px, py, pz };
         own_state.position = own_pos_m;
+        /* Real ground-truth orientation (Webots InertialUnit), not a
+         * fabricated estimate — see substrate_webots_get_orientation()'s
+         * comment. */
+        substrate_quat_t webots_q;
+        substrate_webots_get_orientation(&webots_q);
+        own_state.orientation.w = webots_q.w;
+        own_state.orientation.x = webots_q.x;
+        own_state.orientation.y = webots_q.y;
+        own_state.orientation.z = webots_q.z;
         wm_update_self(&wm, &own_state);
 
         if (!target_init) {
@@ -221,6 +234,12 @@ int main(int argc, char **argv)
              * error, not a one-shot absolute setpoint. */
             sp.linear.z = clampf((cruise_alt_m - pz) * 2.0f, -1.0f, 1.0f);
 
+            /* Deliberately horizontal-only — same rationale as
+             * cf21bl-formation's main.c, which carries the full comment:
+             * folding a near-cruise altitude into a radius check shrinks
+             * the effective horizontal margin for no safety benefit, and
+             * this was not itself confirmed under "make it 3D now", only
+             * peer-separation/collision math was. */
             float origin_dist = sqrtf(own_pos_m.x * own_pos_m.x
                                        + own_pos_m.y * own_pos_m.y);
             if (origin_dist > GEOFENCE_RADIUS_M) {

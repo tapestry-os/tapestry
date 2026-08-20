@@ -294,7 +294,10 @@ int main(void)
                 "is found)", (unsigned)element_id);
 
         element_state_t diag_state = { 0 };
-        diag_state.id = element_id;
+        diag_state.id          = element_id;
+        diag_state.orientation = orientation_identity();  /* grounded, on the
+                                                            * ground — no
+                                                            * attitude to report */
         world_model_t diag_wm;
         wm_init(&diag_wm, element_id, &diag_state, 0.0f);
 
@@ -475,7 +478,25 @@ int main(void)
     }
 
     element_state_t own_state = { 0 };
-    own_state.id = element_id;
+    own_state.id          = element_id;
+    own_state.orientation = orientation_identity();  /* no attitude-estimate
+                                                       * accessor exposed by
+                                                       * cf21bl_stabilizer.c
+                                                       * today — see this
+                                                       * README's "Known
+                                                       * limitations". If one
+                                                       * is added, its zero
+                                                       * must be calibrated to
+                                                       * lighthouse world +X
+                                                       * (the existing boot
+                                                       * placement convention
+                                                       * below), not raw
+                                                       * gyro-relative-to-boot
+                                                       * output — see
+                                                       * orientation_t's
+                                                       * comment in csm.h */
+    /* own_state.position.z is set from own_pos_m.z below (declared in the
+     * flight loop) — see that variable's comment for why. */
 
     world_model_t wm;
     wm_init(&wm, element_id, &own_state, 0.0f);
@@ -532,7 +553,15 @@ int main(void)
     uint32_t       mission_t0_ms = k_uptime_get_32();
     uint32_t       fix_lost_since_ms = 0;
     uint32_t       land_settle_ms = 0;
-    position_t     own_pos_m   = { 0.0f, 0.0f };
+    /* z: the per-ID staggered CRUISE altitude (computed above as
+     * cruise_alt_m), not a live baro reading — cf21bl_stabilizer.c exposes
+     * no altitude accessor today. Real enough to be useful (this is where
+     * the drone is commanded to hold) without fabricating sensor precision
+     * that doesn't exist; only x/y are refreshed from the lighthouse fix
+     * below, so this value holds for the whole flight. A live reading
+     * during ramp/landing is a follow-up, not done here — see this
+     * README's "Known limitations". */
+    position_t     own_pos_m   = { 0.0f, 0.0f, cruise_alt_m };
     bool           have_pos    = false;
     /* Land-in-place: latched at the moment a fix-valid landing (mission
      * end, geofence) begins.  The old behavior — holding X/Y at the boot
@@ -634,6 +663,18 @@ int main(void)
             }
             fix_lost_since_ms = 0;
 
+            /* Deliberately horizontal-only (unlike formation.c's peer
+             * separation, which now folds in z per an explicit choice —
+             * see position_distance()'s comment in csm.h). own_pos_m.z is
+             * a FIXED per-ID constant (cruise_alt_m) for this drone's
+             * whole flight, not a varying peer proximity signal; folding
+             * a constant into a radius check just shrinks each drone's
+             * effective horizontal margin by a fixed, ID-dependent amount
+             * (sqrt(R^2 - z^2) if it were 3D) for no safety benefit, and
+             * z can be a meaningful fraction of GEOFENCE_RADIUS_M at this
+             * scale. Flagged for review rather than silently decided —
+             * this was not itself confirmed under "make it 3D now", only
+             * peer-separation/collision math was. */
             float origin_dist = sqrtf(own_pos_m.x * own_pos_m.x
                                        + own_pos_m.y * own_pos_m.y);
             if (origin_dist > GEOFENCE_RADIUS_M) {

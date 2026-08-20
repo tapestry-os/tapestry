@@ -69,6 +69,11 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->id            = own_state->id;
     p->x             = own_state->position.x;
     p->y             = own_state->position.y;
+    p->z             = own_state->position.z;
+    p->qw            = own_state->orientation.w;
+    p->qx            = own_state->orientation.x;
+    p->qy            = own_state->orientation.y;
+    p->qz            = own_state->orientation.z;
     p->logical_clock = own_state->logical_clock;
     p->update_seq    = own_state->update_seq;
     p->energy_level  = own_state->energy_level;

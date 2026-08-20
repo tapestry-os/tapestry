@@ -363,15 +363,18 @@ jobs:
             tapestry/tapestry-scr-hw
 
       # bbc_microbit_v2 is the only Phase 2 target whose board .conf sets
-      # CONFIG_BT=y, so it's the only build that can compile
-      # transceiver_ble.c at all — and the auth/relay CI above only ever
-      # links gossip.c against a loopback transceiver, never transceiver_ble.c.
-      # That means the BUILD_ASSERT in transceiver_ble.c guarding the
-      # 29-byte BLE advertising payload (exactly full once the 4-byte auth
-      # tag is added — see that file's budget comment) had never actually
-      # been evaluated by any build in this repo. This is the one place
-      # CONFIG_BT=y and CONFIG_TAPESTRY_WIRE_AUTH_ENABLED=y compile
-      # together, so it's what makes that guard real instead of aspirational.
+      # CONFIG_BT=y (esp_wrover_kit's BLE leg was dropped when the gossip
+      # frame outgrew legacy advertising — see esp_wrover_kit_esp32_procpu
+      # .conf), so it's the only build that can compile transceiver_ble.c
+      # at all — and the auth/relay CI above only ever links gossip.c
+      # against a loopback transceiver, never transceiver_ble.c. That means
+      # the BUILD_ASSERT in transceiver_ble.c guarding the extended-
+      # advertising payload budget (see that file's comment) had never
+      # actually been evaluated by any build in this repo. This is the one
+      # place CONFIG_BT=y (+ CONFIG_BT_EXT_ADV=y, set unconditionally in
+      # bbc_microbit_v2.conf) and CONFIG_TAPESTRY_WIRE_AUTH_ENABLED=y
+      # compile together, so it's what makes that guard real instead of
+      # aspirational — and proves the bt_le_ext_adv_* rewrite links at all.
       - name: Build Phase 2 element — bbc_microbit_v2 (auth enabled)
         working-directory: ${{ github.workspace }}
         run: |
