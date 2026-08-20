@@ -48,9 +48,18 @@
  *                gossiped peer positions (no odometry drift).
  *
  * Safety layer (see the flight_state_t machine below):
- *   - Own battery critical: already handled independently inside
+ *   - Own battery LOW (cf21bl_pm_battery_low(), DEMO_MODE_CHOREO only):
+ *     this file preempts the running Choreo goal/script with a CONVERGE-
+ *     to-home goal (choreo_preempt_goal()) — a graceful, L6/L7-mediated
+ *     return-to-base rather than an abrupt stop, and the demo for the
+ *     v1.0 goal-queue-with-preemption feature. The original goal/script
+ *     resumes automatically if this drone somehow un-preempts (it
+ *     doesn't in practice — see the call site) rather than being lost.
+ *   - Own battery CRITICAL (cf21bl_pm_battery_critical(), a lower/later
+ *     threshold than LOW): still handled independently inside
  *     cf21bl_stabilizer.c (CONFIG_CF21BL_PM forced-landing path) — no code
- *     needed here, and it does not depend on or affect other drones.
+ *     needed here, and it does not depend on or affect other drones. This
+ *     is the hard backstop if RTH above doesn't land in time.
  *   - Own lighthouse fix lost: this file must intervene, because the
  *     stabilizer reinterprets stale linear.x/y as velocity feedforward
  *     once POS_HOLD falls back — holding a position-style value through
@@ -783,6 +792,38 @@ int main(void)
             }
             was_up = quorum_up;
 
+#if defined(CONFIG_CF21BL_PM) && defined(CONFIG_PWM)
+            /* Battery-triggered preemption (the L6/L7 goal-queue demo):
+             * on the low-battery edge, park whatever's running and fly
+             * straight home via choreo_preempt_goal(). CONVERGE, not
+             * MOVE — MOVE's directive is intent.target displaced by this
+             * drone's offset from the participant centroid (see bse.h),
+             * which is wrong here: the drone wants literally home, not
+             * home + formation offset. CONVERGE collapses straight to
+             * the target and is otherwise unused by this demo's script,
+             * so it's unambiguous when it appears. cf21bl_stabilizer_get_
+             * pos_home() needs CONFIG_PWM for the same reason the other
+             * two call sites below guard it that way. */
+            static bool was_battery_low;
+            bool battery_low =
+                (own_state.health_flags & ELEMENT_HEALTH_LOW_BATTERY) != 0;
+            if (battery_low && !was_battery_low && !choreo_is_preempted()) {
+                float home_x, home_y;
+                if (cf21bl_stabilizer_get_pos_home(&home_x, &home_y)) {
+                    choreo_goal_t rth = {
+                        .type   = CHOREO_GOAL_CONVERGE,
+                        .target = { home_x, home_y },
+                    };
+                    int rc = choreo_preempt_goal(&rth);
+                    LOG_WRN("id=%u battery low — preempting to "
+                            "return-to-home (%.2f, %.2f), rc=%d",
+                            (unsigned)element_id, (double)home_x,
+                            (double)home_y, rc);
+                }
+            }
+            was_battery_low = battery_low;
+#endif
+
             choreo_tick(&wm, &scr_view);
             own_state.goal_achieved = choreo_goal_achieved();
 
@@ -837,9 +878,15 @@ int main(void)
             /* Per-goal quorum at the tracking layer too: a HOLD directive
              * references only this drone's own station, so it is tracked
              * even with quorum lost (a solo drone station-keeps properly);
-             * peer-referential directives are frozen while LOST. */
+             * peer-referential directives are frozen while LOST. CONVERGE
+             * is included here too: this demo's own script never submits
+             * CONVERGE, so it can only mean the battery-preempt RTH goal
+             * above, which references only this drone's own home
+             * coordinate — an isolated, low-battery drone must still be
+             * able to fly home. */
             bool self_referential =
-                choreo_current_goal_type() == CHOREO_GOAL_HOLD;
+                choreo_current_goal_type() == CHOREO_GOAL_HOLD ||
+                choreo_current_goal_type() == CHOREO_GOAL_CONVERGE;
             if ((quorum_up || self_referential) &&
                 dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
                 min_dist_m = demo_choreo_track(&wm, &own_pos_m, &target,

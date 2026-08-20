@@ -38,6 +38,30 @@ static uint32_t             s_step_ms;
 static bool                 s_script_active;
 static bool                 s_script_done;
 
+/* ── Preemption stack ─────────────────────────────────────────────────────── */
+/*
+ * choreo_preempt_goal() saves the goal + script engine state a normal
+ * choreo_terminate() would otherwise discard; choreo_terminate() itself
+ * (and therefore choreo_cancel_goal() and natural script completion, both
+ * of which call it) restores the most recently parked entry instead of
+ * going to IDLE, whenever one exists. Bounded stack, depth 1 today,
+ * mirroring bse.c's BSE_MAX_PREEMPT_DEPTH — see that file's comment for
+ * what raising this constant later does and doesn't require changing.
+ */
+#define CHOREO_MAX_PREEMPT_DEPTH 1
+
+typedef struct {
+    choreo_goal_t        goal;
+    const choreo_step_t *steps;
+    uint8_t               n_steps;
+    uint8_t               step_idx;
+    uint32_t              step_ms;
+    bool                  script_active;
+} choreo_parked_goal_t;
+
+static choreo_parked_goal_t s_parked[CHOREO_MAX_PREEMPT_DEPTH];
+static int                  s_parked_depth;
+
 /* ── Internal helpers ─────────────────────────────────────────────────────── */
 
 /*
@@ -102,9 +126,10 @@ static void script_clear(void)
 
 void choreo_init(element_id_t self_id)
 {
-    s_self_id = self_id;
-    s_state   = CHOREO_STATE_IDLE;
-    s_scr     = NULL;
+    s_self_id      = self_id;
+    s_state        = CHOREO_STATE_IDLE;
+    s_scr          = NULL;
+    s_parked_depth = 0;
     script_clear();
     s_script_done = false;
     bse_init(self_id);
@@ -145,13 +170,83 @@ int choreo_deploy(void)
     return 0;
 }
 
-void choreo_terminate(void)
+/* Unconditional full reset — drops any parked goal too.  Used for the
+ * pre-submit reset in choreo_submit_goal()/choreo_submit_script(): an
+ * ordinary new submission always fully replaces everything, whether or
+ * not a preemption happens to be active, exactly as before this feature
+ * existed.  choreo_terminate() (below) is the pop-aware public path. */
+static void terminate_hard(void)
 {
     s_state = CHOREO_STATE_TERMINATED;
     script_clear();
+    s_parked_depth = 0;   /* bse_submit_intent() below drops BSE's side too */
     tapestry_bse_intent_t idle = { .type = TAPESTRY_BSE_INTENT_IDLE };
     bse_submit_intent(&idle);
     s_state = CHOREO_STATE_IDLE;
+}
+
+void choreo_terminate(void)
+{
+    if (s_parked_depth > 0) {
+        s_parked_depth--;
+        const choreo_parked_goal_t *p = &s_parked[s_parked_depth];
+        s_goal          = p->goal;
+        s_steps         = p->steps;
+        s_n_steps       = p->n_steps;
+        s_step_idx      = p->step_idx;
+        s_step_ms       = p->step_ms;
+        s_script_active = p->script_active;
+        bse_resume_intent();
+        s_state = CHOREO_STATE_RUNNING;
+        return;
+    }
+    terminate_hard();
+}
+
+int choreo_preempt_goal(const choreo_goal_t *goal)
+{
+    if (goal == NULL || goal->type == CHOREO_GOAL_NONE) {
+        return -1;
+    }
+    if (s_state != CHOREO_STATE_RUNNING && s_state != CHOREO_STATE_SUSPENDED) {
+        return -1;   /* nothing active to preempt */
+    }
+    if (s_parked_depth >= CHOREO_MAX_PREEMPT_DEPTH) {
+        return -EBUSY;
+    }
+    if (!caps_satisfied(goal->required_caps)) {
+        return -EPERM;
+    }
+
+    tapestry_bse_intent_t intent = goal_to_intent(goal);
+    choreo_parked_goal_t *p = &s_parked[s_parked_depth];
+    p->goal          = s_goal;
+    p->steps         = s_steps;
+    p->n_steps       = s_n_steps;
+    p->step_idx      = s_step_idx;
+    p->step_ms       = s_step_ms;
+    p->script_active = s_script_active;
+
+    int rc = bse_preempt_intent(&intent);
+    if (rc != 0) {
+        return rc;   /* BSE-side stack full — nothing was pushed here yet */
+    }
+    s_parked_depth++;
+
+    s_goal          = *goal;
+    s_script_active = false;   /* a preempting goal is a single goal, not a script */
+    s_state         = CHOREO_STATE_RUNNING;
+    return 0;
+}
+
+bool choreo_is_preempted(void)
+{
+    return s_parked_depth > 0;
+}
+
+uint16_t choreo_parked_goal_id(void)
+{
+    return s_parked_depth > 0 ? s_parked[s_parked_depth - 1].goal.id : 0;
 }
 
 int choreo_submit_goal(const choreo_goal_t *goal)
@@ -160,7 +255,7 @@ int choreo_submit_goal(const choreo_goal_t *goal)
         return -1;
     }
     if (s_state != CHOREO_STATE_IDLE) {
-        choreo_terminate();
+        terminate_hard();
     }
     s_script_done = false;
     int rc = choreo_configure(goal);
@@ -192,7 +287,7 @@ int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps)
     }
 
     if (s_state != CHOREO_STATE_IDLE) {
-        choreo_terminate();
+        terminate_hard();
     }
     s_script_done = false;
 
