@@ -45,6 +45,11 @@ typedef struct { float w, x, y, z;    } substrate_quat_t;  /* unit quaternion */
  *
  * substrate_quat_t is available for sensor output (orientation reporting) and
  * future pose-command extensions; it is not used in substrate_move today.
+ * When sensor output does get reported as one (e.g. into csm.h's
+ * element_state_t.orientation for gossip), it must be expressed in the
+ * platform's world frame, not this device's local/body frame or wherever
+ * it happened to be pointed at boot — see orientation_t's comment in
+ * csm.h for the full reference-frame convention this feeds into.
  */
 typedef struct {
     substrate_vec3_t linear;

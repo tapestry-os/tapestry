@@ -404,3 +404,35 @@ parameters). Override at build time with `-- -D<CONSTANT>=<value>`.
 - No wireless "land now" command — mission duration is the only
   coordinated stop; a real abort still means power-cycling or physically
   intervening (same as every single-drone example in this project).
+- **3D separation math is unvalidated in flight.** `formation.c`'s peer
+  distance (spring field, `DEMO_MIN_SEP_M`/`EMERGENCY_K` emergency
+  repulsion) now folds altitude (z) into the distance metric, not just
+  x/y — an explicit, requested change from the previous flight-tested 2D
+  behavior, not an incidental one. Because altitude is staggered per
+  element ID (`ALT_BASE_M`/`ALT_STEP_PER_ID_M`) specifically so horizontal
+  proximity is what matters for downwash/visual clearance, this
+  measurably weakens the emergency-repulsion trigger for drones that are
+  horizontally close but at their normal staggered altitudes — the fixed
+  altitude gap inflates the 3D distance past the threshold. Needs a real
+  flight-test pass (start in `examples/webots-formation`) before trusting
+  it in a multi-drone flight; nothing in this repo has validated it yet.
+  `GEOFENCE_RADIUS_M`'s origin-distance check was deliberately left
+  horizontal-only (see the comment at its call site in `main.c`) rather
+  than folded into the same change.
+- **No attitude-estimate accessor.** `own_state.orientation` gossips
+  `orientation_identity()` (no rotation) rather than a real IMU-derived
+  estimate — `cf21bl_stabilizer.c` runs a complementary filter internally
+  for its own angle-mode control but exposes no accessor for the result.
+  Wiring one up is a real follow-up, not done here. `own_state.position.z`
+  gossips the per-ID staggered *cruise altitude* (a constant), not a live
+  baro reading — same reason. Compare `examples/webots-formation`, which
+  gossips genuine ground-truth 6DoF pose (GPS + InertialUnit) since Webots
+  exposes both directly. If an attitude-estimate accessor is added later,
+  its zero-reference must be calibrated to the shared lighthouse world
+  frame (see `tapestry/tapestry-os/include/tapestry/csm.h`'s
+  `orientation_t` comment for the full convention) — not reported as raw
+  gyro output relative to wherever the drone happened to be pointed at
+  boot. The existing "nose along lighthouse world +X" boot placement
+  ("Flight checklist" above) is the calibration hook that would make
+  this correct, provided the eventual accessor takes its zero from that
+  same moment.

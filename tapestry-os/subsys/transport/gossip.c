@@ -252,6 +252,11 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
         .id            = own_state->id,
         .x             = own_state->position.x,
         .y             = own_state->position.y,
+        .z             = own_state->position.z,
+        .qw            = own_state->orientation.w,
+        .qx            = own_state->orientation.x,
+        .qy            = own_state->orientation.y,
+        .qz            = own_state->orientation.z,
         .logical_clock = own_state->logical_clock,
         .update_seq    = own_state->update_seq,
         .energy_level  = own_state->energy_level,
@@ -334,6 +339,11 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
             received.id              = g->id;
             received.position.x      = g->x;
             received.position.y      = g->y;
+            received.position.z      = g->z;
+            received.orientation.w   = g->qw;
+            received.orientation.x   = g->qx;
+            received.orientation.y   = g->qy;
+            received.orientation.z   = g->qz;
             received.logical_clock   = g->logical_clock;
             received.update_seq      = g->update_seq;
             received.energy_level    = g->energy_level;

@@ -65,6 +65,7 @@ int main(void)
     /* ── Initialize own state ──────────────────────────────────────────── */
     element_state_t own_state = {0};
     own_state.id               = (element_id_t)element_id;
+    own_state.orientation      = orientation_identity();  /* no attitude sensing in sim */
     own_state.partition_island = 0;
     own_state.logical_clock    = 0;
     own_state.update_seq       = 0;

@@ -7,7 +7,7 @@
  * for peer advertisements — no connections, no pairing.
  *
  * tx: writes raw tapestry_gossip_frame_t bytes into the manufacturer AD record
- *     and calls bt_le_adv_update_data to push the update.
+ *     and calls bt_le_ext_adv_set_data to push the update.
  * rx: dequeues one frame from the scan-callback ring buffer per call.
  *
  * Manufacturer-specific AD layout:
@@ -19,6 +19,26 @@
  * session-unique RPA.  When CONFIG_BT_SETTINGS is absent and FICR is
  * unpopulated, using the identity address causes the nRF controller to suppress
  * packets whose source matches its own — blocking all cross-board gossip.
+ *
+ * Requires CONFIG_BT_EXT_ADV (LE Extended Advertising, Bluetooth 5.0+):
+ * TAPESTRY_GOSSIP_WIRE_SIZE grew past the legacy 31-byte BLE advertising
+ * payload once the gossip frame gained z/orientation (wire.h v3, 42-byte
+ * frame). TX now uses the bt_le_ext_adv_* API (bt_le_ext_adv_create /
+ * _start / _set_data) instead of bt_le_adv_start / _update_data — the RX
+ * scan path is UNCHANGED, since Zephyr's legacy bt_le_scan_start callback
+ * already receives extended advertising reports once CONFIG_BT_EXT_ADV is
+ * enabled (confirmed against zephyr/subsys/bluetooth/controller/
+ * Kconfig.ll_sw_split, which unconditionally selects
+ * BT_CTLR_ADV_EXT_SUPPORT for every Nordic nRF5x target).
+ *
+ * The original ESP32 (esp_wrover_kit, ESP32-D0WD-V3) cannot do this: its
+ * Bluetooth controller is 4.2-only (Espressif's own HAL declares
+ * SOC_BLE_50_SUPPORTED for esp32c2/c3/c5/c6/h2/c61/s3 but not the plain
+ * esp32). That board keeps gossiping over WiFi/UDP (its other configured
+ * transport — see README's "CONFIG_BT + CONFIG_NETWORKING" note); its BLE
+ * leg is dropped rather than kept on legacy advertising with a smaller,
+ * board-conditional frame, which would break the "one wire format,
+ * substrate-agnostic" invariant the rest of L3 relies on.
  */
 
 #include "transceiver_ble.h"
@@ -43,29 +63,29 @@ LOG_MODULE_REGISTER(transceiver_ble, LOG_LEVEL_INF);
 #define MFR_DATA_SIZE    (MFR_OFF_FRAME + TAPESTRY_GOSSIP_WIRE_SIZE)
 
 /*
- * BLE advertising payload is 31 bytes maximum.  Each AD structure costs
- * 1 byte (length field) + 1 byte (AD type) + N bytes of data, so the data
- * for our single manufacturer AD record must be ≤ 29 bytes.
+ * Extended advertising's per-PDU data budget is controller-dependent —
+ * BT_GAP_ADV_MAX_EXT_ADV_DATA_LEN (1650 bytes) is the protocol ceiling
+ * WITH chaining across multiple AUX_CHAIN_IND PDUs, which this transceiver
+ * deliberately does not use (chaining is real added complexity this frame
+ * doesn't need). A single, non-chained extended-adv PDU's practical limit
+ * on real hardware is smaller and this codebase has no board on hand to
+ * verify it against, so this asserts a conservative, clearly-under-any-
+ * real-limit threshold rather than a number that looks precise but isn't
+ * verified. Current need: 3 (prefix) + 42 (v3 frame) + 4 (auth tag) = 49
+ * bytes, comfortably under it.
  *
- * Budget (no auth): 3 (prefix) + 22 (frame) + 0 (tag) = 25 ≤ 29  ✓
- * Budget (auth):    3 (prefix) + 22 (frame) + 4 (tag) = 29 ≤ 29  ✓ — EXACTLY
- *                    at the limit, zero margin.  The gossip frame cannot
- *                    grow by even one byte while CONFIG_TAPESTRY_WIRE_AUTH_
- *                    ENABLED is a supported configuration; growing it needs
- *                    extended advertising, a second AD record, or a shorter
- *                    auth tag.
- *
- * These numbers were hand-maintained and went stale once already: the frame
- * grew 21 → 22 bytes when the `achieved` field was appended, and nothing
- * caught it because no build in this repo compiles the auth path.  The
- * BUILD_ASSERT below is the real guard — it fails the build rather than the
- * radio if the frame outgrows the record.
+ * These numbers were hand-maintained and went stale once already: the
+ * frame grew 21 → 22 bytes when the `achieved` field was appended, and
+ * nothing caught it because no build in this repo compiled the auth path.
+ * The BUILD_ASSERT below is the real guard — it fails the build rather
+ * than the radio if the frame outgrows the budget.
  */
-BUILD_ASSERT(MFR_DATA_SIZE <= 29,
-             "Tapestry gossip AD record exceeds the 31-byte BLE advertising "
-             "payload (29 bytes usable after the AD length+type prefix). "
-             "Shrink tapestry_gossip_frame_t, shorten the auth tag, or move "
-             "to extended advertising.");
+#define MFR_DATA_MAX_SIZE  200u   /* conservative single-PDU ceiling — see above */
+BUILD_ASSERT(MFR_DATA_SIZE <= MFR_DATA_MAX_SIZE,
+             "Tapestry gossip AD record exceeds this conservative single-PDU "
+             "extended-advertising budget. Verify the real per-PDU limit on "
+             "target hardware before raising MFR_DATA_MAX_SIZE, or shrink "
+             "tapestry_gossip_frame_t / the auth tag.");
 
 #define RX_QUEUE_DEPTH  8
 
@@ -79,6 +99,11 @@ static uint8_t mfr_data[MFR_DATA_SIZE];
 static struct bt_data adv_data[] = {
     BT_DATA(BT_DATA_MANUFACTURER_DATA, mfr_data, MFR_DATA_SIZE),
 };
+
+/* Extended advertising set handle — created once in ble_init(), then
+ * reused by every ble_tx()/ble_transceiver_advertise_nonce() call to
+ * update its data.  NULL cb: no advertiser-activity notifications needed. */
+static struct bt_le_ext_adv *ext_adv;
 
 /* ── Scan callback ───────────────────────────────────────────────────────── */
 
@@ -163,18 +188,31 @@ static int ble_init(void)
         return ret;
     }
 
-    ret = bt_le_adv_start(
-        BT_LE_ADV_PARAM(0,
-                        BT_GAP_ADV_FAST_INT_MIN_2,
-                        BT_GAP_ADV_FAST_INT_MAX_2,
-                        NULL),
-        adv_data, ARRAY_SIZE(adv_data), NULL, 0);
+    /* BT_LE_EXT_ADV_NCONN: non-connectable extended advertising, opt=0 (no
+     * BT_LE_ADV_OPT_USE_IDENTITY) — same RPA rationale as the legacy param
+     * above, just via the extended-adv parameter set. */
+    ret = bt_le_ext_adv_create(BT_LE_EXT_ADV_NCONN, NULL, &ext_adv);
     if (ret) {
-        LOG_ERR("bt_le_adv_start: %d", ret);
+        LOG_ERR("bt_le_ext_adv_create: %d", ret);
         return ret;
     }
 
-    LOG_INF("BLE transceiver ready (scan + advertising)");
+    ret = bt_le_ext_adv_set_data(ext_adv, adv_data, ARRAY_SIZE(adv_data),
+                                 NULL, 0);
+    if (ret) {
+        LOG_ERR("bt_le_ext_adv_set_data: %d", ret);
+        return ret;
+    }
+
+    /* BT_LE_EXT_ADV_START_DEFAULT: timeout=0, num_events=0 — advertise
+     * continuously, matching the legacy transceiver's behavior. */
+    ret = bt_le_ext_adv_start(ext_adv, BT_LE_EXT_ADV_START_DEFAULT);
+    if (ret) {
+        LOG_ERR("bt_le_ext_adv_start: %d", ret);
+        return ret;
+    }
+
+    LOG_INF("BLE transceiver ready (scan + extended advertising)");
     return 0;
 }
 
@@ -184,9 +222,10 @@ static int ble_tx(const uint8_t *data, uint16_t len)
         return -EINVAL;
     }
     memcpy(mfr_data + MFR_OFF_FRAME, data, len);
-    int ret = bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), NULL, 0);
+    int ret = bt_le_ext_adv_set_data(ext_adv, adv_data, ARRAY_SIZE(adv_data),
+                                     NULL, 0);
     if (ret) {
-        LOG_WRN("bt_le_adv_update_data: %d", ret);
+        LOG_WRN("bt_le_ext_adv_set_data: %d", ret);
     }
     return ret;
 }
@@ -227,7 +266,7 @@ void ble_transceiver_advertise_nonce(uint32_t nonce)
     p->id         = ELEMENT_ID_INVALID;
     p->update_seq = nonce;
     p->version    = TAPESTRY_WIRE_VERSION;
-    bt_le_adv_update_data(adv_data, ARRAY_SIZE(adv_data), NULL, 0);
+    bt_le_ext_adv_set_data(ext_adv, adv_data, ARRAY_SIZE(adv_data), NULL, 0);
 }
 
 int ble_transceiver_drain_nonces(uint32_t *out, int max)

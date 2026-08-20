@@ -49,6 +49,10 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
         .id            = cfg->self_id,
         .position.x    = cfg->pos_x,
         .position.y    = cfg->pos_y,
+        .orientation   = orientation_identity(),  /* generic element, no
+                                                    * attitude sensing —
+                                                    * z stays 0 too, same
+                                                    * reason */
         .logical_clock = 0,
         .update_seq    = 0,
     };

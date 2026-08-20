@@ -33,6 +33,8 @@
 #ifndef TAPESTRY_SUBSTRATE_WEBOTS_H
 #define TAPESTRY_SUBSTRATE_WEBOTS_H
 
+#include <tapestry/substrate.h>   /* substrate_quat_t */
+
 /* Advance the physics-rate control loop by dt seconds (the Webots basic
  * time step, in seconds). Call once per wb_robot_step(), after
  * substrate_init(). */
@@ -43,5 +45,25 @@ void substrate_webots_step(double dt);
  * to populate gossip state and drive the choreo target tracker. */
 void substrate_webots_get_position(float *x, float *y, float *z);
 float substrate_webots_get_yaw(void);
+
+/* Ground-truth orientation as a unit quaternion, converted from the
+ * InertialUnit's roll/pitch/yaw (ZYX intrinsic / aerospace convention —
+ * R = Rz(yaw) * Ry(pitch) * Rx(roll)) read in the last
+ * substrate_webots_step() call. Real attitude ground truth, not a
+ * fabricated estimate — this is genuine validation data for the wire
+ * format's orientation field, unlike real cf21bl-formation hardware,
+ * which has no attitude-estimate accessor exposed today.
+ *
+ * Satisfies orientation_t's reference-frame convention (csm.h) by
+ * construction: Webots' InertialUnit reports orientation relative to the
+ * same world frame its GPS device reports position in (substrate_webots_
+ * get_position()) — identity here means "aligned with that same world
+ * frame's axes", not any particular compass direction. Which direction
+ * that actually is depends on the InertialUnit's `north` field inside
+ * the externally-fetched Crazyflie PROTO (see change_partners.wbt's
+ * EXTERNPROTO) — unverified, and irrelevant to correctness: the
+ * convention only requires matching position's frame, not any specific
+ * axis label. */
+void substrate_webots_get_orientation(substrate_quat_t *q);
 
 #endif /* TAPESTRY_SUBSTRATE_WEBOTS_H */

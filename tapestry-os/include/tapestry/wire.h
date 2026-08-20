@@ -93,15 +93,18 @@
  * v2: tapestry_gossip_frame_t's hop_count byte was repacked into relay_qos
  * (hop_count in bits [1:0], qos tier in bits [3:2] — see "QoS delivery
  * tiers" above) to carry the QoS tier without growing the frame, which
- * matters because the BLE advertising payload has zero spare bytes (see
- * transceiver_ble.c's budget comment).  A v1 sender's hop_count values are
- * always 0-2 with the upper bits always zero, which happens to decode under
- * v2 as an unchanged hop_count and qos=BEST_EFFORT — but the version check
- * still rejects the mismatch rather than rely on that coincidence, since a
- * v2 sender's qos bits would misparse as a v1 hop_count outside its
- * expected 0-2 range.
+ * mattered because the (legacy) BLE advertising payload had zero spare
+ * bytes.
+ *
+ * v3: tapestry_gossip_frame_t gained z (altitude) and a unit-quaternion
+ * orientation (qw/qx/qy/qz) — full 6DoF pose, not just 2D position.  This
+ * grows the frame from 22 to 42 bytes, which no longer fits the legacy
+ * BLE advertising payload (29 usable bytes) at all — transceiver_ble.c now
+ * requires CONFIG_BT_EXT_ADV (LE Extended Advertising, Bluetooth 5.0+;
+ * see that file's header comment for which board(s) this drops BLE
+ * support on and why).
  */
-#define TAPESTRY_WIRE_VERSION   2u
+#define TAPESTRY_WIRE_VERSION   3u
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 
@@ -131,10 +134,24 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BffIIBBBBB')
- * Size: 22 bytes
- * Fields: id, x, y, logical_clock, update_seq,
+ * Python format: struct.Struct('<BfffffffIIBBBBB')
+ * Size: 42 bytes
+ * Fields: id, x, y, z, qw, qx, qy, qz, logical_clock, update_seq,
  *         energy_level, health_flags, relay_qos, achieved, version
+ *
+ * x, y, z: position, meters (or the abstract [0,100] sim-world unit on
+ *   platforms that use that convention — see csm.h's WORLD_SIZE).
+ *
+ * qw, qx, qy, qz: unit quaternion, w-first (orientation_t in csm.h — see
+ *   that type's comment for the required reference-frame convention:
+ *   same world frame as x/y/z, ENU if that frame is geographically
+ *   anchored, never a local/body/boot-relative frame). Elements with no
+ *   attitude sensing gossip identity ({1,0,0,0}), not a zero-initialized
+ *   {0,0,0,0} — the latter is not a valid rotation and would corrupt any
+ *   consumer that assumes unit norm. gossip_send() always sends
+ *   own_state->orientation as given; callers own picking a sensible
+ *   default (element_state_t's owner is responsible for setting
+ *   orientation to orientation_identity() if it has nothing better).
  *
  * relay_qos: hop_count (bits [1:0]) and qos tier (bits [3:2]) packed into
  *   one byte — see TAPESTRY_HOP_COUNT() / TAPESTRY_QOS_TIER() /
@@ -169,6 +186,11 @@ typedef struct {
     uint8_t  id;
     float    x;
     float    y;
+    float    z;
+    float    qw;
+    float    qx;
+    float    qy;
+    float    qz;
     uint32_t logical_clock;
     uint32_t update_seq;
     uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
@@ -178,7 +200,7 @@ typedef struct {
     uint8_t  version;              /* TAPESTRY_WIRE_VERSION — see above       */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 22 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 42 */
 
 /* ── relay_qos packing ───────────────────────────────────────────────────── */
 
@@ -250,8 +272,20 @@ typedef struct {
 #define TAPESTRY_SCR_METRIC_FRAME_SIZE   10   /* sizeof(tapestry_scr_metric_frame_t) */
 
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
-/* Metric frame (30 B) > gossip wire frame (22+4 = 26 B), so metric wins.   */
+/*
+ * Actual max of the two bodies that ever ride behind tapestry_msg_header_t
+ * (TAPESTRY_SCR_METRIC_FRAME_SIZE is smaller than both and never
+ * dominates) — not a hardcoded assumption about which one wins.  It used
+ * to be hardcoded ("metric frame > gossip wire frame, so metric wins"),
+ * which silently stopped being true once tapestry_gossip_frame_t grew
+ * past the metric frame's 30 bytes (v3: z + orientation) and would have
+ * left every RX buffer sized off this macro undersized.
+ */
+#define TAPESTRY_MAX_BODY_SIZE \
+    (TAPESTRY_GOSSIP_WIRE_SIZE > TAPESTRY_METRIC_FRAME_SIZE \
+     ? TAPESTRY_GOSSIP_WIRE_SIZE : TAPESTRY_METRIC_FRAME_SIZE)
 
-#define TAPESTRY_MAX_MSG_SIZE   (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE)   /* 35 */
+#define TAPESTRY_MAX_MSG_SIZE \
+    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 47 (51 with auth) */
 
 #endif /* TAPESTRY_WIRE_H */

@@ -61,9 +61,25 @@ float demo_compute_drive(const world_model_t *wm,
         peer_sum_x += e->state.position.x;
         peer_sum_y += e->state.position.y;
 
-        float dx   = e->state.position.x - own_pos_m->x;
-        float dy   = e->state.position.y - own_pos_m->y;
-        float dist = sqrtf(dx * dx + dy * dy);
+        /* 3D peer distance — see position_distance()'s comment in csm.h
+         * for why this now folds in z, including for this safety-adjacent
+         * threshold (DEMO_MIN_SEP_M/EMERGENCY_K below), and why that is an
+         * explicit, requested choice rather than an incidental one.
+         *
+         * The force VECTOR (fx/fy) stays 2D: altitude is a separate,
+         * independently-held control loop (CONFIG_CF21BL_ALTITUDE_HOLD)
+         * that this change does not touch. That means the force MAGNITUDE
+         * (spring + repulsion, below) is computed from the 3D dist, but
+         * the direction it gets applied in must be normalized by the 2D
+         * (horizontal-only) magnitude, dist_xy — normalizing by the 3D
+         * dist instead would silently shrink the horizontal push whenever
+         * dz != 0 (dx/dist is not a unit vector once z is in dist), which
+         * is not what "fold z into the distance metric" was asked for. */
+        float dx      = e->state.position.x - own_pos_m->x;
+        float dy      = e->state.position.y - own_pos_m->y;
+        float dz      = e->state.position.z - own_pos_m->z;
+        float dist    = sqrtf(dx * dx + dy * dy + dz * dz);
+        float dist_xy = sqrtf(dx * dx + dy * dy);
 
         pair_dx = dx;
         pair_dy = dy;
@@ -72,8 +88,8 @@ float demo_compute_drive(const world_model_t *wm,
             min_dist_m = dist;
         }
 
-        if (dist < 0.01f) {
-            continue;   /* coincident reading — direction undefined */
+        if (dist_xy < 0.01f) {
+            continue;   /* coincident horizontally — push direction undefined */
         }
 
         /* Smooth spring toward DEMO_TARGET_SPACING_M. */
@@ -85,8 +101,8 @@ float demo_compute_drive(const world_model_t *wm,
             force -= (DEMO_MIN_SEP_M - dist) * EMERGENCY_K;
         }
 
-        fx += force * (dx / dist);
-        fy += force * (dy / dist);
+        fx += force * (dx / dist_xy);
+        fy += force * (dy / dist_xy);
         peer_count++;
     }
 
@@ -214,20 +230,24 @@ float demo_choreo_track(const world_model_t *wm,
             continue;
         }
 
-        float dx   = e->state.position.x - own_pos_m->x;
-        float dy   = e->state.position.y - own_pos_m->y;
-        float dist = sqrtf(dx * dx + dy * dy);
+        /* Same 3D-distance / 2D-force-direction split as demo_compute_drive
+         * above — see that function's comment for the full rationale. */
+        float dx      = e->state.position.x - own_pos_m->x;
+        float dy      = e->state.position.y - own_pos_m->y;
+        float dz      = e->state.position.z - own_pos_m->z;
+        float dist    = sqrtf(dx * dx + dy * dy + dz * dz);
+        float dist_xy = sqrtf(dx * dx + dy * dy);
 
         if (min_dist_m < 0.0f || dist < min_dist_m) {
             min_dist_m = dist;
         }
-        if (dist < 0.01f) {
-            continue;   /* coincident reading — direction undefined */
+        if (dist_xy < 0.01f) {
+            continue;   /* coincident horizontally — push direction undefined */
         }
         if (dist < DEMO_MIN_SEP_M) {
             float force = (DEMO_MIN_SEP_M - dist) * EMERGENCY_K;
-            fx -= force * (dx / dist);
-            fy -= force * (dy / dist);
+            fx -= force * (dx / dist_xy);
+            fy -= force * (dy / dist_xy);
         }
     }
 

@@ -65,6 +65,47 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   round-trips through `relay_qos` without disturbing `hop_count`, and a
   `HARD_RT` frame evicts a queued `SOFT_RT` one when the relay queue (depth
   8) is full rather than being dropped for capacity
+- **Full 6DoF pose tracked for every element** — `element_state_t` gains
+  `position.z` (`position_t` extended to x/y/z) and `orientation`
+  (`orientation_t`, unit quaternion — mirrors `substrate_quat_t`'s
+  layout/convention without CSM depending on the L1 substrate header, the
+  same way `position_t` never has). Both are gossiped
+  (`tapestry_gossip_frame_t` gains `z`/`qw`/`qx`/`qy`/`qz`) and pass
+  through `world_model.c` for free — every function there copies
+  `element_state_t` wholesale. `orientation_identity()` (`{1,0,0,0}`) is
+  the required default for anything without attitude sensing; a zero
+  quaternion is not a valid rotation and would corrupt any consumer that
+  assumes unit norm — every `element_state_t`-constructing call site
+  across `runtime.c`, both simulators, and all three examples was audited
+  and set explicitly, not left to zero-init
+- **`examples/webots-formation`'s `substrate_webots.c` gains
+  `substrate_webots_get_orientation()`** — converts the InertialUnit's
+  already-read roll/pitch/yaw to a unit quaternion (ZYX intrinsic /
+  aerospace convention) and feeds real ground-truth orientation into
+  gossip, alongside the GPS `z` already available via
+  `substrate_webots_get_position()`. The one place this example is more
+  complete than `cf21bl-formation`, which has no attitude-estimate
+  accessor to draw from — see that example's README
+- **`tapestry-os/tests/transport/` gains z/orientation round-trip
+  assertions** and the frame-size test now pins 42 bytes
+  (`'<BfffffffIIBBBBB'`)
+- **`orientation_t`'s reference-frame convention documented** (csm.h) —
+  previously unspecified, which matters once orientation is gossiped and
+  compared across elements rather than just logged locally.
+  `orientation_t` must be expressed in the same world frame as
+  `position_t` on that platform (Webots' world frame; the shared
+  lighthouse world frame on cf21bl hardware) — never a local/body frame
+  or wherever an element happened to be pointed at boot. If a platform's
+  world frame is genuinely geographically anchored (a real compass/
+  magnetometer reference), that frame must be ENU (+X=East, +Y=North,
+  +Z=Up); no current platform has that (Webots is simulation-arbitrary,
+  cf21bl's BMI088 has no magnetometer), so this is documented but not yet
+  exercised by any code path. `wire.h` and `substrate.h` cross-reference
+  the convention rather than restate it. `webots-formation`'s
+  `substrate_webots_get_orientation()` satisfies it by construction
+  (InertialUnit and GPS share Webots' world frame); `cf21bl-formation`'s
+  main.c notes what a future real accessor would need to calibrate
+  against (the existing "nose along lighthouse world +X" boot placement)
 
 ### Changed
 - **`tapestry_gossip_frame_t`'s `hop_count` byte repacked into `relay_qos`**
@@ -96,6 +137,55 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   listed gossip authentication as unimplemented, which stopped being true
   once `CONFIG_TAPESTRY_WIRE_AUTH_ENABLED` landed — it's now described as
   present but off by default and unused by any shipping configuration
+- **`tapestry_gossip_frame_t` grows 22 → 42 bytes** (z + orientation, see
+  above). `TAPESTRY_WIRE_VERSION` bumped 2 → 3. Every scaled-down fixed-
+  point encoding was considered and rejected: even maximally compressed
+  (fixed16 x/y/z + fixed16 quaternion) the frame plus the 4-byte auth tag
+  does not fit legacy BLE advertising's 29-byte budget, so shrinking
+  further wasn't the fix — `TAPESTRY_MAX_MSG_SIZE` (wire.h) was also
+  hardcoded to assume the metric frame was always the larger of the two
+  message bodies; that stopped being true here and is now computed as an
+  actual max rather than a hardcoded assumption
+- **`transceiver_ble.c` rewritten for LE Extended Advertising
+  (Bluetooth 5.0+, `CONFIG_BT_EXT_ADV`)** — TX moves from
+  `bt_le_adv_start`/`bt_le_adv_update_data` to
+  `bt_le_ext_adv_create`/`_start`/`_set_data`; RX is unchanged, since
+  Zephyr's legacy scan callback already receives extended advertising
+  reports once `CONFIG_BT_EXT_ADV` is enabled (verified against
+  `zephyr/subsys/bluetooth/controller/Kconfig.ll_sw_split`, which
+  unconditionally selects `BT_CTLR_ADV_EXT_SUPPORT` for every Nordic
+  nRF5x target). The `BUILD_ASSERT` budget check moves from a hardcoded
+  29-byte legacy ceiling to a conservative, explicitly-not-precisely-
+  verified single-PDU threshold (200 bytes) — this repo has no hardware
+  on hand to confirm the real per-PDU limit, and chaining across multiple
+  PDUs was deliberately not implemented (real added complexity this frame
+  doesn't need). `bbc_microbit_v2.conf` (both copies —
+  `tapestry-scr-hw` and `examples/cutebot-formation`) gains
+  `CONFIG_BT_EXT_ADV=y`
+- **BLE gossip dropped from `esp_wrover_kit_esp32_procpu.conf`** — the
+  original ESP32 (ESP32-D0WD-V3)'s Bluetooth controller is 4.2-only;
+  Espressif's own vendored HAL declares `SOC_BLE_50_SUPPORTED` for
+  esp32c2/c3/c5/c6/h2/c61/s3 but not the plain esp32. Rather than keep
+  that board on legacy advertising with a smaller, board-conditional
+  frame — breaking the "one wire format, substrate-agnostic" invariant —
+  its BLE leg is dropped; it keeps gossiping over WiFi/UDP, its other
+  configured transport, so this costs redundancy, not gossip capability
+- **`formation.c`'s peer-separation distance (`demo_compute_drive`,
+  `demo_choreo_track`) becomes 3D** — an explicit choice, not a default:
+  the spring field, `DEMO_MIN_SEP_M`/`EMERGENCY_K` emergency repulsion,
+  and `wm_check_collisions`/`wm_nearest_elements` (via `position_distance`
+  in csm.h) all now fold in z. The force VECTOR stays 2D (altitude is a
+  separately-held control loop, `CONFIG_CF21BL_ALTITUDE_HOLD`, untouched
+  by this change) — normalizing the force direction by the 3D distance
+  instead of the horizontal-only one would have silently shrunk the
+  horizontal push whenever z differs, so distance and direction are
+  computed separately (`dist` vs `dist_xy`). `GEOFENCE_RADIUS_M`'s
+  origin-distance check was deliberately left horizontal-only in both
+  `cf21bl-formation` and `webots-formation` — folding a near-constant
+  per-drone altitude into a radius check shrinks the effective margin for
+  no safety benefit, and this specific case was never confirmed the way
+  peer-separation math was. **This has not been flight-tested** — see
+  `examples/cf21bl-formation/README.md`'s "Known limitations"
 
 ### Fixed
 - **Recorded telemetry omitted the gossiped `achieved` bit** —

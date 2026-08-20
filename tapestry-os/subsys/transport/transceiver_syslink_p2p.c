@@ -9,7 +9,7 @@
  *
  *   TX to nRF51:
  *     [0xBC][0xCF][0x0A][len][port=0x00][gossip_frame...][ck_a][ck_b]
- *     len = 1 (port) + gossip_frame_size (21 bytes) = 22
+ *     len = 1 (port) + TAPESTRY_GOSSIP_WIRE_SIZE (42 bytes, 46 with auth)
  *     checksum: Fletcher-8 over [type][len][port][gossip_frame...]
  *
  *   RX from nRF51 (P2P broadcast received from peer drone):
@@ -368,7 +368,9 @@ static int syslink_init(void)
 
 static int syslink_tx(const uint8_t *data, uint16_t len)
 {
-    /* Gossip frame (20 bytes) + 1 port byte must fit in SYSLINK_MTU. */
+    /* Gossip wire size (42 bytes, 46 with auth) + 1 port byte must fit in
+     * SYSLINK_MTU (64) — checked dynamically against the real len below,
+     * not a hardcoded assumption. */
     if ((uint32_t)len + 1u > SYSLINK_MTU) {
         return -EMSGSIZE;
     }

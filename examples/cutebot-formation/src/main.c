@@ -82,6 +82,7 @@ int main(void)
 
     element_state_t own_state = {0};
     own_state.id          = element_id;
+    own_state.orientation = orientation_identity();  /* ground rover, no attitude sensing */
     own_state.position.x  = sx;
     own_state.position.y  = sy;
 

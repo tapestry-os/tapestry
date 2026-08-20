@@ -6,9 +6,14 @@
  * is selected by the build system and compiled into transport.c.
  *
  * Supported configurations (selected by Kconfig / board overlay):
- *   CONFIG_BT only          — BLE advertising gossip (e.g. BBC micro:bit V2)
- *   CONFIG_NETWORKING only  — UDP broadcast gossip   (e.g. EK-RA8D1)
- *   CONFIG_BT + CONFIG_NETWORKING — both transports  (e.g. ESP-WROVER-KIT)
+ *   CONFIG_BT only          — BLE advertising gossip (e.g. BBC micro:bit V2;
+ *                             requires CONFIG_BT_EXT_ADV — see
+ *                             transceiver_ble.c's header comment)
+ *   CONFIG_NETWORKING only  — UDP broadcast gossip   (e.g. EK-RA8D1,
+ *                             ESP-WROVER-KIT — its BLE leg was dropped,
+ *                             see esp_wrover_kit_esp32_procpu.conf)
+ *   CONFIG_BT + CONFIG_NETWORKING — both transports  (no current board;
+ *                             would need a BLE 5.0+ AND networking target)
  *
  * Auto-ID protocol:
  *   Call transport_advertise_nonce() during the discovery boot window before
