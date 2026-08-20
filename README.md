@@ -95,12 +95,14 @@ tapestry/
 │   │   └── choreo.h               L7 SDK API header (Goal / lifecycle / directive)
 │   ├── python/tapestry/
 │   │   ├── choreo.py              L7 Python mirror
-│   │   ├── bse.py                 L6 Python stub
+│   │   ├── bse.py                 L6 Python mirror (tick-for-tick equivalent to bse.c)
 │   │   └── script_toml.py         Choreo script (TOML) parser/validator
 │   ├── tools/
-│   │   └── choreoc.py             Choreo script compiler: TOML -> C header
+│   │   ├── choreoc.py             Choreo script compiler: TOML -> C header
+│   │   └── choreo_sim.py          Offline capture/replay + no-C/no-Zephyr simulate mode
 │   ├── examples/
 │   │   └── hello_swarm.py         Minimal worked example (no sim required)
+│   ├── tests/                     pytest suite (bse/choreo/script_toml/choreoc/choreo_sim)
 │   └── CHOREO_SCRIPTS.md          Script authoring + compilation guide
 │
 ├── tapestry-os/                   Tapestry OS framework
@@ -114,24 +116,55 @@ tapestry/
 │   │   ├── transport.h            L3 transport API (send / drain / telemetry)
 │   │   └── transceiver.h          L3 transceiver plugin interface
 │   ├── boards/
-│   │   └── bbc_microbit_v2/       micro:bit V2 board support (Cutebot HAL, BLE overlay)
+│   │   ├── bbc_microbit_v2/       micro:bit V2 board support (Cutebot HAL, BLE overlay)
+│   │   ├── crazyflie21bl/         Crazyflie 2.1 brushless board support (motor mix, LED,
+│   │   │                          IWDG, power management, lighthouse positioning)
+│   │   └── substrate_null.c       No-op substrate for host-only builds
 │   ├── subsys/csm/
 │   │   └── world_model.c          L4 CSM implementation (pure C99)
 │   ├── subsys/scr/
 │   │   └── scr.c                  L5 SCR implementation (pure C99)
 │   ├── subsys/bse/
-│   │   └── bse.c                  L6 BSE stub (geometry task decomposition)
+│   │   └── bse.c                  L6 BSE implementation (geometry task decomposition)
 │   ├── subsys/choreo/
-│   │   └── choreo.c               L7 Choreographer stub (lifecycle + goal dispatch)
+│   │   └── choreo.c               L7 Choreographer implementation (lifecycle + goal dispatch)
 │   ├── subsys/runtime/
 │   │   ├── runtime.c              L2 full-stack tick sequencer
 │   │   └── power.c/.h             L2 power state machine (active/idle/sleep/harvest)
-│   └── subsys/transport/
-│       ├── transport.c            Transceiver registry and multiplexer
-│       ├── gossip.c/.h            Wire framing, relay + QoS eviction, HMAC auth
-│       ├── transceiver_ble.c/.h   BLE extended-advertising backend (Bluetooth 5.0+)
-│       ├── transceiver_udp.c/.h   UDP broadcast backend (Zephyr zsock_* API)
-│       └── net_init.c/.h          WiFi / Ethernet bring-up (Zephyr net_mgmt)
+│   ├── subsys/transport/
+│   │   ├── transport.c            Transceiver registry and multiplexer
+│   │   ├── gossip.c/.h            Wire framing, relay + QoS eviction, HMAC auth
+│   │   ├── transceiver_ble.c/.h   BLE extended-advertising backend (Bluetooth 5.0+)
+│   │   ├── transceiver_udp.c/.h   UDP broadcast backend (Zephyr zsock_* API)
+│   │   └── net_init.c/.h          WiFi / Ethernet bring-up (Zephyr net_mgmt)
+│   ├── tools/
+│   │   └── gen_wire_protocol.py   Generates Python wire-struct mirrors from wire.h
+│   └── tests/                     ztest suite (world_model, scr, bse, choreo, transport)
+│
+├── examples/                      Worked examples and hardware bring-up demos
+│   ├── cf21bl-formation/          Flagship demo: real L3-L7 stack on Crazyflie 2.1
+│   │   │                          hardware (lighthouse positioning, choreo scripts)
+│   │   ├── src/                   main.c / formation.c (SCR + BSE + choreo wiring)
+│   │   ├── change-partners.choreo.toml
+│   │   └── tests/                 ztest coverage (native_sim)
+│   ├── webots-formation/          Flagship demo: the same unmodified L3-L7 core
+│   │   │                          (controllers/common/) compiled into a Webots
+│   │   │                          hardware-in-the-loop controller, no real hardware
+│   │   ├── controllers/cf21bl/    Webots-specific substrate + main loop
+│   │   ├── ci-check/              Compile-only CI harness (no Webots install needed)
+│   │   └── worlds/change_partners.wbt
+│   ├── cutebot-formation/         Formation demo on micro:bit V2 + Cutebot chassis
+│   └── altitude-hold-bench/, altitude-hold-tether/, baro-test/, imu-test/,
+│       lighthouse-test/, motor-test/
+│                                  Single-sensor/actuator hardware bring-up examples
+│                                  (each independently buildable; see each README.md)
+│
+├── docs/
+│   └── Tapestry_System_Architecture_v1p1.pdf
+│                                  System architecture paper (see CHANGELOG for where
+│                                  this has drifted from the current L3 implementation)
+│
+├── patches/                       Upstream Zephyr/HAL patches applied by west.yml
 │
 ├── tapestry-csm-sim/              L4 simulation harness
 │   ├── sim_protocol.h             Sim-only additions: ports, control protocol,

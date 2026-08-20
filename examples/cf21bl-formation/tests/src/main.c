@@ -646,8 +646,11 @@ ZTEST(choreo_script, test_form_shape_line)
             }
         }
 
-        scr_state_t scr = { 0 };
-        scr.quorum_state = SCR_QUORUM_HEALTHY;
+        /* FORM reads task_slot/swarm_size from scr, not a second
+         * independently-computed rank — scr_tick() must run first. */
+        scr_state_t scr;
+        scr_init(&scr, (element_id_t)rank, 0, 0, SCR_CAP_NONE);
+        scr_tick(&scr, &wm);
         choreo_tick(&wm, &scr);
 
         const tapestry_bse_directive_t *d = choreo_get_directive();
@@ -685,8 +688,11 @@ ZTEST(choreo_script, test_form_shape_grid)
             }
         }
 
-        scr_state_t scr = { 0 };
-        scr.quorum_state = SCR_QUORUM_HEALTHY;
+        /* FORM reads task_slot/swarm_size from scr, not a second
+         * independently-computed rank — scr_tick() must run first. */
+        scr_state_t scr;
+        scr_init(&scr, (element_id_t)rank, 0, 0, SCR_CAP_NONE);
+        scr_tick(&scr, &wm);
         choreo_tick(&wm, &scr);
 
         const tapestry_bse_directive_t *d = choreo_get_directive();
