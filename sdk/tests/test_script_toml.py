@@ -13,11 +13,14 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from helpers import SCRIPT_TOML
+from helpers import SCRIPT_TOML, solo
 
-from tapestry.choreo import ChoreoCapabilities, GoalShape, GoalType
-from tapestry.script_toml import (ScriptError, load_steps, parse_duration_ms,
-                                  parse_file, parse_length_m, to_choreo_steps)
+from tapestry.bse import BSEAnchorSelector, BSEFrame, BSEMotion
+from tapestry.choreo import ChoreoCapabilities, ChoreoEvent, GoalShape, GoalType
+from tapestry.script_toml import (NormalizedTransition, ScriptError,
+                                  load_steps, load_tracks, parse_duration_ms,
+                                  parse_file, parse_length_m, to_choreo_steps,
+                                  to_choreo_tracks)
 
 
 def script(body: str, tmp_path, name: str = "unit-test") -> Path:
@@ -319,6 +322,176 @@ def test_an_unknown_shape_is_rejected(tmp_path):
                             'shape = "spiral"', tmp_path, goal="form"))
 
 
+# ── Frames + anchors (Choreo SDK Design doc §5, form/converge only) ────────
+
+def test_frame_defaults_to_absolute_and_needs_a_target(tmp_path):
+    s = parse_file(one_step('duration = "5s", target = [1, 2]', tmp_path,
+                            goal="converge"))
+    assert s.steps[0].frame == "absolute"
+    assert s.steps[0].target == (1.0, 2.0)
+
+
+def test_frame_collective_forbids_target(tmp_path):
+    with pytest.raises(ScriptError, match="'target' has no effect"):
+        parse_file(one_step('duration = "5s", frame = "collective", '
+                            'target = [1, 2]', tmp_path, goal="converge"))
+
+
+def test_frame_collective_needs_no_target(tmp_path):
+    s = parse_file(one_step('duration = "5s", frame = "collective"',
+                            tmp_path, goal="converge"))
+    assert s.steps[0].frame == "collective"
+    assert s.steps[0].target is None
+
+
+def test_anchor_without_element_frame_is_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="'anchor' has no effect"):
+        parse_file(one_step('duration = "5s", '
+                            'anchor = { select = "leader" }', tmp_path,
+                            goal="converge"))
+    with pytest.raises(ScriptError, match="'anchor' only applies"):
+        parse_file(one_step('duration = "5s", frame = "collective", '
+                            'anchor = { select = "leader" }', tmp_path,
+                            goal="converge"))
+
+
+def test_frame_element_needs_an_anchor(tmp_path):
+    with pytest.raises(ScriptError, match='needs anchor = \\{ select'):
+        parse_file(one_step('duration = "5s", frame = "element"', tmp_path,
+                            goal="converge"))
+
+
+@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy"])
+def test_frame_element_anchor_selectors_are_recognised(select, tmp_path):
+    s = parse_file(one_step(
+        f'duration = "5s", frame = "element", '
+        f'anchor = {{ select = "{select}" }}', tmp_path, goal="converge"))
+    assert s.steps[0].frame == "element"
+    assert s.steps[0].anchor_select == select
+
+
+def test_frame_element_anchor_id_selector(tmp_path):
+    s = parse_file(one_step(
+        'duration = "5s", frame = "element", '
+        'anchor = { select = "id:7" }', tmp_path, goal="converge"))
+    assert s.steps[0].anchor_select == "id"
+    assert s.steps[0].anchor_id == 7
+
+
+def test_frame_element_anchor_id_needs_an_integer(tmp_path):
+    with pytest.raises(ScriptError, match="needs an integer"):
+        parse_file(one_step(
+            'duration = "5s", frame = "element", '
+            'anchor = { select = "id:leader" }', tmp_path, goal="converge"))
+
+
+@pytest.mark.parametrize("select", ["newest", "oldest"])
+def test_frame_element_newest_oldest_are_deferred_not_silently_accepted(
+        select, tmp_path):
+    with pytest.raises(ScriptError, match="not yet implemented"):
+        parse_file(one_step(
+            f'duration = "5s", frame = "element", '
+            f'anchor = {{ select = "{select}" }}', tmp_path, goal="converge"))
+
+
+def test_an_unknown_anchor_selector_is_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="unknown anchor select"):
+        parse_file(one_step(
+            'duration = "5s", frame = "element", '
+            'anchor = { select = "closest" }', tmp_path, goal="converge"))
+
+
+def test_an_unknown_frame_is_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="unknown frame"):
+        parse_file(one_step('duration = "5s", frame = "body"', tmp_path,
+                            goal="converge"))
+
+
+def test_frame_and_anchor_apply_to_form_too(tmp_path):
+    s = parse_file(one_step(
+        'duration = "5s", radius = 2, frame = "collective"', tmp_path,
+        goal="form"))
+    assert s.steps[0].frame == "collective"
+
+
+def test_frame_and_anchor_convert_to_the_sdk_goal(tmp_path):
+    s = parse_file(one_step(
+        'duration = "5s", frame = "element", '
+        'anchor = { select = "id:3" }', tmp_path, goal="converge"))
+    goal = to_choreo_steps(s)[0].goal
+    assert goal.frame == BSEFrame.ELEMENT
+    assert goal.anchor == BSEAnchorSelector.ID
+    assert goal.anchor_id == 3
+
+
+# ── Motion: spin + orbit preset (Choreo SDK Design doc §6, form only) ──────
+
+def test_spin_on_form_sets_motion_and_rate(tmp_path):
+    s = parse_file(one_step(
+        'duration = "60s", target = [0, 0], radius = 3, spin = "0.15rad/s"',
+        tmp_path, goal="form"))
+    assert s.steps[0].motion == "spin"
+    assert s.steps[0].spin_rate_radps == pytest.approx(0.15)
+
+
+def test_spin_defaults_to_static(tmp_path):
+    s = parse_file(one_step('duration = "5s", target = [0, 0], radius = 3',
+                            tmp_path, goal="form"))
+    assert s.steps[0].motion == "static"
+    assert s.steps[0].spin_rate_radps is None
+
+
+@pytest.mark.parametrize("goal", ["converge", "hold", "exchange", "move", "disperse"])
+def test_spin_only_applies_to_form(goal, tmp_path):
+    """converge's target IS the frame origin — rotating the offset would
+    be a no-op, so this is a category error, not a tolerable extra; the
+    other goals never had coordinate-adjacent params at all."""
+    with pytest.raises(ScriptError, match="unknown parameter"):
+        parse_file(one_step('duration = "5s", spin = "0.1rad/s"', tmp_path,
+                            goal=goal))
+
+
+def test_spin_converts_to_the_sdk_goal(tmp_path):
+    s = parse_file(one_step(
+        'duration = "60s", target = [0, 0], radius = 3, spin = "0.2rad/s"',
+        tmp_path, goal="form"))
+    goal = to_choreo_steps(s)[0].goal
+    assert goal.motion == BSEMotion.SPIN
+    assert goal.spin_rate_radps == pytest.approx(0.2)
+
+
+def test_orbit_desugars_to_a_form_step(tmp_path):
+    s = parse_file(one_step(
+        'around = "leader", radius = "1m", rate = "0.15rad/s", '
+        'duration = "60s"', tmp_path, goal="orbit"))
+    step = s.steps[0]
+    assert step.goal == "form"
+    assert step.shape == "circle"
+    assert step.frame == "element"
+    assert step.anchor_select == "leader"
+    assert step.motion == "spin"
+    assert step.spin_rate_radps == pytest.approx(0.15)
+    assert step.radius == pytest.approx(1.0)
+    assert step.max_duration_ms == 60_000
+
+
+@pytest.mark.parametrize("missing", ["around", "radius", "rate"])
+def test_orbit_needs_around_radius_and_rate(missing, tmp_path):
+    params = {"around": '"leader"', "radius": '"1m"', "rate": '"0.15rad/s"'}
+    del params[missing]
+    body = ", ".join(f"{k} = {v}" for k, v in params.items())
+    with pytest.raises(ScriptError, match=f"needs {missing}"):
+        parse_file(one_step(f'duration = "60s", {body}', tmp_path,
+                            goal="orbit"))
+
+
+def test_orbit_rejects_unknown_parameters(tmp_path):
+    with pytest.raises(ScriptError, match="unknown parameter"):
+        parse_file(one_step(
+            'around = "leader", radius = "1m", rate = "0.15rad/s", '
+            'duration = "60s", shape = "line"', tmp_path, goal="orbit"))
+
+
 # ── Conversion to SDK objects ────────────────────────────────────────────────
 
 def test_to_choreo_steps_carries_every_field_across(tmp_path):
@@ -375,6 +548,142 @@ def test_unauthored_fields_keep_the_sdk_defaults(tmp_path):
     assert step.goal.direct_path is False
 
 
+# ── Events + transitions (Choreo SDK Design doc §8, single track) ──────────
+
+def test_named_step_is_a_valid_goto_target(tmp_path):
+    s = parse_file(script('''
+        [[steps]]
+        name = "triangle"
+        [steps.hold]
+        duration = "60s"
+        on = [ { event = "achieved", goto = "welcome" } ]
+
+        [[steps]]
+        name = "welcome"
+        [steps.hold]
+        duration = "60s"
+        ''', tmp_path))
+    assert s.steps[0].name == "triangle"
+    assert s.steps[0].on == [
+        NormalizedTransition(event="achieved", goto_step_idx=1, threshold=0)
+    ]
+
+
+def test_goto_end_resolves_to_the_step_count(tmp_path):
+    s = parse_file(one_step(
+        'duration = "60s", on = [ { event = "achieved", goto = "end" } ]',
+        tmp_path))
+    assert s.steps[0].on[0].goto_step_idx == 1   # len(steps) == 1
+
+
+def test_goto_an_unknown_name_is_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="does not name a step"):
+        parse_file(one_step(
+            'duration = "60s", on = [ { event = "achieved", goto = "nope" } ]',
+            tmp_path))
+
+
+def test_duplicate_step_names_are_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="duplicate step name"):
+        parse_file(script('''
+            [[steps]]
+            name = "a"
+            [steps.hold]
+            duration = "10s"
+
+            [[steps]]
+            name = "a"
+            [steps.hold]
+            duration = "10s"
+            ''', tmp_path))
+
+
+def test_end_is_a_reserved_step_name(tmp_path):
+    with pytest.raises(ScriptError, match="reserved"):
+        parse_file(script('''
+            [[steps]]
+            name = "end"
+            [steps.hold]
+            duration = "10s"
+            ''', tmp_path))
+
+
+def test_unknown_event_is_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="unknown event"):
+        parse_file(one_step(
+            'duration = "60s", on = [ { event = "elevenses", goto = "end" } ]',
+            tmp_path))
+
+
+def test_too_many_transitions_is_rejected(tmp_path):
+    entries = ", ".join('{ event = "achieved", goto = "end" }' for _ in range(5))
+    with pytest.raises(ScriptError, match="runtime only holds"):
+        parse_file(one_step(f'duration = "60s", on = [ {entries} ]', tmp_path))
+
+
+def test_count_events_need_a_threshold(tmp_path):
+    with pytest.raises(ScriptError, match="needs a threshold"):
+        parse_file(one_step(
+            'duration = "60s", on = [ { event = "count_gte", goto = "end" } ]',
+            tmp_path))
+
+
+def test_threshold_only_applies_to_count_events(tmp_path):
+    with pytest.raises(ScriptError, match="only applies to count_gte/count_eq"):
+        parse_file(one_step(
+            'duration = "60s", '
+            'on = [ { event = "achieved", goto = "end", threshold = 2 } ]',
+            tmp_path))
+
+
+def test_a_cyclic_script_requires_max_runtime(tmp_path):
+    """The welcome-dance shape (§8.3): step 0 <-> step 1 is a real cycle."""
+    body = '''
+        [[steps]]
+        name = "triangle"
+        [steps.hold]
+        duration = "300s"
+        on = [ { event = "element_joined", goto = "welcome" } ]
+
+        [[steps]]
+        name = "welcome"
+        [steps.hold]
+        duration = "30s"
+        on = [ { event = "element_lost", goto = "triangle" } ]
+        '''
+    with pytest.raises(ScriptError, match="max_runtime"):
+        parse_file(script(body, tmp_path))
+
+    s = parse_file(script(f'max_runtime = "10min"\n{body}', tmp_path))
+    assert s.total_timeout_ms == 600_000
+
+
+def test_an_acyclic_script_does_not_need_max_runtime(tmp_path):
+    s = parse_file(script('''
+        [[steps]]
+        hold = { duration = "10s" }
+        [[steps]]
+        hold = { duration = "5s" }
+        ''', tmp_path))
+    assert s.total_timeout_ms == 15_000
+
+
+def test_on_converts_to_choreo_transitions(tmp_path):
+    s = parse_file(script('''
+        [[steps]]
+        name = "a"
+        [steps.hold]
+        duration = "60s"
+        on = [ { event = "count_gte", goto = "end", threshold = 3 } ]
+        ''', tmp_path))
+    goal_step = to_choreo_steps(s)[0]
+    assert len(goal_step.on) == 1
+    t = goal_step.on[0]
+    assert t.event == ChoreoEvent.COUNT_GTE
+    assert t.threshold == 3
+    assert t.goto_step_idx == 1
+
+
 # ── The committed script ─────────────────────────────────────────────────────
 
 def test_the_shipped_change_partners_script_still_parses():
@@ -390,3 +699,205 @@ def test_the_shipped_script_converts_to_a_submittable_sequence():
     from tapestry.choreo import Choreo
     steps = load_steps(SCRIPT_TOML)
     assert Choreo(element_id=0, capabilities=None).submit_script(steps) == 0
+
+
+# ── Tracks (§7) ──────────────────────────────────────────────────────────────
+
+def tracks_script(body: str, tmp_path, name: str = "unit-test") -> Path:
+    path = tmp_path / "unit-test.choreo.toml"
+    path.write_text(f'choreo = "{name}"\n\n' + textwrap.dedent(body))
+    return path
+
+
+def test_a_tracks_script_parses_filters_and_per_track_steps(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "300s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        converge = { target = [0, 0], duration = "60s" }
+        """, tmp_path)
+    s = parse_file(p)
+    assert s.steps == []
+    assert s.tracks is not None and len(s.tracks) == 2
+    assert s.tracks[0].required_caps == ChoreoCapabilities.SENSING
+    assert s.tracks[0].requires_energy_low is False
+    assert [st.goal for st in s.tracks[0].steps] == ["hold"]
+    assert s.tracks[1].required_caps == 0
+    assert [st.goal for st in s.tracks[1].steps] == ["converge"]
+
+
+def test_energy_low_filter_parses(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { energy_low = true }
+        [[tracks.steps]]
+        converge = { target = [0, 0], duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    s = parse_file(p)
+    assert s.tracks[0].requires_energy_low is True
+    assert s.tracks[1].requires_energy_low is False
+
+
+def test_steps_and_tracks_together_is_rejected(tmp_path):
+    p = tracks_script("""\
+        [[steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="either \\[\\[steps\\]\\] or \\[\\[tracks\\]\\]"):
+        parse_file(p)
+
+
+def test_neither_steps_nor_tracks_is_rejected(tmp_path):
+    p = tracks_script("", tmp_path)
+    with pytest.raises(ScriptError, match="at least one"):
+        parse_file(p)
+
+
+def test_too_many_tracks_is_rejected(tmp_path):
+    body = "\n".join(
+        '[[tracks]]\n[[tracks.steps]]\nhold = { duration = "10s" }\n'
+        for _ in range(5))
+    p = tracks_script(body, tmp_path)
+    with pytest.raises(ScriptError, match="runtime only holds"):
+        parse_file(p)
+
+
+def test_a_track_needs_at_least_one_step(tmp_path):
+    p = tracks_script("[[tracks]]\n", tmp_path)
+    with pytest.raises(ScriptError, match="tracks.steps"):
+        parse_file(p)
+
+
+def test_unknown_filter_key_is_rejected(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { bogus = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="unknown filter key"):
+        parse_file(p)
+
+
+def test_top_level_max_runtime_with_tracks_is_rejected(tmp_path):
+    p = tracks_script("""\
+        max_runtime = "10min"
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="top-level max_runtime"):
+        parse_file(p)
+
+
+def test_a_cyclic_track_requires_its_own_max_runtime(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        name = "a"
+        hold = { duration = "10s", on = [{ event = "achieved", goto = "b" }] }
+        [[tracks.steps]]
+        name = "b"
+        hold = { duration = "10s", on = [{ event = "achieved", goto = "a" }] }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="max_runtime"):
+        parse_file(p)
+
+    p2 = tracks_script("""\
+        [[tracks]]
+        max_runtime = "5min"
+        [[tracks.steps]]
+        name = "a"
+        hold = { duration = "10s", on = [{ event = "achieved", goto = "b" }] }
+        [[tracks.steps]]
+        name = "b"
+        hold = { duration = "10s", on = [{ event = "achieved", goto = "a" }] }
+        """, tmp_path)
+    s = parse_file(p2)
+    assert s.tracks[0].total_timeout_ms == 300_000
+
+
+def test_goto_only_resolves_within_the_same_track(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        name = "only-here"
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s", on = [{ event = "achieved", goto = "only-here" }] }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="does not name a step"):
+        parse_file(p)
+
+
+def test_to_choreo_tracks_converts_filters_and_steps(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "300s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        converge = { target = [1, 2], duration = "60s" }
+        """, tmp_path)
+    tracks = load_tracks(p)
+    assert len(tracks) == 2
+    assert tracks[0].filter.required_caps == ChoreoCapabilities.SENSING
+    assert tracks[0].filter.requires_energy_low is False
+    assert tracks[0].steps[0].goal.type == GoalType.HOLD
+    assert tracks[1].filter.required_caps == 0
+    assert tracks[1].steps[0].goal.type == GoalType.CONVERGE
+    assert tracks[1].steps[0].goal.target == (1.0, 2.0)
+
+
+def test_load_steps_rejects_a_tracks_script(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="multi-track script"):
+        load_steps(p)
+
+
+def test_load_tracks_rejects_a_steps_script(tmp_path):
+    p = tracks_script("""\
+        [[steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    with pytest.raises(ScriptError, match="single-track script"):
+        load_tracks(p)
+
+
+def test_a_tracks_script_is_submittable(tmp_path):
+    from tapestry.choreo import Choreo
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { energy_low = true }
+        [[tracks.steps]]
+        converge = { target = [0, 0], duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    tracks = load_tracks(p)
+    c = Choreo(element_id=0, capabilities=None)
+    assert c.submit_tracks(solo(), tracks) == 0
+    assert c.current_track() == 1

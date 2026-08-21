@@ -298,6 +298,7 @@ int main(int argc, char **argv)
                     last_abort_state != SCR_ABORT_TRIGGERED) {
                     own_state.update_seq++;
                     own_state.goal_achieved = choreo_goal_achieved();
+                    own_state.current_track = choreo_current_track();
                     printf("id=%u quorum LOST — sending HARD_RT gossip now\n",
                            (unsigned)element_id);
                     gossip_send(&own_state, TAPESTRY_QOS_HARD_RT);
@@ -416,6 +417,7 @@ int main(int argc, char **argv)
              * gossips has to do this — without it the bit is permanently 0
              * and a scope="all" step can never advance on achievement. */
             own_state.goal_achieved = choreo_goal_achieved();
+            own_state.current_track = choreo_current_track();
             gossip_send(&own_state, TAPESTRY_QOS_SOFT_RT);
         }
     }

@@ -14,9 +14,11 @@ import pytest
 from helpers import QUORUM_HEALTHY, scr, solo, wm
 
 from tapestry.bse import (ACHIEVE_EPS_DEFAULT, ACHIEVE_HOLD_MS_DEFAULT,
-                          EXCHANGE_OCCUPIED_M, EXCHANGE_OMEGA_RADPS,
-                          EXCHANGE_STANDOFF_M, WM_CYCLE_MS, BSE, BSEDirective,
-                          BSEDirectiveType, BSEIntent, BSEIntentType, BSEShape)
+                          ANCHOR_HOLD_MS, EXCHANGE_OCCUPIED_M,
+                          EXCHANGE_OMEGA_RADPS, EXCHANGE_STANDOFF_M,
+                          WM_CYCLE_MS, BSE, BSEAnchorSelector, BSEDirective,
+                          BSEDirectiveType, BSEFrame, BSEIntent,
+                          BSEIntentType, BSEMotion, BSEShape)
 
 HEALTHY = scr(QUORUM_HEALTHY)
 
@@ -171,6 +173,134 @@ def test_converge_sends_every_element_to_the_same_point():
         b = run(rank, BSEIntent(type=BSEIntentType.CONVERGE, target=(2.0, 3.0)),
                 wm([(0, 0), (5, 5), (9, 9)], self_id=rank))
         assert b.get_directive().target == (2.0, 3.0)
+
+
+# ── Frames + anchors (Choreo SDK Design doc §5, FORM/CONVERGE only) ────────
+
+def test_frame_absolute_is_unchanged_default():
+    """frame left at BSEFrame.ABSOLUTE (the default) must behave exactly
+    like every intent submitted before this feature existed."""
+    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, target=(7.0, 3.0)),
+            solo())
+    d = b.get_directive()
+    assert d.type == BSEDirectiveType.MOVE_TO_POINT
+    approx_xy(d.target, (7.0, 3.0))
+
+
+def test_frame_collective_converge_gathers_at_centroid():
+    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, frame=BSEFrame.COLLECTIVE),
+            wm([(0, 0), (4, 0)], self_id=0))
+    approx_xy(b.get_directive().target, (2.0, 0.0))
+
+
+def test_frame_collective_form_centers_shape_on_centroid():
+    b = run(0, BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.LINE,
+                         radius=3.0, frame=BSEFrame.COLLECTIVE),
+            wm([(0, 0), (10, 0)], self_id=0))
+    # self is rank 0 of 2 on a LINE spanning [-3,+3] around centroid (5,0)
+    assert b.get_directive().target[0] == pytest.approx(2.0)
+
+
+def test_frame_element_anchor_debounces_before_locking():
+    """A brand-new anchor resolution must not drive a directive until it
+    has been stable for ANCHOR_HOLD_MS — same lesson as QUORUM_UP_MS."""
+    b = BSE(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.SELF))
+    entries = solo(3.0, 4.0)
+    n_before = ANCHOR_HOLD_MS // WM_CYCLE_MS - 1
+    for _ in range(n_before):
+        b.tick(entries, HEALTHY)
+    assert b.get_directive().type == BSEDirectiveType.HOLD, \
+        "still debouncing before the hold time elapses"
+
+    b.tick(entries, HEALTHY)
+    b.tick(entries, HEALTHY)   # past ANCHOR_HOLD_MS
+    d = b.get_directive()
+    assert d.type == BSEDirectiveType.MOVE_TO_POINT
+    approx_xy(d.target, (3.0, 4.0))
+
+
+def test_frame_element_leader_anchor_tracks_live_and_falls_back_on_loss():
+    b = BSE(1)
+    entries = wm([(5, 5), (9, 9)], self_id=1)   # id0=(5,5), id1(self)=(9,9)
+    scr_state = scr(QUORUM_HEALTHY, leader_id=0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.LEADER))
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS + 1):
+        b.tick(entries, scr_state)
+    approx_xy(b.get_directive().target, (5.0, 5.0))
+
+    # Leader goes stale — must fall back to HOLD immediately (undebounced
+    # loss; debouncing only governs switching between VALID candidates).
+    entries[0]['is_stale'] = True
+    b.tick(entries, scr_state)
+    assert b.get_directive().type == BSEDirectiveType.HOLD
+
+    entries[0]['is_stale'] = False
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS + 1):
+        b.tick(entries, scr_state)
+    approx_xy(b.get_directive().target, (5.0, 5.0))
+
+
+def test_frame_element_id_anchor_live_no_lag():
+    """§5.3: element-frame anchors bind LIVE — once locked, the same
+    anchor's position tracks every tick with no additional debounce."""
+    b = BSE(0)
+    entries = wm([(0, 0), (1, 1)], self_id=0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.ID, anchor_id=1))
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS + 1):
+        b.tick(entries, HEALTHY)
+    assert b.get_directive().target[0] == pytest.approx(1.0)
+
+    entries[1]['x'], entries[1]['y'] = 8.0, 8.0
+    b.tick(entries, HEALTHY)
+    assert b.get_directive().target[0] == pytest.approx(8.0)
+
+
+def test_frame_element_lowest_energy_anchor():
+    b = BSE(0)
+    entries = wm([(0, 0), (5, 5), (9, 9)], self_id=0)
+    entries[0]['energy_level'] = 90
+    entries[1]['energy_level'] = 80
+    entries[2]['energy_level'] = 20   # lowest
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.LOWEST_ENERGY))
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS + 1):
+        b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (9.0, 9.0))
+
+
+# ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────────
+
+def test_motion_spin_rotates_the_form_vertex():
+    b = BSE(0)
+    entries = solo(5.0, 0.0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.CIRCLE,
+                              radius=5.0, target=(0.0, 0.0),
+                              motion=BSEMotion.SPIN, spin_rate_radps=0.5))
+    b.tick(entries, HEALTHY)   # t=0.1s
+    theta = 0.5 * 0.1
+    approx_xy(b.get_directive().target,
+             (5.0 * math.cos(theta), 5.0 * math.sin(theta)), tol=1e-4)
+
+    for _ in range(19):
+        b.tick(entries, HEALTHY)   # t=2.0s total
+    theta = 0.5 * 2.0
+    approx_xy(b.get_directive().target,
+             (5.0 * math.cos(theta), 5.0 * math.sin(theta)), tol=1e-4)
+
+
+def test_motion_spin_ignored_by_converge():
+    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, target=(4.0, 4.0),
+                         motion=BSEMotion.SPIN, spin_rate_radps=1.0),
+            solo(), ticks=50)
+    approx_xy(b.get_directive().target, (4.0, 4.0))
 
 
 def test_disperse_is_a_spring_field_at_the_requested_spacing():
@@ -423,3 +553,46 @@ def test_submitting_a_new_intent_resets_goal_state():
 def test_directive_defaults_are_the_documented_spring_values():
     d = BSEDirective()
     assert (d.type, d.spring_k, d.spacing) == (BSEDirectiveType.IDLE, 5.0, 30.0)
+
+
+# ── Tracks (§7, bse_set_track_scope / collect_participants filter) ──────────
+
+def test_track_scope_defaults_to_zero_and_counts_every_peer():
+    entries = wm([(0.0, 0.0), (10.0, 0.0)], self_id=0)   # current_track absent -> 0
+    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, frame=BSEFrame.COLLECTIVE),
+           entries)
+    approx_xy(b.get_directive().target, (5.0, 0.0))
+
+
+def test_set_track_scope_excludes_a_different_track_peer_from_the_centroid():
+    entries = wm([(0.0, 0.0), (10.0, 0.0), (100.0, 100.0)], self_id=0)
+    entries[1]["current_track"] = 0   # same track as self
+    entries[2]["current_track"] = 1   # different track
+
+    b = BSE(0)
+    b.set_track_scope(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, frame=BSEFrame.COLLECTIVE))
+    b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (5.0, 0.0))
+
+
+def test_set_track_scope_also_filters_form_rank_and_count():
+    entries = wm([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)], self_id=0)
+    entries[1]["current_track"] = 0
+    entries[2]["current_track"] = 1   # excluded from FORM's N and rank
+
+    b = BSE(0)
+    b.set_track_scope(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.LINE,
+                              target=(0.0, 0.0), radius=1.0))
+    b.tick(entries, HEALTHY)
+    # N=2 (self + peer 1 only), self is the lower id -> rank 0 -> x = -radius
+    approx_xy(b.get_directive().target, (-1.0, 0.0))
+
+
+def test_a_track_scope_no_peer_currently_matches_still_includes_self():
+    b = BSE(0)
+    b.set_track_scope(3)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, frame=BSEFrame.COLLECTIVE))
+    b.tick(solo(2.0, 2.0), HEALTHY)
+    approx_xy(b.get_directive().target, (2.0, 2.0))

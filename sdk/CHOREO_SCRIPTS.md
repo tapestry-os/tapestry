@@ -66,10 +66,11 @@ hold = { duration = "8s", requires = ["locomotion"] }
 |---|---|---|
 | `hold` | the element's own current station (coordinate-free) | — |
 | `exchange` | participants' own stations, rotated (coordinate-free) | `shift` (ring rotation, default 1), `path` |
-| `form` | an absolute point + shape | `target = [x, y]`, `radius` (both required — radius 0 would send every element to the same vertex), `shape` |
+| `form` | a point + shape (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y]` (or `frame`/`anchor`), `radius` (required — radius 0 would send every element to the same vertex), `shape`, `spin` (see [Motion](#motion)) |
 | `move` | an absolute point | `target = [x, y]` |
-| `converge` | an absolute point | `target = [x, y]` |
+| `converge` | a point (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y]` (or `frame`/`anchor`) |
 | `disperse` | current positions, spread apart | `radius` (required — minimum spacing) |
+| `orbit` | a preset — see [Motion](#motion) | `around`, `radius`, `rate` |
 
 `hold` and `exchange` are **coordinate-free by design** — they reference the
 collective's own configuration, not application-supplied coordinates, and
@@ -85,6 +86,229 @@ dimension. `path = "direct"` beelines straight to the destination — only
 safe if something else deconflicts the crossing (e.g. altitude staggering
 on an aerial platform); see
 `examples/cf21bl-formation/change-partners.choreo.toml` for a worked case.
+
+## Frames and anchors
+
+`form` and `converge` normally take an absolute `target = [x, y]` — a
+world-frame coordinate. `frame` lets you say what that point is defined
+*relative to* instead, for platforms without absolute positioning, or
+scripts that shouldn't care where the collective happens to be:
+
+| `frame` | Target is... | Needs |
+|---|---|---|
+| `"absolute"` (default) | `target = [x, y]` literally — today's behavior | `target` |
+| `"collective"` | the live participant centroid | nothing — `target` is rejected |
+| `"element"` | a resolved anchor element's position | `anchor = { select = ... }` — `target` is rejected |
+
+`anchor.select` (frame `"element"` only):
+
+| Select | Anchor is... |
+|---|---|
+| `"leader"` | the current L5-elected leader |
+| `"self"` | this element (degenerate — station-keeps on itself) |
+| `"lowest-energy"` | the fresh peer (or self) with the lowest `energy_level` |
+| `"id:N"` | the explicit element `N` (testing/debug) |
+
+`"newest"`/`"oldest"` (most/longest recently joined) are named in the
+design doc but not implemented yet — they need join-order tracking the
+world model doesn't keep; the parser rejects them by name rather than
+silently ignoring them.
+
+Anchor resolution is **debounced**: a newly-resolved anchor doesn't drive
+a directive until it has been the same element for 2 seconds straight
+(`TAPESTRY_BSE_ANCHOR_HOLD_MS`) — a single lucky/unlucky gossip frame
+must not make the whole collective's anchor flicker (the same lesson
+`QUORUM_UP_MS` encodes for quorum acquisition). Once locked, the anchor's
+*position* tracks live with no further lag — only *switching which
+element is the anchor* is debounced. An anchor that disappears outright
+(no leader elected yet, an explicit `id:N` that was never fresh) falls
+back to `HOLD` immediately, undebounced — the same fallback `exchange`
+uses when it can't yet compute a snapshot.
+
+## Motion
+
+`form`'s `spin` parameter turns a static shape into a maintained,
+rotating one — "form a circle" vs. "keep rotating in a circle" (Choreo
+SDK Design doc §6). Each vertex's offset from the frame origin (see
+[Frames and anchors](#frames-and-anchors)) rotates at the given rate;
+achievement still works exactly the same way, just against the *moving*
+vertex.
+
+```toml
+[[steps]]
+[steps.form]
+shape    = "circle"
+target   = [0.5, 0.5]
+radius   = "1m"
+spin     = "0.15rad/s"
+duration = "60s"
+```
+
+`spin` only applies to `form` — `converge`'s target *is* the frame
+origin, so "rotating the offset" would be a no-op; the parser rejects it
+there rather than silently accept a goal that visibly does nothing.
+
+**`spin` never completes** — it's a maintained behavior, not an achieved-
+and-done one, so `duration`/`timeout` is doing real work here, not just
+satisfying the universal time-bound requirement. `until = "achieved"` is
+still allowed alongside it as an early-lock ("stop spinning once I first
+land on-station"), but never as the *only* exit.
+
+**`orbit` preset** — `form` + `spin` around an anchor is common enough to
+name directly:
+
+```toml
+[[steps]]
+orbit = { around = "leader", radius = "0.5m", rate = "0.15rad/s",
+         duration = "30s" }
+```
+
+desugars to exactly:
+
+```toml
+[[steps]]
+[steps.form]
+shape    = "circle"
+frame    = "element"
+anchor   = { select = "leader" }
+radius   = "0.5m"
+spin     = "0.15rad/s"
+duration = "30s"
+```
+
+Pure TOML-layer sugar — no new C primitive, and `around` accepts the same
+selectors as `anchor.select` above.
+
+## Events and transitions
+
+Any goal key can carry `name` (a step label) and `on` (a list of guarded
+transitions) — the design doc's "welcome dance" (§8.3), reactive instead
+of purely linear:
+
+```toml
+[[steps]]
+name = "triangle"
+[steps.form]
+shape    = "circle"
+target   = [0.0, 0.0]
+radius   = "2m"
+duration = "60s"
+on = [ { event = "element_joined", goto = "welcome" } ]
+
+[[steps]]
+name = "welcome"
+[steps.orbit]
+around   = "leader"
+radius   = "0.5m"
+rate     = "0.15rad/s"
+duration = "30s"
+on = [ { event = "element_lost", goto = "triangle" } ]
+```
+
+`on` is checked **first**, in declaration order — the first matching
+event wins and its `goto` becomes the next step, before
+`until = "achieved"`/`duration` are even considered (they remain the
+fallback for a step with no matching, or no declared, transition — every
+step written before this feature existed is unaffected). `goto` names
+another step's `name`, or the literal string `"end"` to complete the
+script from anywhere.
+
+Event vocabulary (a subset of the design doc's §8.2 — see that section
+for why `quorum_degraded`/`quorum_lost`/`quorum_recovered` aren't here
+yet):
+
+| Event | Fires when |
+|---|---|
+| `achieved` | the step's own achievement predicate (scope-gated) — as an explicit transition target, not just an implicit next-step advance. |
+| `element_joined` / `element_lost` | a debounced rise/fall in the fresh participant count (2 s stable, the same lesson [anchor debounce](#frames-and-anchors) encodes — one lucky/unlucky gossip frame must not fire this fleet-wide). |
+| `count_gte` / `count_eq` | the live participant count crosses a `threshold` (required on these two events, rejected on every other). |
+| `anchor_lost` | a `frame = "element"` goal (see above) couldn't resolve any anchor this tick. |
+
+At most 4 transitions per step (the runtime's fixed-size limit) — the
+parser rejects a 5th rather than silently truncating.
+
+**Cycles need `max_runtime`**: a script whose step graph loops back on
+itself (like the welcome dance above — `triangle` and `welcome` transition
+into each other) can run indefinitely, so the parser requires a top-level
+`max_runtime = "..."` bound when it detects one:
+
+```toml
+choreo      = "welcome-dance"
+max_runtime = "10min"
+```
+
+`max_runtime` replaces the summed-step-durations bound
+(`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS`) for a cyclic script; an acyclic script
+keeps the sum as before and doesn't need it.
+
+## Tracks
+
+A script is normally one `[[steps]]` list every element runs — the
+implicit "all" track. `[[tracks]]` (design doc §7) instead declares
+several **concurrent, participant-scoped** step sequences; an element runs
+exactly one of them, chosen by the **first** whose `filter` it matches:
+
+```toml
+choreo = "spill-response"
+
+[[tracks]]                          # perimeter watch: needs a sensor
+filter = { requires = ["sensing"] }
+[[tracks.steps]]
+hold = { duration = "300s" }
+
+[[tracks]]                          # everyone else: catch-all (no filter)
+[[tracks.steps]]
+form = { target = [0, 0], radius = 5, duration = "300s" }
+```
+
+A file gives either `[[steps]]` or `[[tracks]]`, never both. Each track's
+`filter` table takes:
+
+| Key | Meaning |
+|---|---|
+| `requires` | list of capability names, exactly like a step's own `requires` — matches when this element's capabilities satisfy them. |
+| `energy_low` | `true`/`false` — matches when this element's own gossiped health state currently reports low battery. |
+
+An empty or omitted `filter` (`filter = {}`, or no `filter` key at all)
+matches **every** element — the catch-all a track table needs at least
+one of, declared last, so every element has somewhere to run. Filter
+membership is evaluated **locally**, against this element's own state
+only — never a peer's — so it needs no coordination messages (design
+doc's P4). At most `CHOREO_MAX_TRACKS` (4) tracks; a script that declares
+more is rejected at parse time, and `choreo_submit_tracks()` itself
+rejects a script where no track matches this element.
+
+Each track's `[[tracks.steps]]` is a full, independent step list with the
+same schema as `[[steps]]` above — including `name =` / `on = [...]`
+transitions and its own `max_runtime` for a cyclic track (§8.4 applies
+per-track: a cycle in one track doesn't bound the others). A `goto`
+target only resolves within the **same** track — one track's steps can't
+jump into another's.
+
+Migrating to a different track (a filter-boundary crossing, e.g. battery
+crossing the low-battery threshold) is debounced exactly like
+`element_joined`/`element_lost` above, and activates the new track's
+current step **fresh** — new snapshot, new timers, not a resumed state.
+Each track's own step index is remembered while inactive, though, so
+re-entering a track later resumes where it left off rather than
+restarting from step 0.
+
+**Why this matters to other elements**: an element gossips which track
+it's currently active in (`current_track`, wire v4) so peers running
+`frame = "collective"` or a `count_*`/`element_joined` event compute their
+centroid/count from elements actually doing the SAME thing — a peer that
+migrated off to charge its battery, say, is automatically excluded rather
+than skewing the group everyone else is coordinating around. A script
+with no `[[tracks]]` gossips `current_track = 0` unconditionally — byte-
+identical to every script written before this feature existed.
+
+Python:
+
+```python
+from tapestry.script_toml import load_tracks
+tracks = load_tracks("spill-response.choreo.toml")
+choreo.submit_tracks(wm_entries, tracks)
+```
 
 ## Common parameters (every goal)
 
@@ -125,11 +349,29 @@ surface:
 - `hold` must not carry `until`/`eps`/`settle` — trivially-achieved
   semantics would make such a step advance on the first tick, and the
   parameters are reserved for future scoped achievement.
-- `hold`/`exchange` must not carry coordinates; `form`/`move`/`converge`
-  must; `disperse` must carry a `radius`.
+- `hold`/`exchange` must not carry coordinates; `move` must carry
+  `target`; `form`/`converge` must carry `target` (`frame = "absolute"`,
+  the default) *or* `frame`/`anchor` instead (`target` is then rejected —
+  see [Frames and anchors](#frames-and-anchors)); `disperse` must carry a
+  `radius`.
 - Unknown goal keys, unknown parameters, and unknown capability/shape names
   are rejected with a message naming the offending step index and the
   allowed set.
+- `spin` only applies to `form` (and its `orbit` desugaring) — it is
+  rejected as an unknown parameter everywhere else, including `converge`.
+  Since every step already needs a real time bound (the first bullet
+  above), a `spin` step can never be authored with `until = "achieved"`
+  as its only exit — the C/Python API allows that combination directly
+  and rejects it separately (a non-terminal motion never "completes").
+- `goto` must name a step's own `name = "..."`, or be the literal `"end"`
+  — `end` is reserved and cannot be used as a step name; a duplicate step
+  name is rejected too. At most 4 transitions (`on = [...]`) per step.
+  `count_gte`/`count_eq` require a `threshold`; every other event rejects
+  one.
+- A script whose step transitions form a cycle must declare a top-level
+  `max_runtime` bound (see [Events and transitions](#events-and-transitions))
+  — the parser detects this statically rather than let an unbounded show
+  reach flight.
 
 Errors look like:
 
@@ -214,6 +456,25 @@ const tapestry_bse_directive_t *d = choreo_get_directive();
 if (choreo_script_complete()) {
     /* directive is IDLE — map to this platform's quiescent posture */
 }
+```
+
+A `[[tracks]]` script (see [Tracks](#tracks)) generates a track table
+instead of a flat step array — `CHOREO_N_TRACKS`/`k_choreo_tracks`
+in place of `CHOREO_SCRIPT_LEN`/`k_choreo_script`, submitted via
+`choreo_submit_tracks()` instead of `choreo_submit_script()`:
+
+```c
+#define CHOREO_N_TRACKS                2u
+#define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS 300000u   /* worst case across tracks */
+
+static const choreo_track_t k_choreo_tracks[CHOREO_N_TRACKS] = { ... };
+
+choreo_init(element_id);
+choreo_submit_tracks(&wm, k_choreo_tracks, CHOREO_N_TRACKS);
+
+/* each cycle: gossip current_track alongside goal_achieved (own_state is
+ * whatever this platform's gossip_send() reads from) */
+own_state.current_track = choreo_current_track();
 ```
 
 ## Building for Python (simulation / research)

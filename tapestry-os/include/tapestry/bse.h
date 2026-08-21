@@ -121,6 +121,70 @@ typedef enum {
     TAPESTRY_BSE_SHAPE_GRID   = 3,
 } tapestry_bse_shape_t;
 
+/* ── Frames and anchors (FORM / CONVERGE only) ───────────────────────────── */
+/*
+ * Choreo SDK Design doc §5 "frame ladder": what a FORM/CONVERGE target is
+ * defined relative to.  ABSOLUTE (0) is the zero value on purpose — every
+ * FORM/CONVERGE goal today sets an absolute target with no alternative, so
+ * zero-initialized/frame-less intents must keep behaving exactly as they do
+ * today.  §12's "frame defaults follow P1 (coordinate-free)" is honored by
+ * making the coordinate-free path newly *available*, not retroactively
+ * default — an author opts in explicitly via COLLECTIVE or ELEMENT.
+ *
+ * Only FORM and CONVERGE read this — HOLD/EXCHANGE are already inherently
+ * coordinate-free (§5.1's ladder table: "n/a" for both), and MOVE/DISPERSE
+ * are not in this stage's scope.
+ */
+typedef enum {
+    TAPESTRY_BSE_FRAME_ABSOLUTE   = 0,  /* target is a literal point (today) */
+    TAPESTRY_BSE_FRAME_COLLECTIVE = 1,  /* target := live participant centroid */
+    TAPESTRY_BSE_FRAME_ELEMENT    = 2,  /* target := resolved anchor's position */
+} tapestry_bse_frame_t;
+
+/*
+ * §5.2 anchor selectors, meaningful only when frame == ELEMENT.  NEWEST/
+ * OLDEST are deliberately not here yet — they need L4 join-order tracking
+ * that doesn't exist; see bse.c's anchor resolution comment.
+ */
+typedef enum {
+    TAPESTRY_BSE_ANCHOR_LEADER        = 0,  /* scr_get_leader()              */
+    TAPESTRY_BSE_ANCHOR_ID             = 1, /* explicit intent.anchor_id     */
+    TAPESTRY_BSE_ANCHOR_SELF           = 2, /* own position (degenerate)     */
+    TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY  = 3, /* min energy_level among fresh  */
+} tapestry_bse_anchor_selector_t;
+
+/* Anchor selector re-resolution debounce, §5.2: "a selector result must be
+ * stable for a hold time before a switch takes effect, or a gossip flicker
+ * would make the whole collective's anchor thrash" — the same lesson (and
+ * the same value) as QUORUM_UP_MS elsewhere in this codebase. */
+#ifndef TAPESTRY_BSE_ANCHOR_HOLD_MS
+#define TAPESTRY_BSE_ANCHOR_HOLD_MS  2000u
+#endif
+
+/* ── Motion (FORM only) ───────────────────────────────────────────────────── */
+/*
+ * §6: a motion modifier evolves the frame's reference over time under
+ * authored control — "form a circle" (static) vs. "keep rotating in a
+ * circle" (spin) is the same relation with a different temporal character.
+ * SPIN rotates each vertex's offset from the frame origin at
+ * spin_rate_radps; achievement is evaluated against the ROTATING vertex —
+ * the existing eps/hold-time predicate generalizes unchanged (it was
+ * already tick-scoped).
+ *
+ * CONVERGE deliberately ignores this field: its target IS the frame
+ * origin (zero offset from it), so "rotating the offset" is a no-op —
+ * script_toml.py rejects motion = "spin" on converge outright rather than
+ * accept a goal that visibly does nothing.
+ *
+ * A non-terminal motion (SPIN never "completes" — it's a maintained
+ * behavior) requires a real max_duration_ms bound; see
+ * choreo_submit_script()'s validation.
+ */
+typedef enum {
+    TAPESTRY_BSE_MOTION_STATIC = 0,   /* reference fixed at activation (today) */
+    TAPESTRY_BSE_MOTION_SPIN   = 1,   /* reference rotates about the frame origin */
+} tapestry_bse_motion_t;
+
 /* Achievement defaults (meter scale — see the units note above). */
 #define TAPESTRY_BSE_ACHIEVE_EPS_DEFAULT      0.5f
 #define TAPESTRY_BSE_ACHIEVE_HOLD_MS_DEFAULT  3000u
@@ -162,6 +226,18 @@ typedef struct {
                                            * half-span/cell-spacing (LINE/
                                            * GRID); DISPERSE min dist       */
     tapestry_bse_shape_t       shape;    /* FORM shape                     */
+
+    /* FORM / CONVERGE only (see tapestry_bse_frame_t above).  frame == 0
+     * (ABSOLUTE) ignores anchor/anchor_id entirely and uses `target` exactly
+     * as today. */
+    tapestry_bse_frame_t           frame;
+    tapestry_bse_anchor_selector_t anchor;     /* frame == ELEMENT only */
+    element_id_t                   anchor_id;  /* anchor == ID only     */
+
+    /* FORM only (see tapestry_bse_motion_t above).  motion == 0 (STATIC)
+     * is the default — every existing intent is unaffected. */
+    tapestry_bse_motion_t          motion;
+    float                          spin_rate_radps;  /* motion == SPIN only */
 
     /* EXCHANGE: ring rotation amount.  0 is treated as 1 (the common case)
      * so a zero-initialized intent still swaps. */
@@ -332,5 +408,27 @@ const tapestry_bse_directive_t *bse_get_directive(void);
  * achievement barriers are future L5/L6 work.
  */
 bool bse_goal_achieved(void);
+
+/*
+ * bse_anchor_lost — True if the last bse_tick() had a FORM/CONVERGE intent
+ * with frame == ELEMENT (§5) and could not resolve any anchor position —
+ * never locked one yet, or the previously-locked anchor's peer went
+ * stale/inactive.  False for every other frame or intent type.  Tick-
+ * scoped, like bse_goal_achieved() — reflects only the most recent
+ * bse_tick().  This is CHOREO_EVENT_ANCHOR_LOST's source (choreo.h §8.2).
+ */
+bool bse_anchor_lost(void);
+
+/*
+ * bse_set_track_scope — Choreo SDK Design doc §7 tracks: tell bse.c
+ * which track (by index) THIS element is currently active in, so
+ * collect_participants() (FORM/EXCHANGE/MOVE) filters peers to only
+ * those gossiping the SAME current_track — see that function's comment
+ * in bse.c.  Defaults to 0 (bse_init()), matching every peer's gossiped
+ * current_track on a script with no tracks — a no-op for every caller
+ * that never calls this.  L7-owned concept; bse.c only stores and
+ * filters on it, never interprets it.
+ */
+void bse_set_track_scope(uint8_t track);
 
 #endif /* TAPESTRY_BSE_H */

@@ -18,7 +18,7 @@ import pytest
 from helpers import REPO_ROOT, SCRIPT_TOML
 
 import choreoc
-from tapestry.script_toml import NormalizedStep, parse_file
+from tapestry.script_toml import NormalizedStep, NormalizedTransition, parse_file
 
 CHOREOC = REPO_ROOT / "sdk/tools/choreoc.py"
 
@@ -93,6 +93,59 @@ def test_a_fully_specified_step_emits_every_field():
                      ".advance_on_achieved = true",
                      ".scope = CHOREO_SCOPE_ALL"):
         assert fragment in c, fragment
+
+
+def test_frame_absolute_default_is_left_implicit():
+    """frame="absolute" is the zero/default value — must not be emitted,
+    same reasoning as every other unset-means-default field."""
+    c = choreoc.emit_step(NormalizedStep(goal="converge", max_duration_ms=1000,
+                                         target=(1.0, 2.0)))
+    assert ".frame" not in c
+    assert ".anchor" not in c
+
+
+def test_frame_and_anchor_are_emitted_as_c_enum_names():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="converge", max_duration_ms=1000, frame="element",
+        anchor_select="id", anchor_id=3))
+    assert ".frame = TAPESTRY_BSE_FRAME_ELEMENT" in c
+    assert ".anchor = TAPESTRY_BSE_ANCHOR_ID" in c
+    assert ".anchor_id = 3u" in c
+
+
+def test_motion_static_default_is_left_implicit():
+    c = choreoc.emit_step(NormalizedStep(goal="form", max_duration_ms=1000,
+                                         target=(0.0, 0.0), radius=3.0))
+    assert ".motion" not in c
+    assert ".spin_rate_radps" not in c
+
+
+def test_spin_motion_and_rate_are_emitted():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="form", max_duration_ms=60000, target=(0.0, 0.0), radius=3.0,
+        motion="spin", spin_rate_radps=0.15))
+    assert ".motion = TAPESTRY_BSE_MOTION_SPIN" in c
+    assert ".spin_rate_radps = 0.15f" in c
+
+
+def test_no_transitions_leaves_on_and_n_transitions_implicit():
+    c = choreoc.emit_step(NormalizedStep(goal="hold", max_duration_ms=1000))
+    assert ".on" not in c
+    assert ".n_transitions" not in c
+
+
+def test_transitions_are_emitted_as_a_designated_initializer_array():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="hold", max_duration_ms=1000,
+        on=[
+            NormalizedTransition(event="count_gte", goto_step_idx=2, threshold=3),
+            NormalizedTransition(event="achieved", goto_step_idx=0),
+        ]))
+    assert ".n_transitions = 2u" in c
+    assert "CHOREO_EVENT_COUNT_GTE" in c
+    assert ".goto_step_idx = 2u" in c
+    assert ".threshold = 3u" in c
+    assert "CHOREO_EVENT_ACHIEVED" in c
 
 
 def test_scope_self_is_left_implicit():
@@ -264,3 +317,63 @@ def test_the_headers_total_bound_matches_the_parsed_script():
               / "examples/cf21bl-formation/src/choreo_script.h").read_text()
     assert (f"#define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS "
             f"{script.total_timeout_ms}u") in header
+
+
+# ── Tracks (§7) ──────────────────────────────────────────────────────────────
+
+TRACKS = '''
+    [[tracks]]
+    filter = { requires = ["sensing"] }
+    [[tracks.steps]]
+    hold = { duration = "300s" }
+
+    [[tracks]]
+    filter = { energy_low = true }
+    [[tracks.steps]]
+    converge = { target = [0, 0], duration = "60s" }
+
+    [[tracks]]
+    [[tracks.steps]]
+    hold = { duration = "10s" }
+    '''
+
+
+def test_a_tracks_header_declares_the_track_table(tmp_path):
+    path = write_script(tmp_path, TRACKS)
+    _, text = choreoc.render(path, tmp_path / "choreo_script.h")
+    assert '#define CHOREO_NAME                    "unit-test"' in text
+    assert "#define CHOREO_N_TRACKS                3u" in text
+    # worst case across tracks, not the sum: 300s, 60s, 10s -> 300s
+    assert "#define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS 300000u" in text
+    assert "CHOREO_SCRIPT_LEN" not in text
+    assert "static const choreo_step_t k_choreo_track0_steps[1]" in text
+    assert "static const choreo_step_t k_choreo_track1_steps[1]" in text
+    assert "static const choreo_step_t k_choreo_track2_steps[1]" in text
+    assert ("static const choreo_track_t "
+            "k_choreo_tracks[CHOREO_N_TRACKS]") in text
+
+
+def test_track_filters_are_emitted_as_designated_initializers(tmp_path):
+    path = write_script(tmp_path, TRACKS)
+    _, text = choreoc.render(path, tmp_path / "choreo_script.h")
+    assert ".filter = { .required_caps = CHOREO_CAP_SENSING }" in text
+    assert ".filter = { .requires_energy_low = true }" in text
+    assert ".filter = { 0 }" in text   # catch-all track
+
+
+def test_a_tracks_header_compiles_the_way_a_steps_header_does(tmp_path):
+    script = write_script(tmp_path, TRACKS)
+    out = tmp_path / "choreo_script.h"
+    r = run_cli(script, "-o", out)
+    assert r.returncode == 0, r.stderr
+    assert out.is_file()
+    assert "3 track(s)" in r.stdout and "3 step(s) total" in r.stdout
+
+
+def test_a_tracks_header_round_trips_through_check(tmp_path):
+    script = write_script(tmp_path, TRACKS)
+    out = tmp_path / "choreo_script.h"
+    assert run_cli(script, "-o", out).returncode == 0
+    assert run_cli(script, "-o", out, "--check").returncode == 0
+    out.write_text(out.read_text() + "\n// drift\n")
+    assert run_cli(script, "-o", out, "--check").returncode == 1

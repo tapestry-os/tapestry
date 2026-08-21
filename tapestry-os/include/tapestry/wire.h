@@ -103,8 +103,20 @@
  * requires CONFIG_BT_EXT_ADV (LE Extended Advertising, Bluetooth 5.0+;
  * see that file's header comment for which board(s) this drops BLE
  * support on and why).
+ *
+ * v4: tapestry_gossip_frame_t gains current_track (Choreo SDK Design doc
+ * §7 tracks) — which track (by index into the shared track table every
+ * element holds identically) this element is currently active in.  0 for
+ * every element on a script with no tracks (today's only case) — a no-op
+ * value, not a behavior change.  Grows the frame 42 -> 43 bytes.  A new
+ * field, not a repack of relay_qos's spare bits, on purpose: relay_qos is
+ * an L3 (transport) concept — hop_count, qos_tier — while current_track
+ * is L6/L7 state, same layer as `achieved` next to it; conflating the two
+ * in one byte would blur that line for no wire-budget reason (200-byte
+ * single-PDU ceiling since BLE5 Extended Advertising, 43 of 200 bytes
+ * used — no longer the tight fit v3's bump was solving for).
  */
-#define TAPESTRY_WIRE_VERSION   3u
+#define TAPESTRY_WIRE_VERSION   4u
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 
@@ -171,6 +183,15 @@ typedef struct {
  *   from gossiped state alone; see choreo_collective_achieved().
  *   Eventually consistent like every other gossiped field — no barrier.
  *
+ * current_track: this element's active track index (choreo_current_
+ *   track(), v4).  0 for every element on a script with no [[tracks]] —
+ *   the only case before this field existed, so it's a no-op default.
+ *   Lets peers filter FORM/EXCHANGE/MOVE participant sets to only those
+ *   peers helping the SAME collective activity, without re-deriving a
+ *   peer's track membership from its (not fully gossiped) capabilities —
+ *   see collect_participants() in bse.c.
+ *
+
  * version: TAPESTRY_WIRE_VERSION, carried IN the frame itself (not just the
  *   tapestry_msg_header_t wrapper) because BLE and syslink P2P advertise
  *   this frame directly with no header wrapper at all — see wire.h's "Wire
@@ -197,10 +218,11 @@ typedef struct {
     uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see csm.h)    */
     uint8_t  relay_qos;            /* hop_count[1:0] | qos_tier[3:2] — packed */
     uint8_t  achieved;             /* own-goal achievement predicate, 0/1     */
+    uint8_t  current_track;        /* active track index (v4, choreo.h §7)    */
     uint8_t  version;              /* TAPESTRY_WIRE_VERSION — see above       */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 42 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 43 */
 
 /* ── relay_qos packing ───────────────────────────────────────────────────── */
 
@@ -286,6 +308,6 @@ typedef struct {
      ? TAPESTRY_GOSSIP_WIRE_SIZE : TAPESTRY_METRIC_FRAME_SIZE)
 
 #define TAPESTRY_MAX_MSG_SIZE \
-    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 47 (51 with auth) */
+    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 48 (52 with auth) */
 
 #endif /* TAPESTRY_WIRE_H */

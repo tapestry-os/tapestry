@@ -109,6 +109,7 @@ void tapestry_runtime_tick(void)
         s_last_abort_state != SCR_ABORT_TRIGGERED) {
         s_own.update_seq++;
         s_own.goal_achieved = choreo_goal_achieved();
+        s_own.current_track = choreo_current_track();
         LOG_WRN("quorum LOST — sending HARD_RT gossip now (element %u)",
                 (unsigned)s_own.id);
         transport_send(&s_own, TAPESTRY_QOS_HARD_RT);
@@ -137,6 +138,7 @@ void tapestry_runtime_tick(void)
         /* Own-goal achievement as of this tick's choreo_tick (step 4 above),
          * so peers running a scope=all step can aggregate it. */
         s_own.goal_achieved = choreo_goal_achieved();
+        s_own.current_track = choreo_current_track();
         transport_send(&s_own, TAPESTRY_QOS_SOFT_RT);
         s_gossip_accum_ms = 0;
     }

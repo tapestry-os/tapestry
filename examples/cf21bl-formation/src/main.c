@@ -826,6 +826,7 @@ int main(void)
 
             choreo_tick(&wm, &scr_view);
             own_state.goal_achieved = choreo_goal_achieved();
+            own_state.current_track = choreo_current_track();
 
             /* HARD_RT gossip on the REAL (undebounced) quorum-loss edge —
              * scr_view's QUORUM_UP_MS softening above is for L6/L7 only;
