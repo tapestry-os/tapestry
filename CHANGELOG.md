@@ -106,6 +106,74 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (InertialUnit and GPS share Webots' world frame); `cf21bl-formation`'s
   main.c notes what a future real accessor would need to calibrate
   against (the existing "nose along lighthouse world +X" boot placement)
+- **Choreo SDK Design doc stages 1–4 implemented: frames+anchors, motion,
+  events/transitions, tracks** — the design doc's own staged rollout, each
+  stage independently shippable. **Frames+anchors** (§5): FORM/CONVERGE
+  targets can be `frame = "collective"` (live participant centroid) or
+  `frame = "element"` (a resolved anchor's position —
+  `leader`/`self`/`lowest-energy`/`id:N`, debounced 2 s before switching
+  which element is the anchor, the same "stable before acting" lesson
+  `QUORUM_UP_MS` encodes) instead of only `frame = "absolute"` (the
+  zero-value, compat-preserving default — every script written before this
+  existed is unaffected). **Motion** (§6): `form`'s new `spin` parameter
+  turns a static shape into a maintained, rotating one; the `orbit` preset
+  (`form` + `spin` around an anchor, pure TOML sugar) names the common case
+  directly. **Events+transitions** (§8): any step can carry `on = [...]`
+  guarded transitions (`achieved`, `element_joined`/`element_lost`,
+  `count_gte`/`count_eq`, `anchor_lost`) that redirect to a named step
+  instead of only falling through linearly — the "welcome dance" flagship
+  demo (§8.3: a 4th element joining redirects the collective to an orbit
+  step, leaving redirects back) is now expressible. A cyclic step graph
+  requires an explicit top-level `max_runtime` (detected statically at
+  parse time, not left to run away in flight). **Tracks** (§7):
+  `[[tracks]]` lets different elements run different, concurrent step
+  sequences, each choosing the FIRST filter (`requires`/`energy_low`) it
+  matches — membership resolved locally from each element's own state, no
+  coordination messages (P4). Track membership is gossiped
+  (`current_track`, wire v4, `TAPESTRY_WIRE_VERSION` bumped to 4) so peers
+  can filter `collect_participants()` to elements actually working the
+  same track: capability-based filters can't be re-derived from gossiped
+  state alone, so the settled result is gossiped instead — the same
+  pattern `achieved` already established, not a new one invented for this.
+  Full C/Python/TOML parity throughout (`choreoc.py` emits track tables
+  too); `sdk/CHOREO_SCRIPTS.md` documents all four stages
+- **Choreo/BSE positions and targets are genuinely 3D throughout, not 2D
+  with altitude managed separately** — `tapestry_position_t` (BSE's own
+  2D-only type, previously distinct from L4's already-3D `position_t`) is
+  gone; `bse.h`/`bse.c`/`choreo.h` use `position_t` directly. No "z=0 means
+  unset" special case anywhere: `target` is a required 3-tuple `[x, y, z]`
+  at every authoring surface (Python `Goal.target`, TOML, `choreoc.py`'s
+  emission — z is treated exactly like y, never conditional), and the
+  achievement predicate and DISPERSE's spacing check are true 3D Euclidean
+  distance. FORM's shapes (circle/line/grid) and `spin` stay planar (that
+  is what those named patterns are) but position at any real z;
+  CONVERGE/MOVE/HOLD extend automatically via the unified type. EXCHANGE
+  deliberately does NOT touch z — if elements are separated in altitude
+  some other way, that stays intact through a swap (only x/y stations are
+  reassigned) — but v1.0 intentionally ships no mechanism to stage that
+  separation from a script; kept as simple and general as possible rather
+  than adding bespoke per-goal staggering syntax. `formation.c`'s
+  repulsion (already 3D-aware in its *distance* check) never gains a
+  vertical force component here either — deliberately deferred, not
+  forgotten
+- **`cf21bl-formation` and `webots-formation` real-flight altitude is now
+  Choreo-commanded**, not a platform-hardcoded per-ID constant —
+  `directive.target.z` drives `alt_cmd_m`, rate-limited toward it
+  continuously (not just at takeoff) the same way the takeoff ramp always
+  was. `cf21bl-formation/src/main.c`'s automatic `ALT_STEP_PER_ID_M`
+  stagger is removed and NOT replaced — elements are no longer separated
+  in altitude at all, so `change-partners.choreo.toml`'s `exchange` step
+  keeps the default arc path (preserves horizontal separation by
+  construction throughout the maneuver) instead of the faster `direct`
+  beeline it briefly used, which needs a real deconfliction margin to be
+  safe. Speeding the swap back up is deferred to a future pass, not solved
+  by reintroducing platform- or script-level altitude staggering. The
+  room's own validated lighthouse arrival-angle band (0.30–0.70 m, see
+  `ALT_BASE_M`'s comment) remains documented for whenever that follow-up
+  happens. Both platforms' geofence checks were re-examined (not left
+  stale) and kept horizontal-only. Telemetry (`choreo_telemetry.c`,
+  `helpers.py`, `choreo_sim.py`) gains `pos_z`/`directive_target_z`
+  columns. 
 
 ### Changed
 - **`tapestry_gossip_frame_t`'s `hop_count` byte repacked into `relay_qos`**

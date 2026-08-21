@@ -55,10 +55,10 @@ Common parameters:
 
 Goal-specific parameters:
     exchange:  shift = N          ring rotation (default 1)
-    form:      target = [x, y], radius (both REQUIRED — radius 0 would
+    form:      target = [x, y, z], radius (both REQUIRED — radius 0 would
                send every element to the same vertex),
                shape = "circle"|"line"|"grid"
-    move/converge:  target = [x, y]
+    move/converge:  target = [x, y, z]
     disperse:  radius (REQUIRED — minimum spacing)
 
 hold and exchange reject coordinates by design — they reference the
@@ -77,7 +77,7 @@ it matches:
 
     [[tracks]]                          # everyone else: catch-all (no filter)
     [[tracks.steps]]
-    form = { target = [0, 0], radius = 5, duration = "300s" }
+    form = { target = [0, 0, 3], radius = 5, duration = "300s" }
 
 A script file gives either [[steps]] (single implicit "all" track — every
 script before this feature existed, and still the default) or [[tracks]],
@@ -145,7 +145,7 @@ SHAPES = {
 }
 
 # Choreo SDK Design doc §5 frame ladder — form/converge only (stage 1).
-# "absolute" (default) is target=[x,y] exactly as before this existed.
+# "absolute" (default) is a literal target=[x,y,z] — space is 3D throughout.
 FRAMES = {"absolute": 0, "collective": 1, "element": 2}
 
 # §5.2 anchor selectors, frame="element" only. "newest"/"oldest" are named
@@ -252,7 +252,7 @@ class NormalizedStep:
     direct_path:         bool = False
     achieve_eps:         Optional[float] = None
     achieve_hold_ms:     Optional[int] = None
-    target:              Optional[Tuple[float, float]] = None
+    target:              Optional[Tuple[float, float, float]] = None
     radius:              Optional[float] = None
     shape:               Optional[str] = None
     required_caps:       int = 0
@@ -571,12 +571,12 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
             # frame/anchor are form/converge only this stage (§12's own
             # staged order) — move keeps its unconditional absolute target.
             tgt = params.get("target")
-            if (not isinstance(tgt, list) or len(tgt) != 2 or
+            if (not isinstance(tgt, list) or len(tgt) != 3 or
                     not all(isinstance(c, (int, float)) and
                             not isinstance(c, bool) for c in tgt)):
                 raise ScriptError(f"{where}: '{goal}' needs "
-                                  f"target = [x, y]")
-            step.target = (float(tgt[0]), float(tgt[1]))
+                                  f"target = [x, y, z]")
+            step.target = (float(tgt[0]), float(tgt[1]), float(tgt[2]))
         elif goal in ("form", "converge"):
             frame = params.get("frame", "absolute")
             if frame not in FRAMES:
@@ -591,13 +591,13 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
                         f"frame = \"absolute\" (the default) — it only "
                         f"applies with frame = \"element\"")
                 tgt = params.get("target")
-                if (not isinstance(tgt, list) or len(tgt) != 2 or
+                if (not isinstance(tgt, list) or len(tgt) != 3 or
                         not all(isinstance(c, (int, float)) and
                                 not isinstance(c, bool) for c in tgt)):
                     raise ScriptError(
-                        f"{where}: '{goal}' needs target = [x, y] with "
+                        f"{where}: '{goal}' needs target = [x, y, z] with "
                         f"frame = \"absolute\" (the default)")
-                step.target = (float(tgt[0]), float(tgt[1]))
+                step.target = (float(tgt[0]), float(tgt[1]), float(tgt[2]))
             else:
                 if "target" in params:
                     raise ScriptError(

@@ -136,7 +136,7 @@ class Goal:
     no coordinates at all (see bse.py for the mechanism).
     """
     type:          GoalType
-    target:        tuple = (50.0, 50.0)   # (x, y) in logical world coordinates
+    target:        tuple = (50.0, 50.0, 50.0)   # (x, y, z), full 3D
     radius:        float = 30.0
     shape:         GoalShape = GoalShape.CIRCLE
     required_caps: int = ChoreoCapabilities.NONE  # ChoreoCapabilities bitmask

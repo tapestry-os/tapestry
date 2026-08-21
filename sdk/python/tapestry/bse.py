@@ -129,7 +129,7 @@ class BSEMotion(IntEnum):
 @dataclass
 class BSEIntent:
     type:   BSEIntentType = BSEIntentType.IDLE
-    target: Tuple[float, float] = (50.0, 50.0)
+    target: Tuple[float, float, float] = (50.0, 50.0, 50.0)
     radius: float = 30.0
     shape:  BSEShape = BSEShape.CIRCLE
     slot_shift: int = 0            # EXCHANGE ring rotation (0 → 1)
@@ -148,7 +148,7 @@ class BSEIntent:
 @dataclass
 class BSEDirective:
     type:     BSEDirectiveType = BSEDirectiveType.IDLE
-    target:   Tuple[float, float] = (0.0, 0.0)
+    target:   Tuple[float, float, float] = (0.0, 0.0, 0.0)
     spring_k: float = 5.0
     spacing:  float = 30.0
 
@@ -164,10 +164,11 @@ class BSE:
         is_active bool  entry is alive
         is_stale  bool  entry has not been refreshed within staleness window
         is_self   bool  this entry represents the local element (optional)
-        x, y      float element position (required for FORM rank fallback
-                        compatibility it may be omitted, but HOLD, EXCHANGE,
-                        and the achievement predicate need real positions —
-                        including on the is_self entry)
+        x, y, z   float element position, full 3D (required for FORM rank
+                        fallback compatibility it may be omitted, but HOLD,
+                        EXCHANGE, and the achievement predicate need real
+                        positions — including on the is_self entry; z
+                        defaults to 0.0 if absent, same as x/y)
 
     scr_state passed to tick() must be a dict with keys:
         role         int  scr_role_t value
@@ -192,10 +193,10 @@ class BSE:
     def _reset_goal_state(self) -> None:
         self._achieved        = False
         self._achieve_accum   = 0
-        self._goal_pt: Optional[Tuple[float, float]] = None
-        self._hold_station: Optional[Tuple[float, float]] = None
+        self._goal_pt: Optional[Tuple[float, float, float]] = None
+        self._hold_station: Optional[Tuple[float, float, float]] = None
         self._ex: Optional[dict] = None   # exchange snapshot/arc state
-        self._move_offset: Optional[Tuple[float, float]] = None
+        self._move_offset: Optional[Tuple[float, float, float]] = None
         # FORM/CONVERGE frame == ELEMENT: debounced anchor selector
         # resolution (see ANCHOR_HOLD_MS). None means "unset".
         self._anchor_locked_id: Optional[int]    = None
@@ -288,11 +289,11 @@ class BSE:
 
     # ── Internal ─────────────────────────────────────────────────────────────
 
-    def _own_position(self, wm_entries: List[dict]) -> Optional[Tuple[float, float]]:
+    def _own_position(self, wm_entries: List[dict]) -> Optional[Tuple[float, float, float]]:
         for e in wm_entries:
             if e.get('is_self', False):
                 if 'x' in e and 'y' in e:
-                    return (float(e['x']), float(e['y']))
+                    return (float(e['x']), float(e['y']), float(e.get('z', 0.0)))
                 return None
         return None
 
@@ -309,18 +310,20 @@ class BSE:
         for e in wm_entries:
             if e.get('is_self', False):
                 parts.append((self.element_id,
-                              (float(e.get('x', 0.0)), float(e.get('y', 0.0)))))
+                              (float(e.get('x', 0.0)), float(e.get('y', 0.0)),
+                               float(e.get('z', 0.0)))))
             elif e.get('is_active') and not e.get('is_stale') \
                     and e.get('current_track', 0) == self._track_scope:
                 parts.append((int(e['id']),
-                              (float(e.get('x', 0.0)), float(e.get('y', 0.0)))))
+                              (float(e.get('x', 0.0)), float(e.get('y', 0.0)),
+                               float(e.get('z', 0.0)))))
         parts.sort(key=lambda p: p[0])
         return parts
 
     # ── Frames and anchors (FORM / CONVERGE, bse.h §5) ─────────────────────
 
     def _lookup_position_by_id(self, wm_entries: List[dict],
-                               elem_id: int) -> Optional[Tuple[float, float]]:
+                               elem_id: int) -> Optional[Tuple[float, float, float]]:
         """Current position of `elem_id` among self + fresh peers, or None
         if not currently resolvable (gone, stale, or unknown)."""
         for e in wm_entries:
@@ -330,10 +333,11 @@ class BSE:
                 continue
             if is_self:
                 if 'x' in e and 'y' in e:
-                    return (float(e['x']), float(e['y']))
+                    return (float(e['x']), float(e['y']), float(e.get('z', 0.0)))
                 return None
             if e.get('is_active') and not e.get('is_stale'):
-                return (float(e.get('x', 0.0)), float(e.get('y', 0.0)))
+                return (float(e.get('x', 0.0)), float(e.get('y', 0.0)),
+                       float(e.get('z', 0.0)))
         return None
 
     def _resolve_anchor_selector(self, wm_entries: List[dict], intent: BSEIntent,
@@ -366,7 +370,7 @@ class BSE:
         return None
 
     def _resolve_effective_target(self, wm_entries: List[dict], intent: BSEIntent,
-                                  scr_state: dict) -> Optional[Tuple[float, float]]:
+                                  scr_state: dict) -> Optional[Tuple[float, float, float]]:
         """Resolve the effective FORM/CONVERGE target for this tick, per
         intent.frame.  ABSOLUTE returns intent.target unchanged.
         COLLECTIVE returns the live participant centroid.  ELEMENT
@@ -388,7 +392,8 @@ class BSE:
                 return None
             cx = sum(p[1][0] for p in parts) / len(parts)
             cy = sum(p[1][1] for p in parts) / len(parts)
-            return (cx, cy)
+            cz = sum(p[1][2] for p in parts) / len(parts)
+            return (cx, cy, cz)
 
         # BSEFrame.ELEMENT.  Every path below funnels through `resolved`
         # so anchor_lost() (CHOREO_EVENT_ANCHOR_LOST's source) has one
@@ -456,23 +461,25 @@ class BSE:
 
         # Occupied destination (step-skew defense — mirrors bse.c): hold a
         # standoff point on the approach line and defer achievement while a
-        # fresh peer still sits on the station.
+        # fresh peer still sits on the station.  Real 3D distance.
         dest = ex['dest']
         occupied = any(
             not e.get('is_self', False)
             and e.get('is_active') and not e.get('is_stale')
             and math.hypot(float(e.get('x', 0.0)) - dest[0],
-                           float(e.get('y', 0.0)) - dest[1])
+                           float(e.get('y', 0.0)) - dest[1],
+                           float(e.get('z', 0.0)) - dest[2])
                 < EXCHANGE_OCCUPIED_M
             for e in wm_entries)
         if occupied:
             own = self._own_position(wm_entries)
             if own is not None:
-                d = math.hypot(own[0] - dest[0], own[1] - dest[1])
+                d = math.hypot(own[0] - dest[0], own[1] - dest[1], own[2] - dest[2])
                 if d > 1e-3:
                     self._directive.target = (
                         dest[0] + (own[0] - dest[0]) / d * EXCHANGE_STANDOFF_M,
-                        dest[1] + (own[1] - dest[1]) / d * EXCHANGE_STANDOFF_M)
+                        dest[1] + (own[1] - dest[1]) / d * EXCHANGE_STANDOFF_M,
+                        dest[2] + (own[2] - dest[2]) / d * EXCHANGE_STANDOFF_M)
             self._goal_pt = None
 
     def _exchange_capture(self, wm_entries: List[dict]) -> bool:
@@ -492,10 +499,29 @@ class BSE:
         shift = self._intent.slot_shift or 1
         dest_i = (rank + shift) % len(parts)
 
+        # Centroid's z averages same as x/y (kept for reference/logging),
+        # but the arc's ANGULAR decomposition below stays projected onto
+        # the XY plane — a "circle" swap is a planar concept; full
+        # spherical rotation is a separate design question, not attempted
+        # here.
+        #
+        # z is NOT part of what's exchanged: this element's own z stays
+        # exactly what it already is for the whole maneuver — EXCHANGE
+        # only ever reassigns x/y stations. If elements ARE separated in
+        # altitude some other way, that is a real safety margin during a
+        # horizontal crossing, especially with direct_path's beeline;
+        # making z track the destination station's
+        # altitude would walk two elements through each other's altitude
+        # mid-swap, exactly when horizontal separation is smallest too.
+        # `dest`'s z is overwritten with this element's OWN z below (not
+        # the peer's), so every z comparison against it is against where
+        # this element will actually end up.
         cx = sum(p[1][0] for p in parts) / len(parts)
         cy = sum(p[1][1] for p in parts) / len(parts)
+        cz = sum(p[1][2] for p in parts) / len(parts)
         own  = parts[rank][1]
         dest = parts[dest_i][1]
+        dest = (dest[0], dest[1], own[2])   # z is not exchanged — see above
 
         theta0 = math.atan2(own[1] - cy, own[0] - cx)
         theta1 = math.atan2(dest[1] - cy, dest[0] - cx)
@@ -507,12 +533,13 @@ class BSE:
         if dest_i == rank:
             dtheta = 0.0
         # Direct path: no arc — target is the destination from tick one
-        # (safe when deconfliction is vertical; see bse.h).
+        # (a genuine 3D beeline; safe when something else deconflicts the
+        # crossing — see bse.h).
         if self._intent.direct_path:
             dtheta = 0.0
 
         self._ex = {
-            'centroid': (cx, cy),
+            'centroid': (cx, cy, cz),
             'dest':     dest,
             'theta0':   theta0,
             'dtheta':   dtheta,
@@ -522,7 +549,7 @@ class BSE:
         }
         return True
 
-    def _exchange_arc_target(self) -> Tuple[float, float]:
+    def _exchange_arc_target(self) -> Tuple[float, float, float]:
         ex = self._ex
         ex['progress'] += EXCHANGE_OMEGA_RADPS * (WM_CYCLE_MS * 0.001)
         if ex['dtheta'] <= 0.0 or ex['progress'] >= ex['dtheta']:
@@ -530,8 +557,9 @@ class BSE:
         frac  = ex['progress'] / ex['dtheta']
         theta = ex['theta0'] + ex['progress']
         r     = ex['r0'] + (ex['r1'] - ex['r0']) * frac
-        cx, cy = ex['centroid']
-        return (cx + r * math.cos(theta), cy + r * math.sin(theta))
+        cx, cy, _cz = ex['centroid']
+        z = ex['dest'][2]   # own z, held constant — see _exchange_capture()
+        return (cx + r * math.cos(theta), cy + r * math.sin(theta), z)
 
     def _tick_achievement(self, wm_entries: List[dict]) -> None:
         if self._intent.type == BSEIntentType.HOLD and self._hold_station is not None:
@@ -552,7 +580,8 @@ class BSE:
         if own is None:
             return
         if math.hypot(own[0] - self._goal_pt[0],
-                      own[1] - self._goal_pt[1]) <= eps:
+                      own[1] - self._goal_pt[1],
+                      own[2] - self._goal_pt[2]) <= eps:
             self._achieve_accum += WM_CYCLE_MS
         else:
             self._achieve_accum = 0
@@ -565,7 +594,11 @@ class BSE:
         no peer visible (nothing to disperse from), matching the collective-
         achievement solo convention.  Without this, goal_achieved() was
         permanently False for DISPERSE, and a script step with
-        advance_on_achieved=True and no timeout would never advance."""
+        advance_on_achieved=True and no timeout would never advance.
+
+        Real 3D distance (mirrors formation.c's own position_distance()):
+        this is safety-relevant spacing math, not yet flight-validated —
+        see examples/cf21bl-formation/README.md's "Known limitations"."""
         eps  = self._intent.achieve_eps or ACHIEVE_EPS_DEFAULT
         hold = self._intent.achieve_hold_ms or ACHIEVE_HOLD_MS_DEFAULT
         own  = self._own_position(wm_entries)
@@ -576,7 +609,8 @@ class BSE:
             if e.get('is_self', False) or not e.get('is_active') or e.get('is_stale'):
                 continue
             d = math.hypot(float(e.get('x', 0.0)) - own[0],
-                            float(e.get('y', 0.0)) - own[1])
+                            float(e.get('y', 0.0)) - own[1],
+                            float(e.get('z', 0.0)) - own[2])
             if min_dist is None or d < min_dist:
                 min_dist = d
         spread = min_dist is None or min_dist >= (self._directive.spacing - eps)
@@ -647,9 +681,12 @@ class BSE:
             c, s = math.cos(self._spin_theta), math.sin(self._spin_theta)
             ox, oy = ox * c - oy * s, ox * s + oy * c
 
+        # Shapes stay planar — z is the frame origin's, unmodified (see
+        # module doc: CIRCLE/LINE/GRID are named 2D patterns; the whole
+        # flat shape can sit at any real altitude as a rigid unit).
         return BSEDirective(
             type   = BSEDirectiveType.MOVE_TO_POINT,
-            target = (eff_target[0] + ox, eff_target[1] + oy),
+            target = (eff_target[0] + ox, eff_target[1] + oy, eff_target[2]),
         )
 
     def _move_directive(self, wm_entries: List[dict],
@@ -670,11 +707,13 @@ class BSE:
             rank = ids.index(self.element_id)
             cx = sum(p[1][0] for p in parts) / len(parts)
             cy = sum(p[1][1] for p in parts) / len(parts)
+            cz = sum(p[1][2] for p in parts) / len(parts)
             own = parts[rank][1]
-            self._move_offset = (own[0] - cx, own[1] - cy)
+            self._move_offset = (own[0] - cx, own[1] - cy, own[2] - cz)
 
-        ox, oy = self._move_offset
+        ox, oy, oz = self._move_offset
         return BSEDirective(
             type   = BSEDirectiveType.MOVE_TO_POINT,
-            target = (intent.target[0] + ox, intent.target[1] + oy),
+            target = (intent.target[0] + ox, intent.target[1] + oy,
+                     intent.target[2] + oz),
         )

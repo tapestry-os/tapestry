@@ -37,8 +37,9 @@
  *                boot-relative with no absolute reference, hence the
  *                requirement: place each drone with its nose along lighthouse
  *                world +X at power-on).
- *   Altitude:    CONFIG_CF21BL_ALTITUDE_HOLD (baro, closed-loop) — each
- *                drone holds a fixed, ID-staggered cruise altitude.
+ *   Altitude:    CONFIG_CF21BL_ALTITUDE_HOLD (baro, closed-loop) — tracks a
+ *                rate-limited setpoint (ALT_BASE_M by default, or
+ *                directive.target.z once Choreo is driving).
  *   X/Y:         CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD (stabilizer-internal
  *                P+I+D loop) — this file only ever commands an ABSOLUTE
  *                world-frame target, converted to the stabilizer's
@@ -104,7 +105,7 @@
  *   3. Power on all three within the sync window (a few seconds of slack).
  *   4. Each drone: gyro cal, waits for its own lighthouse fix (abort/idle
  *      if none within 30 s), 5 s countdown, arms, gentle altitude ramp to
- *      its ID-staggered cruise height, then joins the formation.
+ *      the default cruise height, then joins the formation.
  *   5. After MISSION_DURATION_S, every drone lands independently and
  *      disarms.  A drone whose battery goes critical, fix is lost, or
  *      strays past the geofence lands early on its own — this does not
@@ -147,14 +148,25 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
 
 /* ── Mission parameters ───────────────────────────────────────────────────── */
 
-/* Per-drone cruise altitude, staggered by element_id to reduce downwash
- * interaction.  Step compressed 0.25→0.20 m (cruises 0.30/0.50/0.70): at
- * 0.80 m the top drone received BS1's light only ~12.6° above its deck
+/* Default/idle altitude — the ramp target before Choreo has issued a
+ * directive at all (boot). Once FLIGHT_FLYING starts ticking Choreo, real
+ * altitude is Choreo-commanded (directive.target.z) instead — the
+ * automatic per-element stagger this constant used to carry (via
+ * ALT_STEP_PER_ID_M, now removed) is gone; vertical separation, if
+ * wanted, is something a script must express explicitly now (e.g.
+ * distinct z per track/element).
+ *
+ * IMPORTANT, THIS ROOM SPECIFICALLY: the stagger wasn't just downwash
+ * margin — it was tuned against a real lighthouse arrival-angle problem.
+ * At 0.80 m the top drone received BS1's light only ~12.6° above its deck
  * horizon and dropped to ok=0 in bursts (grazing incidence — BS1 is
- * mounted low and far in this room); 0.70 m buys back ~3° of arrival
- * angle and every recorded dropout instance was on the highest drone. */
+ * mounted low and far in this room); the validated 0.30–0.70 m band
+ * bought back enough arrival angle to fix every recorded dropout. Any
+ * script commanding z outside that band on THIS hardware risks
+ * reintroducing that dropout — this is now the script author's
+ * responsibility to respect, not something the platform enforces for
+ * you. */
 #define ALT_BASE_M           0.30f
-#define ALT_STEP_PER_ID_M    0.20f
 
 /* Gentle altitude ramp on takeoff (same convention as altitude-hold-tether:
  * ramp the closed-loop PID's TARGET, don't jump straight to cruise). */
@@ -406,11 +418,9 @@ int main(void)
     const element_id_t element_id = (element_id_t)CONFIG_TAPESTRY_ELEMENT_ID;
     const int n_total = CONFIG_TAPESTRY_ELEMENT_COUNT;
 #endif
-    const float cruise_alt_m = ALT_BASE_M + (float)element_id * ALT_STEP_PER_ID_M;
-
-    LOG_INF("CF21BL formation — element %u  n_total=%d  cruise_alt=%.2fm  "
+    LOG_INF("CF21BL formation — element %u  n_total=%d  default_alt=%.2fm  "
             "target_spacing=%.2fm",
-            (unsigned)element_id, n_total, (double)cruise_alt_m,
+            (unsigned)element_id, n_total, (double)ALT_BASE_M,
             (double)DEMO_TARGET_SPACING_M);
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
@@ -558,19 +568,27 @@ int main(void)
 
     flight_state_t state       = FLIGHT_RAMPING;
     float          alt_cmd_m   = ALT_RAMP_START_M;
+    /* Choreo-commanded altitude setpoint — starts at the pre-Choreo
+     * default (ALT_BASE_M) and is updated to directive.target.z inside
+     * FLIGHT_FLYING below, once choreo_tick() has produced a
+     * MOVE_TO_POINT directive. alt_cmd_m (above) is rate-limited toward
+     * this every tick (see the continuous ramp block below) rather than
+     * jumped to — the same gentle-approach property the takeoff ramp
+     * always gave, now applied to any Choreo-commanded altitude change,
+     * not just takeoff. */
+    float          z_setpoint_m = ALT_BASE_M;
     float          landing_alt_m = 0.0f;
     uint32_t       mission_t0_ms = k_uptime_get_32();
     uint32_t       fix_lost_since_ms = 0;
     uint32_t       land_settle_ms = 0;
-    /* z: the per-ID staggered CRUISE altitude (computed above as
-     * cruise_alt_m), not a live baro reading — cf21bl_stabilizer.c exposes
-     * no altitude accessor today. Real enough to be useful (this is where
-     * the drone is commanded to hold) without fabricating sensor precision
-     * that doesn't exist; only x/y are refreshed from the lighthouse fix
-     * below, so this value holds for the whole flight. A live reading
-     * during ramp/landing is a follow-up, not done here — see this
-     * README's "Known limitations". */
-    position_t     own_pos_m   = { 0.0f, 0.0f, cruise_alt_m };
+    /* z: NOT a live baro reading — cf21bl_stabilizer.c exposes no altitude
+     * accessor today. Tracks alt_cmd_m every tick (the commanded/ramping
+     * trajectory, see below) instead of a value frozen for the whole
+     * flight — real enough to be useful (this is where the drone is
+     * actually being commanded to go) without fabricating sensor
+     * precision that doesn't exist. A live reading is a follow-up, not
+     * done here — see this README's "Known limitations". */
+    position_t     own_pos_m   = { 0.0f, 0.0f, ALT_RAMP_START_M };
     bool           have_pos    = false;
     /* Land-in-place: latched at the moment a fix-valid landing (mission
      * end, geofence) begins.  The old behavior — holding X/Y at the boot
@@ -613,6 +631,24 @@ int main(void)
             target_init = true;
         }
 
+        /* Rate-limit alt_cmd_m toward z_setpoint_m every tick — not just
+         * during the initial takeoff ramp, so a Choreo-commanded altitude
+         * CHANGE mid-mission is approached gently too, the same safety
+         * property FLIGHT_RAMPING always gave takeoff. Excluded once
+         * FLIGHT_LANDING starts: that state runs its own separate
+         * ramp-down (landing_alt_m/LAND_RATE_MPS) and must not fight this
+         * one. */
+        if (state == FLIGHT_RAMPING || state == FLIGHT_FLYING) {
+            if (alt_cmd_m < z_setpoint_m) {
+                alt_cmd_m += ALT_RAMP_RATE_MPS * LOOP_DT_S;
+                if (alt_cmd_m > z_setpoint_m) { alt_cmd_m = z_setpoint_m; }
+            } else if (alt_cmd_m > z_setpoint_m) {
+                alt_cmd_m -= ALT_RAMP_RATE_MPS * LOOP_DT_S;
+                if (alt_cmd_m < z_setpoint_m) { alt_cmd_m = z_setpoint_m; }
+            }
+            own_pos_m.z = alt_cmd_m;
+        }
+
         if (have_pos) {
             own_state.position = own_pos_m;
         }
@@ -637,11 +673,12 @@ int main(void)
 
         switch (state) {
         case FLIGHT_RAMPING:
-            alt_cmd_m += ALT_RAMP_RATE_MPS * LOOP_DT_S;
-            if (alt_cmd_m >= cruise_alt_m) {
-                alt_cmd_m = cruise_alt_m;
+            /* alt_cmd_m is rate-limited toward z_setpoint_m above, every
+             * tick — this just waits for it to arrive before formation
+             * control engages. */
+            if (alt_cmd_m >= z_setpoint_m) {
                 state = FLIGHT_FLYING;
-                LOG_INF("id=%u Cruise altitude reached — formation control active",
+                LOG_INF("id=%u Default altitude reached — formation control active",
                         (unsigned)element_id);
             }
             sp.linear.z = alt_cmd_m - 1.0f;
@@ -672,18 +709,15 @@ int main(void)
             }
             fix_lost_since_ms = 0;
 
-            /* Deliberately horizontal-only (unlike formation.c's peer
-             * separation, which now folds in z per an explicit choice —
-             * see position_distance()'s comment in csm.h). own_pos_m.z is
-             * a FIXED per-ID constant (cruise_alt_m) for this drone's
-             * whole flight, not a varying peer proximity signal; folding
-             * a constant into a radius check just shrinks each drone's
-             * effective horizontal margin by a fixed, ID-dependent amount
-             * (sqrt(R^2 - z^2) if it were 3D) for no safety benefit, and
-             * z can be a meaningful fraction of GEOFENCE_RADIUS_M at this
-             * scale. Flagged for review rather than silently decided —
-             * this was not itself confirmed under "make it 3D now", only
-             * peer-separation/collision math was. */
+            /* Deliberately horizontal-only, re-examined (not left stale)
+             * now that own_pos_m.z is Choreo-commanded and genuinely
+             * varies rather than a fixed per-ID constant: kept as a
+             * radius, not a sphere, since this room has a flat floor and
+             * no modeled ceiling — a horizontal-only boundary is still
+             * the more natural safety envelope. (formation.c's peer
+             * separation folds in z per a separate, explicit choice —
+             * see position_distance()'s comment in csm.h — this geofence
+             * is a different check, against the room origin, not a peer.) */
             float origin_dist = sqrtf(own_pos_m.x * own_pos_m.x
                                        + own_pos_m.y * own_pos_m.y);
             if (origin_dist > GEOFENCE_RADIUS_M) {
@@ -893,6 +927,7 @@ int main(void)
                 min_dist_m = demo_choreo_track(&wm, &own_pos_m, &target,
                                                dir->target.x, dir->target.y,
                                                WM_CYCLE_MS, element_id);
+                z_setpoint_m = dir->target.z;
             }
             /* else: quorum LOST on a peer-referential goal (choreo
              * SUSPENDED) or directive HOLD (exchange awaiting its

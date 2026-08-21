@@ -283,13 +283,13 @@ def test_coordinate_free_goals_reject_coordinates(goal, param, tmp_path):
 
 
 @pytest.mark.parametrize("goal", ["form", "move", "converge"])
-def test_point_goals_need_a_two_number_target(goal, tmp_path):
+def test_point_goals_need_a_three_number_target(goal, tmp_path):
     extra = ", radius = 3" if goal == "form" else ""
-    s = parse_file(one_step(f'duration = "5s", target = [1.5, -2]{extra}',
+    s = parse_file(one_step(f'duration = "5s", target = [1.5, -2, 3.0]{extra}',
                             tmp_path, goal=goal))
-    assert s.steps[0].target == (1.5, -2.0)
-    for bad in ("[1]", "[1, 2, 3]", '"1,2"', "[1, true]"):
-        with pytest.raises(ScriptError, match=r"needs .*target = \[x, y\]"):
+    assert s.steps[0].target == (1.5, -2.0, 3.0)
+    for bad in ("[1]", "[1, 2]", "[1, 2, 3, 4]", '"1,2,3"', "[1, 2, true]"):
+        with pytest.raises(ScriptError, match=r"needs .*target = \[x, y, z\]"):
             parse_file(one_step(f'duration = "5s", target = {bad}{extra}',
                                 tmp_path, goal=goal))
 
@@ -299,7 +299,7 @@ def test_form_requires_a_radius(tmp_path):
     collective to one point with only platform deconfliction between
     airframes."""
     with pytest.raises(ScriptError, match="'form' needs a radius"):
-        parse_file(one_step('duration = "5s", target = [0, 0]', tmp_path,
+        parse_file(one_step('duration = "5s", target = [0, 0, 0]', tmp_path,
                             goal="form"))
 
 
@@ -310,7 +310,7 @@ def test_disperse_requires_a_radius(tmp_path):
 
 @pytest.mark.parametrize("shape", ["circle", "line", "grid"])
 def test_form_shapes_are_recognised(shape, tmp_path):
-    s = parse_file(one_step(f'duration = "5s", target = [0, 0], '
+    s = parse_file(one_step(f'duration = "5s", target = [0, 0, 0], '
                             f'radius = "2m", shape = "{shape}"', tmp_path,
                             goal="form"))
     assert s.steps[0].shape == shape
@@ -318,23 +318,23 @@ def test_form_shapes_are_recognised(shape, tmp_path):
 
 def test_an_unknown_shape_is_rejected(tmp_path):
     with pytest.raises(ScriptError, match="unknown shape"):
-        parse_file(one_step('duration = "5s", target = [0, 0], radius = 2, '
+        parse_file(one_step('duration = "5s", target = [0, 0, 0], radius = 2, '
                             'shape = "spiral"', tmp_path, goal="form"))
 
 
 # ── Frames + anchors (Choreo SDK Design doc §5, form/converge only) ────────
 
 def test_frame_defaults_to_absolute_and_needs_a_target(tmp_path):
-    s = parse_file(one_step('duration = "5s", target = [1, 2]', tmp_path,
+    s = parse_file(one_step('duration = "5s", target = [1, 2, 3]', tmp_path,
                             goal="converge"))
     assert s.steps[0].frame == "absolute"
-    assert s.steps[0].target == (1.0, 2.0)
+    assert s.steps[0].target == (1.0, 2.0, 3.0)
 
 
 def test_frame_collective_forbids_target(tmp_path):
     with pytest.raises(ScriptError, match="'target' has no effect"):
         parse_file(one_step('duration = "5s", frame = "collective", '
-                            'target = [1, 2]', tmp_path, goal="converge"))
+                            'target = [1, 2, 3]', tmp_path, goal="converge"))
 
 
 def test_frame_collective_needs_no_target(tmp_path):
@@ -428,14 +428,14 @@ def test_frame_and_anchor_convert_to_the_sdk_goal(tmp_path):
 
 def test_spin_on_form_sets_motion_and_rate(tmp_path):
     s = parse_file(one_step(
-        'duration = "60s", target = [0, 0], radius = 3, spin = "0.15rad/s"',
+        'duration = "60s", target = [0, 0, 0], radius = 3, spin = "0.15rad/s"',
         tmp_path, goal="form"))
     assert s.steps[0].motion == "spin"
     assert s.steps[0].spin_rate_radps == pytest.approx(0.15)
 
 
 def test_spin_defaults_to_static(tmp_path):
-    s = parse_file(one_step('duration = "5s", target = [0, 0], radius = 3',
+    s = parse_file(one_step('duration = "5s", target = [0, 0, 0], radius = 3',
                             tmp_path, goal="form"))
     assert s.steps[0].motion == "static"
     assert s.steps[0].spin_rate_radps is None
@@ -453,7 +453,7 @@ def test_spin_only_applies_to_form(goal, tmp_path):
 
 def test_spin_converts_to_the_sdk_goal(tmp_path):
     s = parse_file(one_step(
-        'duration = "60s", target = [0, 0], radius = 3, spin = "0.2rad/s"',
+        'duration = "60s", target = [0, 0, 0], radius = 3, spin = "0.2rad/s"',
         tmp_path, goal="form"))
     goal = to_choreo_steps(s)[0].goal
     assert goal.motion == BSEMotion.SPIN
@@ -502,7 +502,7 @@ def test_to_choreo_steps_carries_every_field_across(tmp_path):
         [[steps]]
         [steps.form]
         duration = "12s"
-        target   = [4, 5]
+        target   = [4, 5, 6]
         radius   = "2m"
         shape    = "grid"
         requires = ["locomotion"]
@@ -521,7 +521,7 @@ def test_to_choreo_steps_carries_every_field_across(tmp_path):
 
     form = steps[0]
     assert form.goal.type == GoalType.FORM
-    assert form.goal.target == (4.0, 5.0)
+    assert form.goal.target == (4.0, 5.0, 6.0)
     assert form.goal.radius == 2.0
     assert form.goal.shape == GoalShape.GRID
     assert form.goal.required_caps == ChoreoCapabilities.LOCOMOTION
@@ -718,7 +718,7 @@ def test_a_tracks_script_parses_filters_and_per_track_steps(tmp_path):
 
         [[tracks]]
         [[tracks.steps]]
-        converge = { target = [0, 0], duration = "60s" }
+        converge = { target = [0, 0, 0], duration = "60s" }
         """, tmp_path)
     s = parse_file(p)
     assert s.steps == []
@@ -735,7 +735,7 @@ def test_energy_low_filter_parses(tmp_path):
         [[tracks]]
         filter = { energy_low = true }
         [[tracks.steps]]
-        converge = { target = [0, 0], duration = "10s" }
+        converge = { target = [0, 0, 0], duration = "10s" }
 
         [[tracks]]
         [[tracks.steps]]
@@ -854,7 +854,7 @@ def test_to_choreo_tracks_converts_filters_and_steps(tmp_path):
 
         [[tracks]]
         [[tracks.steps]]
-        converge = { target = [1, 2], duration = "60s" }
+        converge = { target = [1, 2, 0], duration = "60s" }
         """, tmp_path)
     tracks = load_tracks(p)
     assert len(tracks) == 2
@@ -863,7 +863,7 @@ def test_to_choreo_tracks_converts_filters_and_steps(tmp_path):
     assert tracks[0].steps[0].goal.type == GoalType.HOLD
     assert tracks[1].filter.required_caps == 0
     assert tracks[1].steps[0].goal.type == GoalType.CONVERGE
-    assert tracks[1].steps[0].goal.target == (1.0, 2.0)
+    assert tracks[1].steps[0].goal.target == (1.0, 2.0, 0.0)
 
 
 def test_load_steps_rejects_a_tracks_script(tmp_path):
@@ -891,7 +891,7 @@ def test_a_tracks_script_is_submittable(tmp_path):
         [[tracks]]
         filter = { energy_low = true }
         [[tracks.steps]]
-        converge = { target = [0, 0], duration = "10s" }
+        converge = { target = [0, 0, 0], duration = "10s" }
 
         [[tracks]]
         [[tracks.steps]]

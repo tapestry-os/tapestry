@@ -235,7 +235,7 @@ def test_a_truncated_final_row_stops_the_replay_without_crashing(tmp_path):
     recording artifact, not a divergence."""
     text = FIXTURE.read_text().rstrip("\n").rsplit("\n", 1)[0]
     truncated = tmp_path / "truncated.csv"
-    truncated.write_text(text + "\n999,99.9,0,1.0,1.0,2,2,0,5,2,0,1,2,1.0,1.0,"
+    truncated.write_text(text + "\n999,99.9,0,1.0,1.0,0.0,2,2,0,5,2,0,1,2,1.0,1.0,0.0,"
                                 '"[{""id"":0,""x"":1.0\n')
     rc, records = choreo_sim.replay(SCRIPT_TOML, truncated, 1e-3, 5, False)
     assert rc == 0

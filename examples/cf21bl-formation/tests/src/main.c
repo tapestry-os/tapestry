@@ -1630,4 +1630,204 @@ ZTEST(choreo_script, test_track_ordinary_goal_drops_multitrack_mode)
                   "an ordinary goal submission must drop multi-track mode");
 }
 
+/* ── 3D positions/targets (space is 3D throughout, not an optional axis) ── */
+
+ZTEST(choreo_script, test_converge_to_a_real_3d_target_requires_all_3_axes)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .target = { 2.0f, 3.0f, 1.5f } };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.z, 1.5f, EPS, "directive carries the real z");
+
+    /* xy correct but z is 1.5 off -- must NOT be achieved. */
+    wm.entries[0].state.position.x = 2.0f;
+    wm.entries[0].state.position.y = 3.0f;
+    for (int i = 0; i < 40; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_false(choreo_goal_achieved(), "xy-only match must not achieve a 3D goal");
+
+    wm.entries[0].state.position.z = 1.5f;
+    for (int i = 0; i < 40; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_true(choreo_goal_achieved(), "real 3D match achieves");
+}
+
+ZTEST(choreo_script, test_hold_captures_a_real_3d_station)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 1.0f, 2.0f);
+    wm.entries[0].state.position.z = 0.7f;
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_HOLD };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.z, 0.7f, EPS,
+                   "HOLD captured the real z, not just x/y");
+}
+
+ZTEST(choreo_script, test_disperse_achievement_is_real_3d_distance)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 0.1f, 0.0f, false);
+    wm.entries[1].state.position.z = 5.0f;   /* mostly vertical separation */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_DISPERSE, .radius = 2.0f };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 40; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_true(choreo_goal_achieved(),
+                 "3D distance (mostly vertical) counts as spread");
+}
+
+ZTEST(choreo_script, test_disperse_close_in_3d_is_not_achieved)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 0.5f, 0.0f, false);
+    wm.entries[1].state.position.z = 0.5f;   /* 3D dist ~0.707m < 2.0 */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_DISPERSE, .radius = 2.0f };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 40; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_false(choreo_goal_achieved(), "close in 3D must not be spread");
+}
+
+ZTEST(choreo_script, test_exchange_never_touches_z_even_when_stations_differ)
+{
+    /* EXCHANGE reassigns x/y stations only -- z stays fixed at this
+     * element's OWN altitude for the whole maneuver, not the swap
+     * partner's, so vertical separation established elsewhere (e.g. a
+     * HOLD z-stagger) survives a horizontal crossing. */
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, -1.0f, 0.0f);
+    wm.entries[0].state.position.z = 0.5f;
+    wm_set_peer(1, 1.0f, 0.0f, false);
+    wm.entries[1].state.position.z = 1.5f;
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_EXCHANGE };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.z, 0.5f, EPS,
+                   "arc starts at own z");
+
+    for (int i = 0; i < 40; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_within(choreo_get_directive()->target.z, 0.5f, EPS,
+                   "mid-arc z is still own z -- never drifts toward the peer's");
+
+    for (int i = 0; i < 400; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_within(choreo_get_directive()->target.z, 0.5f, EPS,
+                   "arc completes still at own z, not the destination station's");
+}
+
+ZTEST(choreo_script, test_exchange_direct_path_staggered_altitude_skips_standoff)
+{
+    /* A peer at a genuinely different altitude is never "occupying" this
+     * element's real destination (dest x/y at OWN z) -- direct_path
+     * proceeds immediately, no step-skew standoff needed. This exercises
+     * EXCHANGE's own z math against an arbitrary already-separated wm
+     * snapshot; whether/how a real script establishes that separation is
+     * a separate question (see change-partners.choreo.toml's own comment
+     * for why it keeps the default arc rather than direct_path today). */
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, -1.0f, 0.0f);
+    wm.entries[0].state.position.z = 0.3f;
+    wm_set_peer(1, 1.0f, 0.0f, false);
+    wm.entries[1].state.position.z = 1.5f;   /* well outside OCCUPIED_M */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_EXCHANGE, .direct_path = true };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 1.0f, EPS, "beelines immediately, no standoff pullback");
+    zassert_within(d->target.z, 0.3f, EPS, "stays at own z");
+}
+
+ZTEST(choreo_script, test_form_shapes_stay_planar_at_the_frame_origins_z)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm.entries[1].state.position.z = 5.0f;
+    wm_set_peer(2, 10.0f, 10.0f, false);
+    wm.entries[2].state.position.z = 10.0f;
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_FORM, .shape = TAPESTRY_BSE_SHAPE_CIRCLE,
+                        .target = { 0.0f, 0.0f, 3.0f }, .radius = 2.0f };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.z, 3.0f, EPS,
+                   "FORM vertex shares the frame origin's real z");
+}
+
+ZTEST(choreo_script, test_move_preserves_the_real_z_offset)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm.entries[0].state.position.z = 1.0f;   /* self 1m above the centroid */
+    wm_set_peer(1, 0.0f, 0.0f, false);
+    wm.entries[1].state.position.z = -1.0f;
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_MOVE, .target = { 10.0f, 10.0f, 5.0f } };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    /* centroid z = 0, own offset = +1 -> commanded z = target.z(5) + 1 = 6 */
+    zassert_within(choreo_get_directive()->target.z, 6.0f, EPS,
+                   "MOVE preserves this element's real z offset");
+}
+
+ZTEST(choreo_script, test_frame_collective_centroid_averages_z_too)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 10.0f, 0.0f, false);
+    wm.entries[1].state.position.z = 4.0f;
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_COLLECTIVE };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 5.0f, EPS, "centroid x");
+    zassert_within(d->target.z, 2.0f, EPS, "collective centroid averages z too");
+}
+
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

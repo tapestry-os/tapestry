@@ -123,7 +123,8 @@ def emit_step(s: NormalizedStep) -> str:
     goal_fields = [f".type = {GOAL_ENUM[s.goal]}"]
     if s.target is not None:
         goal_fields.append(f".target = {{ {c_float(s.target[0])}, "
-                           f"{c_float(s.target[1])} }}")
+                           f"{c_float(s.target[1])}, "
+                           f"{c_float(s.target[2])} }}")
     if s.radius is not None:
         goal_fields.append(f".radius = {c_float(s.radius)}")
     if s.shape is not None:

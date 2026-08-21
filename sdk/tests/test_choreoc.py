@@ -79,9 +79,9 @@ def test_a_fully_specified_step_emits_every_field():
     c = choreoc.emit_step(NormalizedStep(
         goal="form", max_duration_ms=12000, advance_on_achieved=True, scope=1,
         slot_shift=2, direct_path=True, achieve_eps=0.25, achieve_hold_ms=3000,
-        target=(4.0, 5.0), radius=2.0, shape="grid", required_caps=0x01))
+        target=(4.0, 5.0, 6.0), radius=2.0, shape="grid", required_caps=0x01))
     for fragment in (".type = CHOREO_GOAL_FORM",
-                     ".target = { 4.0f, 5.0f }",
+                     ".target = { 4.0f, 5.0f, 6.0f }",
                      ".radius = 2.0f",
                      ".shape = TAPESTRY_BSE_SHAPE_GRID",
                      ".required_caps = CHOREO_CAP_LOCOMOTION",
@@ -99,7 +99,7 @@ def test_frame_absolute_default_is_left_implicit():
     """frame="absolute" is the zero/default value — must not be emitted,
     same reasoning as every other unset-means-default field."""
     c = choreoc.emit_step(NormalizedStep(goal="converge", max_duration_ms=1000,
-                                         target=(1.0, 2.0)))
+                                         target=(1.0, 2.0, 3.0)))
     assert ".frame" not in c
     assert ".anchor" not in c
 
@@ -115,14 +115,14 @@ def test_frame_and_anchor_are_emitted_as_c_enum_names():
 
 def test_motion_static_default_is_left_implicit():
     c = choreoc.emit_step(NormalizedStep(goal="form", max_duration_ms=1000,
-                                         target=(0.0, 0.0), radius=3.0))
+                                         target=(0.0, 0.0, 0.0), radius=3.0))
     assert ".motion" not in c
     assert ".spin_rate_radps" not in c
 
 
 def test_spin_motion_and_rate_are_emitted():
     c = choreoc.emit_step(NormalizedStep(
-        goal="form", max_duration_ms=60000, target=(0.0, 0.0), radius=3.0,
+        goal="form", max_duration_ms=60000, target=(0.0, 0.0, 0.0), radius=3.0,
         motion="spin", spin_rate_radps=0.15))
     assert ".motion = TAPESTRY_BSE_MOTION_SPIN" in c
     assert ".spin_rate_radps = 0.15f" in c
@@ -330,7 +330,7 @@ TRACKS = '''
     [[tracks]]
     filter = { energy_low = true }
     [[tracks.steps]]
-    converge = { target = [0, 0], duration = "60s" }
+    converge = { target = [0, 0, 0], duration = "60s" }
 
     [[tracks]]
     [[tracks.steps]]

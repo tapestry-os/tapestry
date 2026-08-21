@@ -157,7 +157,7 @@ typedef enum {
 
 typedef struct {
     choreo_goal_type_t    type;
-    tapestry_position_t   target;        /* MOVE / CONVERGE destination           */
+    position_t   target;        /* MOVE / CONVERGE destination           */
     float                 radius;        /* FORM radius; DISPERSE minimum spacing */
     tapestry_bse_shape_t  shape;         /* FORM shape (circle / line / grid)     */
     choreo_capabilities_t required_caps; /* capabilities this goal requires       */

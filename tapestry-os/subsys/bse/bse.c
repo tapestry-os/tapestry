@@ -4,6 +4,17 @@
  * See bse.h for the full interface contract and v1.0 feature scope (what's
  * open-core here vs. deliberately licensed-tier).
  *
+ * All positions are real 3D (x, y, z) throughout — see position_t (csm.h).
+ * Achievement and DISPERSE's spacing check are true 3D Euclidean distance.
+ * FORM's shapes (CIRCLE/LINE/GRID) and SPIN stay planar by definition of
+ * what those named patterns are, positioned at a real z; EXCHANGE reassigns
+ * x/y stations only — z is deliberately NOT exchanged, staying fixed at
+ * this element's own current altitude for the whole maneuver (see
+ * exchange_capture()'s comment for why: walking two elements through each
+ * other's altitude mid-swap would erode vertical separation exactly when
+ * horizontal separation is also smallest). None of this is optional or
+ * "z ignored if unset" — every goal always considers the real z it's given.
+ *
  * What this implements:
  *   - Intent parsing: reads the active intent type.
  *   - Task decomposition (FORM): maps the FORM goal to per-element vertex
@@ -28,9 +39,10 @@
  *   - For CONVERGE: emits MOVE_TO_POINT to intent.target for all elements
  *     (deliberately collapses the formation — this is the "gather" goal).
  *   - For DISPERSE: emits MAINTAIN_SPRING with intent.radius as spacing.
- *     Achievement predicate is nearest-fresh-trusted-peer distance >=
+ *     Achievement predicate is nearest-fresh-trusted-peer 3D distance >=
  *     spacing - achieve_eps, sustained for achieve_hold_ms; vacuously
- *     achieved with no peer visible.
+ *     achieved with no peer visible. Safety-relevant 3D spacing math, not
+ *     yet flight-validated — see the README caveat this mirrors.
  *   - For IDLE / unknown: emits IDLE.
  *
  * What this does NOT do:
@@ -89,12 +101,12 @@ typedef struct {
 
     /* HOLD: own station, captured at activation */
     bool                hold_captured;
-    tapestry_position_t hold_station;
+    position_t hold_station;
 
     /* EXCHANGE: frozen snapshot + arc progress */
     bool                ex_captured;
-    tapestry_position_t ex_dest;       /* destination station (snapshot) */
-    tapestry_position_t ex_centroid;   /* snapshot centroid              */
+    position_t ex_dest;       /* destination station (snapshot) */
+    position_t ex_centroid;   /* snapshot centroid              */
     float               ex_theta0;     /* own start angle about centroid */
     float               ex_dtheta;     /* total CCW angle to travel      */
     float               ex_r0;         /* own start radius               */
@@ -103,7 +115,7 @@ typedef struct {
 
     /* MOVE: own offset from the participant centroid, snapshot at activation */
     bool                move_captured;
-    tapestry_position_t move_offset;   /* own anchor - snapshot centroid */
+    position_t move_offset;   /* own anchor - snapshot centroid */
 
     /* FORM motion == SPIN: accumulated rotation since activation.  Pure
      * time integration — unaffected by frame/anchor motion, reset only on
@@ -126,7 +138,7 @@ static bse_activation_t s_act;
 
 /* Tick-scoped: recomputed by every bse_tick(), never carried across one. */
 static bool                s_goal_pt_valid;   /* goal point computed this tick */
-static tapestry_position_t s_goal_pt;
+static position_t s_goal_pt;
 static bool                s_anchor_lost;     /* frame==ELEMENT couldn't resolve
                                                 * this tick — see bse_anchor_lost() */
 
@@ -151,13 +163,12 @@ static int                   s_parked_depth;
 
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
-static bool own_position(const world_model_t *wm, tapestry_position_t *out)
+static bool own_position(const world_model_t *wm, position_t *out)
 {
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
         if (e->is_self) {
-            out->x = e->state.position.x;
-            out->y = e->state.position.y;
+            *out = e->state.position;
             return true;
         }
     }
@@ -185,7 +196,7 @@ static bool own_position(const world_model_t *wm, tapestry_position_t *out)
 static int collect_participants(const world_model_t *wm,
                                 const scr_state_t *scr,
                                 element_id_t ids[MAX_ELEMENTS],
-                                tapestry_position_t pos[MAX_ELEMENTS],
+                                position_t pos[MAX_ELEMENTS],
                                 int *own_rank)
 {
     int count = 0;
@@ -202,16 +213,15 @@ static int collect_participants(const world_model_t *wm,
         if (count >= MAX_ELEMENTS) {
             break;
         }
-        ids[count]   = e->is_self ? s_self_id : e->state.id;
-        pos[count].x = e->state.position.x;
-        pos[count].y = e->state.position.y;
+        ids[count] = e->is_self ? s_self_id : e->state.id;
+        pos[count] = e->state.position;
         count++;
     }
 
     /* Insertion sort by ID, positions carried along — MAX_ELEMENTS is small */
     for (int i = 1; i < count; i++) {
         element_id_t        kid = ids[i];
-        tapestry_position_t kp  = pos[i];
+        position_t kp  = pos[i];
         int j = i - 1;
         while (j >= 0 && ids[j] > kid) {
             ids[j + 1] = ids[j];
@@ -239,22 +249,20 @@ static int collect_participants(const world_model_t *wm,
 static bool lookup_anchor_position(const world_model_t *wm,
                                    const scr_state_t *scr,
                                    element_id_t id,
-                                   tapestry_position_t *out)
+                                   position_t *out)
 {
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
         if (e->is_self) {
             if (id == s_self_id) {
-                out->x = e->state.position.x;
-                out->y = e->state.position.y;
+                *out = e->state.position;
                 return true;
             }
             continue;
         }
         if (e->is_active && !e->is_stale && e->state.id == id &&
             scr_peer_is_trusted(scr, id)) {
-            out->x = e->state.position.x;
-            out->y = e->state.position.y;
+            *out = e->state.position;
             return true;
         }
     }
@@ -345,7 +353,7 @@ static bool resolve_anchor_selector(const world_model_t *wm,
  */
 static bool resolve_effective_target(const world_model_t *wm,
                                      const scr_state_t *scr,
-                                     tapestry_position_t *out)
+                                     position_t *out)
 {
     if (s_intent.frame == TAPESTRY_BSE_FRAME_ABSOLUTE) {
         *out = s_intent.target;
@@ -354,19 +362,21 @@ static bool resolve_effective_target(const world_model_t *wm,
 
     if (s_intent.frame == TAPESTRY_BSE_FRAME_COLLECTIVE) {
         element_id_t        ids[MAX_ELEMENTS];
-        tapestry_position_t pos[MAX_ELEMENTS];
+        position_t pos[MAX_ELEMENTS];
         int                 rank;
         int count = collect_participants(wm, scr, ids, pos, &rank);
         if (count == 0) {
             return false;
         }
-        float cx = 0.0f, cy = 0.0f;
+        float cx = 0.0f, cy = 0.0f, cz = 0.0f;
         for (int i = 0; i < count; i++) {
             cx += pos[i].x;
             cy += pos[i].y;
+            cz += pos[i].z;
         }
         out->x = cx / (float)count;
         out->y = cy / (float)count;
+        out->z = cz / (float)count;
         return true;
     }
 
@@ -425,7 +435,7 @@ static bool resolve_effective_target(const world_model_t *wm,
 static bool exchange_capture(const world_model_t *wm, const scr_state_t *scr)
 {
     element_id_t        ids[MAX_ELEMENTS];
-    tapestry_position_t pos[MAX_ELEMENTS];
+    position_t pos[MAX_ELEMENTS];
     int                 own_rank;
 
     int n = collect_participants(wm, scr, ids, pos, &own_rank);
@@ -436,19 +446,42 @@ static bool exchange_capture(const world_model_t *wm, const scr_state_t *scr)
     uint8_t shift = s_intent.slot_shift != 0u ? s_intent.slot_shift : 1u;
     int     dest  = (own_rank + (int)shift) % n;
 
-    float cx = 0.0f, cy = 0.0f;
+    /* Centroid's z averages same as x/y (kept for reference/logging), but
+     * the arc's ANGULAR decomposition below stays projected onto the XY
+     * plane — a "circle" swap is a planar concept; full spherical rotation
+     * is a separate design question, not attempted here.
+     *
+     * z is NOT part of what's exchanged: this element's own z stays
+     * exactly what it already is for the whole maneuver — EXCHANGE only
+     * ever reassigns x/y stations. This matters beyond "keep the math
+     * simple": if elements ARE separated in altitude some other way, that
+     * is a real safety margin during a horizontal crossing, especially
+     * with direct_path's beeline. Making z track the destination
+     * STATION's altitude would walk two elements
+     * through each other's altitude mid-swap, at the exact moment their
+     * horizontal separation is also smallest — eroding the margin exactly
+     * when it matters most. ex_dest.z is overwritten with this element's
+     * OWN z below (not pos[dest].z, the peer's) so every z-comparison
+     * against ex_dest (achievement, occupied-destination) is against
+     * where this element will actually end up, not where its swap
+     * partner currently is. */
+    float cx = 0.0f, cy = 0.0f, cz = 0.0f;
     for (int i = 0; i < n; i++) {
         cx += pos[i].x;
         cy += pos[i].y;
+        cz += pos[i].z;
     }
     cx /= (float)n;
     cy /= (float)n;
+    cz /= (float)n;
 
-    tapestry_position_t own = pos[own_rank];
+    position_t own = pos[own_rank];
 
     s_act.ex_centroid.x = cx;
     s_act.ex_centroid.y = cy;
+    s_act.ex_centroid.z = cz;
     s_act.ex_dest       = pos[dest];
+    s_act.ex_dest.z     = own.z;   /* z is not exchanged — see comment above */
     s_act.ex_theta0     = atan2f(own.y - cy, own.x - cx);
     s_act.ex_r0         = sqrtf((own.x - cx) * (own.x - cx)
                             + (own.y - cy) * (own.y - cy));
@@ -484,7 +517,7 @@ static bool exchange_capture(const world_model_t *wm, const scr_state_t *scr)
 }
 
 /* Advance the arc by one tick and return the commanded target. */
-static tapestry_position_t exchange_arc_target(void)
+static position_t exchange_arc_target(void)
 {
     s_act.ex_progress += TAPESTRY_BSE_EXCHANGE_OMEGA_RADPS
                      * ((float)WM_CYCLE_MS * 0.001f);
@@ -497,9 +530,10 @@ static tapestry_position_t exchange_arc_target(void)
     float theta = s_act.ex_theta0 + s_act.ex_progress;
     float r     = s_act.ex_r0 + (s_act.ex_r1 - s_act.ex_r0) * frac;
 
-    tapestry_position_t t;
+    position_t t;
     t.x = s_act.ex_centroid.x + r * cosf(theta);
     t.y = s_act.ex_centroid.y + r * sinf(theta);
+    t.z = s_act.ex_dest.z;   /* own z, held constant — see exchange_capture() */
     return t;
 }
 
@@ -616,7 +650,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
         /* Coordinate-free: the station is wherever the element is when the
          * goal activates.  Captured once, then actively station-kept. */
         if (!s_act.hold_captured) {
-            tapestry_position_t own;
+            position_t own;
             if (!own_position(wm, &own)) {
                 s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
                 break;
@@ -671,23 +705,27 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
                 }
                 float dx = e->state.position.x - s_act.ex_dest.x;
                 float dy = e->state.position.y - s_act.ex_dest.y;
-                if (sqrtf(dx * dx + dy * dy)
+                float dz = e->state.position.z - s_act.ex_dest.z;
+                if (sqrtf(dx * dx + dy * dy + dz * dz)
                         < TAPESTRY_BSE_EXCHANGE_OCCUPIED_M) {
                     occupied = true;
                     break;
                 }
             }
             if (occupied) {
-                tapestry_position_t own;
+                position_t own;
                 if (own_position(wm, &own)) {
                     float dx = own.x - s_act.ex_dest.x;
                     float dy = own.y - s_act.ex_dest.y;
-                    float d  = sqrtf(dx * dx + dy * dy);
+                    float dz = own.z - s_act.ex_dest.z;
+                    float d  = sqrtf(dx * dx + dy * dy + dz * dz);
                     if (d > 1e-3f) {
                         s_directive.target.x = s_act.ex_dest.x
                             + dx / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
                         s_directive.target.y = s_act.ex_dest.y
                             + dy / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
+                        s_directive.target.z = s_act.ex_dest.z
+                            + dz / d * TAPESTRY_BSE_EXCHANGE_STANDOFF_M;
                     }
                 }
                 s_goal_pt_valid = false;
@@ -724,7 +762,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * intent.target below; ABSOLUTE (default) makes eff_target ==
          * intent.target exactly, so this is a no-op for every existing
          * caller. */
-        tapestry_position_t eff_target;
+        position_t eff_target;
         if (!resolve_effective_target(wm, scr, &eff_target)) {
             s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
             break;
@@ -778,9 +816,10 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             oy = roy;
         }
 
-        tapestry_position_t tgt;
+        position_t tgt;
         tgt.x = eff_target.x + ox;
         tgt.y = eff_target.y + oy;
+        tgt.z = eff_target.z;   /* shapes are planar — z is the frame origin's */
 
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
         s_directive.target = tgt;
@@ -802,27 +841,31 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          */
         if (!s_act.move_captured) {
             element_id_t        ids[MAX_ELEMENTS];
-            tapestry_position_t pos[MAX_ELEMENTS];
+            position_t pos[MAX_ELEMENTS];
             int                 rank;
             int count = collect_participants(wm, scr, ids, pos, &rank);
             if (rank < 0 || count == 0) {
                 s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
                 break;
             }
-            float cx = 0.0f, cy = 0.0f;
+            float cx = 0.0f, cy = 0.0f, cz = 0.0f;
             for (int i = 0; i < count; i++) {
                 cx += pos[i].x;
                 cy += pos[i].y;
+                cz += pos[i].z;
             }
             cx /= (float)count;
             cy /= (float)count;
+            cz /= (float)count;
             s_act.move_offset.x = pos[rank].x - cx;
             s_act.move_offset.y = pos[rank].y - cy;
+            s_act.move_offset.z = pos[rank].z - cz;
             s_act.move_captured = true;
         }
         s_directive.type     = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
         s_directive.target.x = s_intent.target.x + s_act.move_offset.x;
         s_directive.target.y = s_intent.target.y + s_act.move_offset.y;
+        s_directive.target.z = s_intent.target.z + s_act.move_offset.z;
         s_goal_pt             = s_directive.target;
         s_goal_pt_valid       = true;
         break;
@@ -838,7 +881,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * the offset" (bse.h §6) is a no-op; script_toml.py rejects
          * motion = "spin" on converge rather than silently accept a goal
          * that visibly does nothing. */
-        tapestry_position_t eff_target;
+        position_t eff_target;
         if (!resolve_effective_target(wm, scr, &eff_target)) {
             s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
             break;
@@ -874,7 +917,11 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * disperse from), matching choreo_collective_achieved()'s solo
          * convention. Without this, bse_goal_achieved() was permanently
          * false for DISPERSE, and a script step with
-         * advance_on_achieved=true and no timeout would never advance. */
+         * advance_on_achieved=true and no timeout would never advance.
+         *
+         * Real 3D distance (mirrors formation.c's own position_distance()):
+         * this is safety-relevant spacing math, not yet flight-validated —
+         * see examples/cf21bl-formation/README.md's "Known limitations". */
         float    eps  = s_intent.achieve_eps > 0.0f
                         ? s_intent.achieve_eps
                         : TAPESTRY_BSE_ACHIEVE_EPS_DEFAULT;
@@ -882,7 +929,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
                         ? s_intent.achieve_hold_ms
                         : TAPESTRY_BSE_ACHIEVE_HOLD_MS_DEFAULT;
 
-        tapestry_position_t own;
+        position_t own;
         if (own_position(wm, &own)) {
             float min_dist  = -1.0f;
             for (int i = 0; i < MAX_ELEMENTS; i++) {
@@ -893,7 +940,8 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
                 }
                 float dx = e->state.position.x - own.x;
                 float dy = e->state.position.y - own.y;
-                float d  = sqrtf(dx * dx + dy * dy);
+                float dz = e->state.position.z - own.z;
+                float d  = sqrtf(dx * dx + dy * dy + dz * dz);
                 if (min_dist < 0.0f || d < min_dist) {
                     min_dist = d;
                 }
@@ -915,11 +963,12 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
                         ? s_intent.achieve_hold_ms
                         : TAPESTRY_BSE_ACHIEVE_HOLD_MS_DEFAULT;
 
-        tapestry_position_t own;
+        position_t own;
         if (own_position(wm, &own)) {
             float dx = own.x - s_goal_pt.x;
             float dy = own.y - s_goal_pt.y;
-            if (sqrtf(dx * dx + dy * dy) <= eps) {
+            float dz = own.z - s_goal_pt.z;
+            if (sqrtf(dx * dx + dy * dy + dz * dz) <= eps) {
                 s_act.achieve_accum_ms += WM_CYCLE_MS;
             } else {
                 s_act.achieve_accum_ms = 0;

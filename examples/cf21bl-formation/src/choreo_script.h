@@ -27,7 +27,6 @@ static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {
 
     { .goal = { .type = CHOREO_GOAL_EXCHANGE,
                 .required_caps = CHOREO_CAP_LOCOMOTION,
-                .direct_path = true,
                 .achieve_eps = 0.25f,
                 .achieve_hold_ms = 3000u },
       .max_duration_ms = 30000u,

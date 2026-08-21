@@ -66,9 +66,9 @@ hold = { duration = "8s", requires = ["locomotion"] }
 |---|---|---|
 | `hold` | the element's own current station (coordinate-free) | — |
 | `exchange` | participants' own stations, rotated (coordinate-free) | `shift` (ring rotation, default 1), `path` |
-| `form` | a point + shape (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y]` (or `frame`/`anchor`), `radius` (required — radius 0 would send every element to the same vertex), `shape`, `spin` (see [Motion](#motion)) |
-| `move` | an absolute point | `target = [x, y]` |
-| `converge` | a point (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y]` (or `frame`/`anchor`) |
+| `form` | a point + shape (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y, z]` (or `frame`/`anchor`), `radius` (required — radius 0 would send every element to the same vertex), `shape`, `spin` (see [Motion](#motion)) |
+| `move` | an absolute point | `target = [x, y, z]` |
+| `converge` | a point (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y, z]` (or `frame`/`anchor`) |
 | `disperse` | current positions, spread apart | `radius` (required — minimum spacing) |
 | `orbit` | a preset — see [Motion](#motion) | `around`, `radius`, `rate` |
 
@@ -79,24 +79,26 @@ same script fly regardless of where the elements actually start.
 
 `exchange` rotates stations by `shift` around the ID-sorted ring of fresh
 participants (frozen snapshots taken at step activation, never live-chasing
-a moving peer); `shift = 1` with two elements is a swap. `path = "arc"`
-(the default) travels an arc about the formation centroid, preserving XY
-separation by construction — use this on platforms with no vertical
-dimension. `path = "direct"` beelines straight to the destination — only
-safe if something else deconflicts the crossing (e.g. altitude staggering
-on an aerial platform); see
+a moving peer); `shift = 1` with two elements is a swap. **`exchange` never
+touches z** — an element's own altitude, however established, stays fixed
+for the whole maneuver; only x/y stations are reassigned. `path = "arc"`
+(the default) travels an arc about the formation centroid in the XY plane —
+its angular sweep keeps every element rotating the same direction,
+preserving mutual separation by construction, so it protects elements with
+no altitude separation at all. `path = "direct"` beelines straight to the
+destination. See
 `examples/cf21bl-formation/change-partners.choreo.toml` for a worked case.
 
 ## Frames and anchors
 
-`form` and `converge` normally take an absolute `target = [x, y]` — a
+`form` and `converge` normally take an absolute `target = [x, y, z]` — a
 world-frame coordinate. `frame` lets you say what that point is defined
 *relative to* instead, for platforms without absolute positioning, or
 scripts that shouldn't care where the collective happens to be:
 
 | `frame` | Target is... | Needs |
 |---|---|---|
-| `"absolute"` (default) | `target = [x, y]` literally — today's behavior | `target` |
+| `"absolute"` (default) | `target = [x, y, z]` literally | `target` |
 | `"collective"` | the live participant centroid | nothing — `target` is rejected |
 | `"element"` | a resolved anchor element's position | `anchor = { select = ... }` — `target` is rejected |
 
@@ -258,7 +260,7 @@ hold = { duration = "300s" }
 
 [[tracks]]                          # everyone else: catch-all (no filter)
 [[tracks.steps]]
-form = { target = [0, 0], radius = 5, duration = "300s" }
+form = { target = [0, 0, 3], radius = 5, duration = "300s" }
 ```
 
 A file gives either `[[steps]]` or `[[tracks]]`, never both. Each track's

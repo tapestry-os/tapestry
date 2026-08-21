@@ -159,8 +159,8 @@ To watch the console without the GUI (what was used to validate this example):
   --stdout --stderr worlds/change_partners.wbt
 ```
 
-All drones should: ramp to their ID-staggered cruise altitude, hold station for 10 s,
-rotate one seat around the ring via a direct beeline to the next station, bow for 8 s,
+All drones should: ramp to the default cruise altitude, hold station for 10 s,
+rotate one seat around the ring via the arc-path swap to the next station, bow for 8 s,
 then land in place and go idle — identical console markers to the hardware version
 (`choreo "change-partners" loaded`, `choreo step 0/1/2`, `choreo complete — resting`),
 confirming L4-L7 behavior is unchanged from real flight. Watch the periodic 1 Hz status
