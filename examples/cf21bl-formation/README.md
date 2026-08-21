@@ -41,7 +41,6 @@ hold = { duration = "10s", requires = ["locomotion"] }
 [steps.exchange]
 until    = "achieved"
 timeout  = "30s"
-path     = "direct"    # beeline — safe here: deconfliction is vertical
 eps      = "25cm"
 settle   = "3s"
 requires = ["locomotion"]
@@ -50,11 +49,15 @@ requires = ["locomotion"]
 hold = { duration = "8s", requires = ["locomotion"] }   # bow
 ```
 
-`path = "direct"` beelines each drone straight to its destination (~4 s
-for a 1 m swap at the tracker speed limit) — safe on this platform
-because the ID-staggered altitudes deconflict the crossing.  Omit it (or
-`path = "arc"`) to get the default centroid-arc maneuver, which preserves
-XY separation for platforms with no vertical dimension (ground robots).
+The `exchange` step keeps the default `path = "arc"` (a centroid arc,
+~21 s for a 1 m swap) rather than the faster `path = "direct"` beeline
+(~4 s): the drones aren't separated in altitude at all — Choreo/BSE
+positions are real 3D now, but nothing on this platform stages a
+per-element altitude, and `formation.c`'s repulsion pushes horizontally
+only (see "Known limitations" below) — so the arc's own separation-
+preserving geometry is the only thing keeping them apart during the
+swap. Switching back to `direct` for speed needs a real deconfliction
+margin first; deferred to a future pass.
 
 The firmware consumes a committed generated header
 (`src/choreo_script.h`, same pattern as `examples/lighthouse_cal.h`).
@@ -78,10 +81,9 @@ What the steps mean:
 1. `hold` (10 s) — each drone station-keeps at its own position.
 2. `exchange` — swap places: each drone takes its partner's station.
    Stations are frozen snapshots of peer positions at step activation
-   (from the L4 world model — nothing is prescribed); with `path =
-   "direct"` the commanded target beelines straight to the destination
-   (~4 s for a 1 m swap), safe here because altitude staggering
-   deconflicts the crossing vertically.  Advances on the **collective**
+   (from the L4 world model — nothing is prescribed); the default arc
+   path preserves separation by construction throughout the maneuver
+   (~21 s for a 1 m swap).  Advances on the **collective**
    achievement predicate (`scope = "all"` — within `eps` of the
    destination for `settle`, 25 cm / 3 s by default, AND its gossiped peer
    reports the same), with a 30 s timeout as the robustness net — if
@@ -95,10 +97,13 @@ What the steps mean:
 The script never says "take off", "land", or any altitude: script
 completion → directive IDLE → **quiescence**, which this platform maps to
 landing in place and disarming.  Takeoff is the same mapping in reverse —
-a parked drone holding a MOVE directive activates.  Altitude staggering
-(0.30/0.50/... m by negotiated ID) is a platform deconfliction rule the
-Choreo never sees, and it is also what makes the swap trivially safe in
-the vertical dimension.
+a parked drone holding a MOVE directive activates.  Altitude is
+Choreo-commanded (`directive.target.z`, ramped gently by `main.c`) rather
+than a platform-hardcoded per-drone constant, but this script doesn't
+command any particular altitude — every drone just ramps to the same
+`ALT_BASE_M` default and stays there; see "Known limitations" below for
+why that makes the vertical dimension something this script does not
+lean on for safety.
 
 Safety layers are unchanged from the showcase (see "Safety layer" below);
 the mission-duration backstop in choreo mode is derived from the script
@@ -156,9 +161,9 @@ minutes after a console-less boot still tells the whole story.
    that heard nobody claims id=0 and will fly a solo script — if
    `n_total` is wrong, power-cycle both and retry.
 3. Each drone waits for its lighthouse fix, counts down 5 s, arms, ramps
-   to its ID-staggered altitude, and the script runs: 10 s of station
-   hold, ~4 s direct-path swap, 8 s bow, then both land in place — each on
-   its partner's original mark — and disarm.
+   to the default altitude, and the script runs: 10 s of station hold,
+   ~21 s arc-path swap, 8 s bow, then both land in place — each on its
+   partner's original mark — and disarm.
 
 This build carries a real L5 SCR (`scr_init()`/`scr_tick()` — quorum,
 role, task slot, and the abort protocol, computed from the actual world
@@ -209,9 +214,9 @@ west build -p always -b native_sim tapestry/examples/cf21bl-formation/tests
 4. Each drone converts that absolute target into its own home-relative,
    normalized setpoint via `cf21bl_stabilizer_get_pos_home()` and commands
    it through `substrate_move()`.
-5. Altitude is fixed per drone (staggered by `element_id` — see below) and
-   held closed-loop by `CONFIG_CF21BL_ALTITUDE_HOLD` (baro), independent of
-   the lighthouse.
+5. Altitude tracks a rate-limited setpoint — `ALT_BASE_M` by default, or
+   `directive.target.z` once Choreo is driving (see below) — held closed-loop
+   by `CONFIG_CF21BL_ALTITUDE_HOLD` (baro), independent of the lighthouse.
 6. A per-drone safety layer (see `main.c`'s `flight_state_t` machine) lands
    a drone independently on fix loss, geofence breach, or mission timeout —
    see "Safety layer" below. Battery-critical landing is handled inside
@@ -335,7 +340,7 @@ losing quorum is heard about as fast as the radio allows — watch flight logs f
 3. Power on all three within the sync window (a few seconds of slack).
 4. Each drone independently: gyro cal, waits for its own lighthouse fix
    (aborts to sleep if none within 30 s), 5 s countdown, arms, ramps
-   gently to its ID-staggered cruise altitude, then joins the formation.
+   gently to the default altitude, then joins the formation.
 5. After `MISSION_DURATION_S` (60 s default), every drone lands and
    disarms independently.
 
@@ -367,11 +372,12 @@ Run in order; do not advance until the current stage passes.
    off) — confirm both drones' world models show each other fresh, no
    transport drops, no USART6 coexistence issues (console + PM + syslink
    P2P all active).
-2. **2 drones hovering, staggered heights, no coordination check** — fly
-   both independently (e.g. `altitude-hold-tether` or this example with
-   `DEMO_TARGET_SPACING_M` set very large so the spring field is
-   effectively inactive) to confirm two lighthouse-tracked drones don't
-   occlude each other's base-station line of sight badly enough to cause
+2. **2 drones hovering at different heights, no coordination check** — fly
+   both independently at manually-staggered altitudes (e.g.
+   `altitude-hold-tether`; this example no longer staggers altitude on its
+   own, so plain `DEMO_TARGET_SPACING_M`-only separation won't give you
+   distinct heights) to confirm two lighthouse-tracked drones don't occlude
+   each other's base-station line of sight badly enough to cause
    simultaneous fix loss.
 3. **2 drones, this example, static formation hold** — full spring field
    with `CONFIG_TAPESTRY_ELEMENT_COUNT=2`.
@@ -397,37 +403,32 @@ parameters). Override at build time with `-- -D<CONSTANT>=<value>`.
 | `DEMO_MIN_SEP_M` | 0.5 | Hard-floor separation — extra repulsion below this |
 | `GEOFENCE_RADIUS_M` (main.c) | 2.0 | Distance from lighthouse origin before individual landing |
 | `MISSION_DURATION_S` (main.c) | 60 | Per-drone flight duration before landing |
-| `ALT_BASE_M` / `ALT_STEP_PER_ID_M` (main.c) | 0.30 / 0.20 | Per-ID cruise altitude stagger |
+| `ALT_BASE_M` (main.c) | 0.30 | Pre-Choreo/idle altitude default — real altitude is Choreo-commanded (`directive.target.z`) once flying; see "Known limitations" |
 
 ## Known limitations
 
 - No wireless "land now" command — mission duration is the only
   coordinated stop; a real abort still means power-cycling or physically
   intervening (same as every single-drone example in this project).
-- **3D separation math is unvalidated in flight.** `formation.c`'s peer
-  distance (spring field, `DEMO_MIN_SEP_M`/`EMERGENCY_K` emergency
-  repulsion) now folds altitude (z) into the distance metric, not just
-  x/y — an explicit, requested change from the previous flight-tested 2D
-  behavior, not an incidental one. Because altitude is staggered per
-  element ID (`ALT_BASE_M`/`ALT_STEP_PER_ID_M`) specifically so horizontal
-  proximity is what matters for downwash/visual clearance, this
-  measurably weakens the emergency-repulsion trigger for drones that are
-  horizontally close but at their normal staggered altitudes — the fixed
-  altitude gap inflates the 3D distance past the threshold. Needs a real
-  flight-test pass (start in `examples/webots-formation`) before trusting
-  it in a multi-drone flight; nothing in this repo has validated it yet.
-  `GEOFENCE_RADIUS_M`'s origin-distance check was deliberately left
-  horizontal-only (see the comment at its call site in `main.c`) rather
-  than folded into the same change.
+- **3D target-tracking math is unvalidated in flight, and there is no
+  vertical deconfliction of any kind anymore — deliberately.** Choreo/BSE's
+  goal-tracking math (`tapestry-os/subsys/bse/bse.c`) is now full 3D:
+  `formation.c`'s peer-distance check folds
+  in z, but its repulsion *force* stays horizontal-only by explicit,
+  separate design
 - **No attitude-estimate accessor.** `own_state.orientation` gossips
   `orientation_identity()` (no rotation) rather than a real IMU-derived
   estimate — `cf21bl_stabilizer.c` runs a complementary filter internally
   for its own angle-mode control but exposes no accessor for the result.
   Wiring one up is a real follow-up, not done here. `own_state.position.z`
-  gossips the per-ID staggered *cruise altitude* (a constant), not a live
-  baro reading — same reason. Compare `examples/webots-formation`, which
-  gossips genuine ground-truth 6DoF pose (GPS + InertialUnit) since Webots
-  exposes both directly. If an attitude-estimate accessor is added later,
+  now tracks the real Choreo-commanded altitude setpoint (`alt_cmd_m`,
+  rate-limited toward `directive.target.z`) each tick rather than a
+  fixed per-ID constant, but it is still not a live baro/ToF reading —
+  cf21bl_stabilizer.c exposes no altitude sensor accessor, so this is
+  "where the drone is being commanded to be," not "where it measurably
+  is." Compare `examples/webots-formation`, which gossips genuine
+  ground-truth 6DoF pose (GPS + InertialUnit) since Webots exposes both
+  directly. If an attitude-estimate accessor is added later,
   its zero-reference must be calibrated to the shared lighthouse world
   frame (see `tapestry/tapestry-os/include/tapestry/csm.h`'s
   `orientation_t` comment for the full convention) — not reported as raw

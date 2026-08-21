@@ -93,10 +93,11 @@ class TickRecord:
     wall_time_s:       float
     x:                 float
     y:                 float
+    z:                 float
     script_step:       int
     achieved:          bool
     directive_type:    int
-    directive_target:  Tuple[float, float]
+    directive_target:  Tuple[float, float, float]
 
 
 # ── --replay mode ────────────────────────────────────────────────────────────
@@ -201,13 +202,18 @@ def replay(script_path: Path, telemetry_path: Path,
         n_ticks += 1
 
         recorded_dir_type = int(row["directive_type"])
+        # .get(..., 0.0): a recording made before choreo_telemetry.c wrote
+        # pos_z/directive_target_z (purely additive columns) simply has no
+        # z data — default to 0.0 rather than fail the whole replay.
         recorded_dir_target = (float(row["directive_target_x"]),
-                               float(row["directive_target_y"]))
+                               float(row["directive_target_y"]),
+                               float(row.get("directive_target_z", 0.0)))
         replayed_dir = choreo.get_directive()
 
         records.append(TickRecord(
             tick=int(row["tick"]), wall_time_s=float(row["wall_time_s"]),
             x=float(row["pos_x"]), y=float(row["pos_y"]),
+            z=float(row.get("pos_z", 0.0)),
             script_step=choreo.script_step(), achieved=choreo.goal_achieved(),
             directive_type=int(replayed_dir.type),
             directive_target=tuple(replayed_dir.target),
@@ -231,7 +237,8 @@ def replay(script_path: Path, telemetry_path: Path,
 
         dx = abs(recorded_dir_target[0] - replayed_dir.target[0])
         dy = abs(recorded_dir_target[1] - replayed_dir.target[1])
-        if dx > eps_tol or dy > eps_tol:
+        dz = abs(recorded_dir_target[2] - replayed_dir.target[2])
+        if dx > eps_tol or dy > eps_tol or dz > eps_tol:
             mismatches.append(("directive_target", recorded_dir_target,
                               tuple(replayed_dir.target)))
 
@@ -267,18 +274,19 @@ DEFAULT_SPEED_MPS = 2.0   # capped integrator speed — a generic mid-size
                           # aerial/ground platform figure, not a physics fit
 
 
-def _initial_layout(n: int) -> Dict[int, Tuple[float, float]]:
-    """Spread N synthetic elements on a small circle around the origin so
-    they don't all start co-located (which would degenerate e.g. FORM's
-    vertex assignment into a simultaneous-departure burst). Purely a
-    starting posture for the toy integrator — not meaningful physics."""
+def _initial_layout(n: int) -> Dict[int, Tuple[float, float, float]]:
+    """Spread N synthetic elements on a small circle around the origin
+    (all at z=0) so they don't all start co-located (which would degenerate
+    e.g. FORM's vertex assignment into a simultaneous-departure burst).
+    Purely a starting posture for the toy integrator — not meaningful
+    physics."""
     import math
     if n == 1:
-        return {0: (0.0, 0.0)}
+        return {0: (0.0, 0.0, 0.0)}
     radius = max(2.0, n * 0.5)
     return {
         i: (radius * math.cos(2 * math.pi * i / n),
-            radius * math.sin(2 * math.pi * i / n))
+            radius * math.sin(2 * math.pi * i / n), 0.0)
         for i in range(n)
     }
 
@@ -327,6 +335,7 @@ def simulate(script_path: Path, n_elements: int, speed_mps: float,
         # sees the same world regardless of dict iteration order.
         snapshot = [
             {"id": i, "x": positions[i][0], "y": positions[i][1],
+             "z": positions[i][2],
              "is_active": True, "is_stale": False, "achieved": achieved[i]}
             for i in ids
         ]
@@ -340,30 +349,31 @@ def simulate(script_path: Path, n_elements: int, speed_mps: float,
 
             records[i].append(TickRecord(
                 tick=tick, wall_time_s=wall_time_s,
-                x=positions[i][0], y=positions[i][1],
+                x=positions[i][0], y=positions[i][1], z=positions[i][2],
                 script_step=ch.script_step(), achieved=ch.goal_achieved(),
                 directive_type=int(directive.type),
                 directive_target=tuple(directive.target),
             ))
 
-            x, y = positions[i]
+            x, y, z = positions[i]
             if directive.type == BSEDirectiveType.MOVE_TO_POINT:
-                tx, ty = directive.target
-                dx, dy = tx - x, ty - y
-                dist = (dx * dx + dy * dy) ** 0.5
+                tx, ty, tz = directive.target
+                dx, dy, dz = tx - x, ty - y, tz - z
+                dist = (dx * dx + dy * dy + dz * dz) ** 0.5
                 if dist > max_step_m:
                     x += dx / dist * max_step_m
                     y += dy / dist * max_step_m
+                    z += dz / dist * max_step_m
                 else:
-                    x, y = tx, ty
+                    x, y, z = tx, ty, tz
             # HOLD / MAINTAIN_SPRING / IDLE: no single-point target this
             # toy integrator can move toward — repulsion/spring physics is
             # explicitly out of scope (Webots' job), so the element holds.
-            new_positions[i] = (x, y)
+            new_positions[i] = (x, y, z)
             new_achieved[i] = ch.goal_achieved()
 
             if verbose:
-                print(f"tick {tick} elem {i}: pos=({x:.2f},{y:.2f}) "
+                print(f"tick {tick} elem {i}: pos=({x:.2f},{y:.2f},{z:.2f}) "
                       f"step={ch.script_step()} "
                       f"dir={directive.type.name}{tuple(directive.target)} "
                       f"achieved={ch.goal_achieved()}")
@@ -388,10 +398,11 @@ COLORS = ['#2196F3', '#FF5722', '#4CAF50', '#9C27B0', '#FFC107', '#009688',
 def plot_records(records_by_element: Dict[int, List[TickRecord]],
                  title: str, out: Optional[str]) -> None:
     """Multi-panel figure in the tapestry-csm-sim/tapestry-scr-sim plot.py
-    house style: an XY trajectory panel plus stacked script-step and
-    achievement timelines sharing a time axis. Imports matplotlib lazily —
-    this is the ONLY code path in this file (or choreoc.py) allowed to
-    depend on it."""
+    house style: an XY trajectory panel (a projection — z is in TickRecord
+    but not separately plotted here; not requested, not attempted) plus
+    stacked script-step and achievement timelines sharing a time axis.
+    Imports matplotlib lazily — this is the ONLY code path in this file (or
+    choreoc.py) allowed to depend on it."""
     import matplotlib.pyplot as plt
 
     fig = plt.figure(figsize=(10, 11))

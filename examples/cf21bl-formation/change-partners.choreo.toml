@@ -7,8 +7,12 @@
 # The script is deliberately coordinate-free: hold references each drone's
 # own current station, exchange references its partner's.  There is no
 # "take off", no "land", and no altitude anywhere below — script completion
-# means quiescence, which this platform maps to landing in place; altitude
-# staggering is a platform deconfliction rule the Choreo never sees.
+# means quiescence, which this platform maps to landing in place.  Altitude
+# is Choreo-commanded now (main.c reads directive.target.z), but nothing
+# in this script stages a per-element altitude, and elements are not
+# separated in z at all — that is why the exchange step below keeps the
+# default arc rather than the faster "direct" path (see that step's
+# comment).
 
 choreo = "change-partners"
 
@@ -17,10 +21,17 @@ choreo = "change-partners"
 hold = { duration = "10s", requires = ["locomotion"] }
 
 # Swap places: each drone takes its partner's station (stations are frozen
-# snapshots at step start).  path="direct" beelines straight over — safe on
-# this platform because deconfliction is VERTICAL (ID-staggered altitudes),
-# and much faster than the default centroid arc (~4 s vs ~21 s for a 1 m
-# swap).  Keep the default arc on platforms with no vertical dimension.
+# snapshots at step start).  Default arc path (not "direct"): its angular
+# sweep keeps every element rotating the same direction about the
+# formation centroid, preserving mutual separation by construction for
+# the whole maneuver — the only thing here actually keeping the drones
+# apart, since nothing stages a distinct altitude per drone and
+# formation.c's repulsion force is horizontal-only (real 3D peer
+# *distance* feeds it, but the push it computes never has a z component).
+# "direct" (a straight beeline, ~4 s vs ~21 s for a 1 m swap) would need a
+# real deconfliction margin — e.g. a staged per-element altitude — to be
+# safe, which this v1.0 script deliberately keeps simple by not doing;
+# left for a future speed-optimization pass.
 # Advances once BOTH drones have settled within eps of their own
 # destination for the settle time (scope="all" — the achieved-bit is
 # gossiped and aggregated, see choreo_collective_achieved()); the timeout
@@ -33,7 +44,6 @@ hold = { duration = "10s", requires = ["locomotion"] }
 until    = "achieved"
 scope    = "all"
 timeout  = "30s"
-path     = "direct"
 eps      = "25cm"
 settle   = "3s"
 requires = ["locomotion"]

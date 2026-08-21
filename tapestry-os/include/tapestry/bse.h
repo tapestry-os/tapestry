@@ -44,7 +44,9 @@
  * Units: positions are dimensionless floats — meters on the cf21bl
  * lighthouse frame, abstract [0,100] units on the simulated world.  The
  * achievement defaults below are meter-scale; abstract-world applications
- * should set achieve_eps explicitly on each intent.
+ * should set achieve_eps explicitly on each intent.  Positions are full 3D
+ * (x, y, z) — z is a real, always-considered coordinate, not an optional
+ * or platform-managed extra; see position_t (csm.h).
  */
 
 #ifndef TAPESTRY_BSE_H
@@ -52,13 +54,6 @@
 
 #include <tapestry/csm.h>
 #include <tapestry/scr.h>
-
-/* ── Position ─────────────────────────────────────────────────────────────── */
-/* tapestry_position_t is an internal CSM type; BSE and SDK use this instead. */
-typedef struct {
-    float x;
-    float y;
-} tapestry_position_t;
 
 /* ── Intent: L7 → L6 ─────────────────────────────────────────────────────── */
 /*
@@ -221,7 +216,7 @@ typedef enum {
 
 typedef struct {
     tapestry_bse_intent_type_t type;
-    tapestry_position_t        target;   /* MOVE / CONVERGE destination    */
+    position_t        target;   /* MOVE / CONVERGE destination    */
     float                      radius;   /* FORM: circumradius (CIRCLE) or
                                            * half-span/cell-spacing (LINE/
                                            * GRID); DISPERSE min dist       */
@@ -243,12 +238,18 @@ typedef struct {
      * so a zero-initialized intent still swaps. */
     uint8_t                    slot_shift;
 
-    /* EXCHANGE: beeline straight to the destination station instead of the
-     * centroid arc.  For platforms whose deconfliction is VERTICAL
-     * (ID-staggered altitudes — cf21bl) the direct path is safe and far
-     * faster (~1 m at the tracker's speed limit vs ~21 s of arc).  The arc
-     * stays the default because it preserves XY separation on platforms
-     * with no vertical dimension (ground robots). */
+    /* EXCHANGE never touches z — this element's own altitude stays fixed
+     * for the whole maneuver, whichever path is used (see
+     * exchange_capture()'s comment in bse.c for why: only x/y stations are
+     * exchanged). direct_path beelines straight (in x/y) to the
+     * destination station instead of the centroid arc — far faster (~1 m
+     * at the tracker's speed limit vs ~21 s of arc) but ONLY safe when
+     * elements are already separated some other way (e.g. distinct
+     * altitudes, however established) — nothing here establishes that
+     * separation for you. The arc stays the default because it preserves
+     * mutual separation by construction in x/y — its angular sweep keeps
+     * every element rotating the same direction about the centroid — so
+     * it protects elements with no altitude separation at all. */
     bool                       direct_path;
 
     /* Achievement predicate parameters (0 → the defaults above).
@@ -295,7 +296,7 @@ typedef enum {
 
 typedef struct {
     tapestry_bse_directive_type_t type;
-    tapestry_position_t           target;    /* MOVE_TO_POINT destination  */
+    position_t           target;    /* MOVE_TO_POINT destination  */
     float                         spring_k;  /* MAINTAIN_SPRING stiffness  */
     float                         spacing;   /* MAINTAIN_SPRING target dist */
 } tapestry_bse_directive_t;

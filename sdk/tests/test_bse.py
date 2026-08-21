@@ -62,7 +62,7 @@ def test_unknown_intent_falls_back_to_idle():
 def test_form_circle_places_each_rank_on_its_ngon_vertex():
     entries = wm([(0, 0)] * 4, self_id=0)
     for rank in range(4):
-        b = run(rank, BSEIntent(type=BSEIntentType.FORM, target=(10.0, 20.0),
+        b = run(rank, BSEIntent(type=BSEIntentType.FORM, target=(10.0, 20.0, 0.0),
                                 radius=5.0, shape=BSEShape.CIRCLE),
                 wm([(0, 0)] * 4, self_id=rank))
         angle = 2.0 * math.pi * rank / 4
@@ -73,7 +73,7 @@ def test_form_circle_places_each_rank_on_its_ngon_vertex():
 
 def test_form_line_spreads_ranks_evenly_across_the_diameter():
     """N ranks on [target.x - radius, target.x + radius], y untouched."""
-    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 7.0),
+    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 7.0, 0.0),
                                 radius=3.0, shape=BSEShape.LINE),
                    wm([(0, 0)] * 4, self_id=r)).get_directive().target
                for r in range(4)]
@@ -84,28 +84,29 @@ def test_form_line_spreads_ranks_evenly_across_the_diameter():
 def test_form_line_of_one_stays_on_the_target():
     """n == 1 would divide by zero in the even-spacing step; the guard
     leaves x on the target instead."""
-    b = run(0, BSEIntent(type=BSEIntentType.FORM, target=(4.0, 9.0),
+    b = run(0, BSEIntent(type=BSEIntentType.FORM, target=(4.0, 9.0, 0.0),
                          radius=3.0, shape=BSEShape.LINE), solo())
     approx_xy(b.get_directive().target, (4.0, 9.0))
 
 
 def test_form_grid_is_a_centered_near_square():
-    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0),
+    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0, 0.0),
                                 radius=2.0, shape=BSEShape.GRID),
                    wm([(0, 0)] * 4, self_id=r)).get_directive().target
                for r in range(4)]
-    assert targets == [(-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0), (1.0, 1.0)]
+    assert targets == [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0),
+                       (-1.0, 1.0, 0.0), (1.0, 1.0, 0.0)]
 
 
 def test_form_grid_handles_a_non_square_count():
     """N=5 → 3 cols x 2 rows; radius is the cell spacing, not a radius."""
-    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0),
+    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0, 0.0),
                                 radius=1.0, shape=BSEShape.GRID),
                    wm([(0, 0)] * 5, self_id=r)).get_directive().target
                for r in range(5)]
-    assert targets[0] == (-1.0, -0.5)
-    assert targets[2] == (1.0, -0.5)
-    assert targets[3] == (-1.0, 0.5)
+    assert targets[0] == (-1.0, -0.5, 0.0)
+    assert targets[2] == (1.0, -0.5, 0.0)
+    assert targets[3] == (-1.0, 0.5, 0.0)
 
 
 def test_form_ranks_by_sorted_element_id_not_world_model_order():
@@ -121,16 +122,16 @@ def test_form_ranks_by_sorted_element_id_not_world_model_order():
 def test_form_excludes_stale_and_inactive_peers_from_the_ring():
     """A stale peer must not hold a vertex — three bodies, one stale, is a
     two-element formation."""
-    b = run(0, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0),
+    b = run(0, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0, 0.0),
                          radius=1.0), wm([(0, 0)] * 3, self_id=0, stale=[2]))
-    two_up = run(0, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0),
+    two_up = run(0, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0, 0.0),
                               radius=1.0), wm([(0, 0)] * 2, self_id=0))
     assert b.get_directive().target == two_up.get_directive().target
 
 
 def test_form_includes_self_even_when_absent_from_the_world_model():
     """A solo element still gets vertex 0 of a 1-gon."""
-    b = run(7, BSEIntent(type=BSEIntentType.FORM, target=(1.0, 2.0),
+    b = run(7, BSEIntent(type=BSEIntentType.FORM, target=(1.0, 2.0, 0.0),
                          radius=4.0), [])
     approx_xy(b.get_directive().target, (5.0, 2.0))
 
@@ -141,7 +142,7 @@ def test_move_translates_the_formation_rigidly():
     """Offset from the participant centroid, captured once, added to the
     target every tick — the shape survives the translation."""
     entries = wm([(-1, 0), (1, 0)], self_id=0)
-    b = run(0, BSEIntent(type=BSEIntentType.MOVE, target=(10.0, 10.0)), entries)
+    b = run(0, BSEIntent(type=BSEIntentType.MOVE, target=(10.0, 10.0, 0.0)), entries)
     approx_xy(b.get_directive().target, (9.0, 10.0))
 
 
@@ -149,7 +150,7 @@ def test_move_offset_is_frozen_at_activation():
     """Re-deriving the offset each tick would let the formation drift with
     its own motion; the snapshot is what makes MOVE rigid."""
     b = BSE(0)
-    b.submit_intent(BSEIntent(type=BSEIntentType.MOVE, target=(10.0, 10.0)))
+    b.submit_intent(BSEIntent(type=BSEIntentType.MOVE, target=(10.0, 10.0, 0.0)))
     b.tick(wm([(-1, 0), (1, 0)], self_id=0), HEALTHY)
     first = b.get_directive().target
     b.tick(wm([(5, 5), (6, 6)], self_id=0), HEALTHY)
@@ -158,21 +159,21 @@ def test_move_offset_is_frozen_at_activation():
 
 def test_solo_move_degenerates_to_converge():
     """Zero offset from a one-element centroid — documented in bse.py."""
-    b = run(0, BSEIntent(type=BSEIntentType.MOVE, target=(10.0, 10.0)),
+    b = run(0, BSEIntent(type=BSEIntentType.MOVE, target=(10.0, 10.0, 0.0)),
             solo(3.0, 4.0))
     approx_xy(b.get_directive().target, (10.0, 10.0))
 
 
 def test_move_holds_when_self_is_not_a_participant():
-    b = run(5, BSEIntent(type=BSEIntentType.MOVE, target=(1.0, 1.0)), [])
+    b = run(5, BSEIntent(type=BSEIntentType.MOVE, target=(1.0, 1.0, 0.0)), [])
     assert b.get_directive().type == BSEDirectiveType.HOLD
 
 
 def test_converge_sends_every_element_to_the_same_point():
     for rank in range(3):
-        b = run(rank, BSEIntent(type=BSEIntentType.CONVERGE, target=(2.0, 3.0)),
+        b = run(rank, BSEIntent(type=BSEIntentType.CONVERGE, target=(2.0, 3.0, 0.0)),
                 wm([(0, 0), (5, 5), (9, 9)], self_id=rank))
-        assert b.get_directive().target == (2.0, 3.0)
+        assert b.get_directive().target == (2.0, 3.0, 0.0)
 
 
 # ── Frames + anchors (Choreo SDK Design doc §5, FORM/CONVERGE only) ────────
@@ -180,7 +181,7 @@ def test_converge_sends_every_element_to_the_same_point():
 def test_frame_absolute_is_unchanged_default():
     """frame left at BSEFrame.ABSOLUTE (the default) must behave exactly
     like every intent submitted before this feature existed."""
-    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, target=(7.0, 3.0)),
+    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, target=(7.0, 3.0, 0.0)),
             solo())
     d = b.get_directive()
     assert d.type == BSEDirectiveType.MOVE_TO_POINT
@@ -282,7 +283,7 @@ def test_motion_spin_rotates_the_form_vertex():
     b = BSE(0)
     entries = solo(5.0, 0.0)
     b.submit_intent(BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.CIRCLE,
-                              radius=5.0, target=(0.0, 0.0),
+                              radius=5.0, target=(0.0, 0.0, 0.0),
                               motion=BSEMotion.SPIN, spin_rate_radps=0.5))
     b.tick(entries, HEALTHY)   # t=0.1s
     theta = 0.5 * 0.1
@@ -297,7 +298,7 @@ def test_motion_spin_rotates_the_form_vertex():
 
 
 def test_motion_spin_ignored_by_converge():
-    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, target=(4.0, 4.0),
+    b = run(0, BSEIntent(type=BSEIntentType.CONVERGE, target=(4.0, 4.0, 0.0),
                          motion=BSEMotion.SPIN, spin_rate_radps=1.0),
             solo(), ticks=50)
     approx_xy(b.get_directive().target, (4.0, 4.0))
@@ -346,11 +347,11 @@ def test_hold_captures_the_station_once_and_keeps_it():
     b.submit_intent(BSEIntent(type=BSEIntentType.HOLD))
     b.tick([{"id": 3, "x": 4.0, "y": 5.0, "is_active": True,
              "is_stale": False, "is_self": True}], HEALTHY)
-    assert b.get_directive().target == (4.0, 5.0)
+    assert b.get_directive().target == (4.0, 5.0, 0.0)
     # Drift must not move the station — that is the whole point of HOLD.
     b.tick([{"id": 3, "x": 9.0, "y": 9.0, "is_active": True,
              "is_stale": False, "is_self": True}], HEALTHY)
-    assert b.get_directive().target == (4.0, 5.0)
+    assert b.get_directive().target == (4.0, 5.0, 0.0)
 
 
 def test_hold_is_trivially_achieved():
@@ -369,7 +370,7 @@ def test_hold_without_a_known_own_position_defers_the_capture():
     assert b.get_directive().type == BSEDirectiveType.HOLD
     assert b.goal_achieved() is False
     b.tick(solo(2.0, 2.0, element_id=3), HEALTHY)
-    assert b.get_directive().target == (2.0, 2.0)
+    assert b.get_directive().target == (2.0, 2.0, 0.0)
 
 
 # ── EXCHANGE ─────────────────────────────────────────────────────────────────
@@ -402,12 +403,12 @@ def test_exchange_destination_is_the_next_station_on_the_id_ring():
     b = BSE(0)
     b.submit_intent(BSEIntent(type=BSEIntentType.EXCHANGE))
     b.tick(wm([(0, 0), (1, 0), (2, 0)], self_id=0), HEALTHY)
-    assert b._ex["dest"] == (1.0, 0.0)
+    assert b._ex["dest"] == (1.0, 0.0, 0.0)
 
     b2 = BSE(0)
     b2.submit_intent(BSEIntent(type=BSEIntentType.EXCHANGE, slot_shift=2))
     b2.tick(wm([(0, 0), (1, 0), (2, 0)], self_id=0), HEALTHY)
-    assert b2._ex["dest"] == (2.0, 0.0)
+    assert b2._ex["dest"] == (2.0, 0.0, 0.0)
 
 
 def test_exchange_stations_are_a_frozen_snapshot():
@@ -432,7 +433,7 @@ def test_exchange_arc_travels_ccw_and_lands_exactly_on_the_station():
     # the raw arc is visible.
     clear = wm([(-1, 0), (40, 40)], self_id=0)
     b.tick(clear, HEALTHY)
-    x, y = b.get_directive().target
+    x, y, _z = b.get_directive().target
     assert y < 0.0 and x < 0.0             # increasing angle from theta0 = pi
 
     ticks = 1
@@ -451,7 +452,7 @@ def test_exchange_direct_path_skips_the_arc_entirely():
     b.submit_intent(BSEIntent(type=BSEIntentType.EXCHANGE, direct_path=True))
     b.tick(wm(PAIR, self_id=0), HEALTHY)
     b.tick(wm([(-1, 0), (40, 40)], self_id=0), HEALTHY)
-    assert b.get_directive().target == (1.0, 0.0)
+    assert b.get_directive().target == (1.0, 0.0, 0.0)
 
 
 def test_exchange_holds_off_an_occupied_destination():
@@ -470,8 +471,8 @@ def test_exchange_releases_the_standoff_once_the_station_clears():
     b.tick(wm(PAIR, self_id=0), HEALTHY)
     vacated = wm([(-1, 0), (1.0 + EXCHANGE_OCCUPIED_M * 2, 0)], self_id=0)
     b.tick(vacated, HEALTHY)
-    assert b.get_directive().target == (1.0, 0.0)
-    assert b._goal_pt == (1.0, 0.0)
+    assert b.get_directive().target == (1.0, 0.0, 0.0)
+    assert b._goal_pt == (1.0, 0.0, 0.0)
 
 
 def test_exchange_defers_achievement_until_the_arc_completes():
@@ -485,13 +486,13 @@ def test_exchange_defers_achievement_until_the_arc_completes():
     assert b._goal_pt is None
     while b._ex["progress"] < b._ex["dtheta"]:
         b.tick(clear, HEALTHY)
-    assert b._goal_pt == (1.0, 0.0)
+    assert b._goal_pt == (1.0, 0.0, 0.0)
 
 
 # ── Achievement predicate ────────────────────────────────────────────────────
 
 def test_achievement_requires_the_hold_time_to_accumulate():
-    intent = BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0),
+    intent = BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0, 0.0),
                        achieve_eps=1.0, achieve_hold_ms=300)
     b = BSE(0)
     b.submit_intent(intent)
@@ -505,7 +506,7 @@ def test_achievement_requires_the_hold_time_to_accumulate():
 
 def test_leaving_the_epsilon_ball_resets_the_accumulator():
     b = BSE(0)
-    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0),
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0, 0.0),
                               achieve_eps=1.0, achieve_hold_ms=200))
     for _ in range(5):
         b.tick(solo(0.1, 0.0), HEALTHY)
@@ -516,7 +517,7 @@ def test_leaving_the_epsilon_ball_resets_the_accumulator():
 
 def test_zero_valued_achievement_parameters_use_the_defaults():
     b = BSE(0)
-    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0)))
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0, 0.0)))
     inside = solo(ACHIEVE_EPS_DEFAULT * 0.9, 0.0)
     for _ in range(ACHIEVE_HOLD_MS_DEFAULT // WM_CYCLE_MS - 1):
         b.tick(inside, HEALTHY)
@@ -529,7 +530,7 @@ def test_achievement_is_unchanged_while_own_position_is_unknown():
     """No self entry means no evidence either way — hold the last verdict
     rather than fabricating one."""
     b = BSE(0)
-    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0),
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0, 0.0),
                               achieve_eps=1.0, achieve_hold_ms=100))
     b.tick(solo(0.0, 0.0), HEALTHY)
     assert b.goal_achieved() is True
@@ -545,7 +546,7 @@ def test_submitting_a_new_intent_resets_goal_state():
     b.submit_intent(BSEIntent(type=BSEIntentType.HOLD))
     b.tick(solo(4.0, 4.0), HEALTHY)
     assert b.goal_achieved() is True
-    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0)))
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, target=(0.0, 0.0, 0.0)))
     assert b.goal_achieved() is False
     assert b._hold_station is None and b._ex is None and b._move_offset is None
 
@@ -584,7 +585,7 @@ def test_set_track_scope_also_filters_form_rank_and_count():
     b = BSE(0)
     b.set_track_scope(0)
     b.submit_intent(BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.LINE,
-                              target=(0.0, 0.0), radius=1.0))
+                              target=(0.0, 0.0, 0.0), radius=1.0))
     b.tick(entries, HEALTHY)
     # N=2 (self + peer 1 only), self is the lower id -> rank 0 -> x = -radius
     approx_xy(b.get_directive().target, (-1.0, 0.0))
@@ -596,3 +597,43 @@ def test_a_track_scope_no_peer_currently_matches_still_includes_self():
     b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE, frame=BSEFrame.COLLECTIVE))
     b.tick(solo(2.0, 2.0), HEALTHY)
     approx_xy(b.get_directive().target, (2.0, 2.0))
+
+
+# ── EXCHANGE never touches z ─────────────────────────────────────────────────
+
+def test_exchange_arc_never_drifts_toward_the_peers_altitude():
+    """EXCHANGE reassigns x/y stations only -- z stays fixed at this
+    element's own altitude for the whole maneuver (bse.py's
+    _exchange_capture() comment: whatever vertical separation elements
+    have must survive a horizontal crossing, not get walked away)."""
+    b = BSE(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.EXCHANGE))
+    b.tick(wm([(-1.0, 0.0, 0.5), (1.0, 0.0, 1.5)], self_id=0), HEALTHY)
+    assert b.get_directive().target[2] == pytest.approx(0.5)
+    for _ in range(40):
+        b.tick(wm([(-1.0, 0.0, 0.5), (1.0, 0.0, 1.5)], self_id=0), HEALTHY)
+        assert b.get_directive().target[2] == pytest.approx(0.5)
+
+
+def test_exchange_direct_path_staggered_altitude_skips_the_standoff():
+    """A peer at a genuinely different altitude never occupies this
+    element's real destination (dest x/y at OWN z) -- direct_path
+    proceeds immediately."""
+    b = BSE(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.EXCHANGE, direct_path=True))
+    b.tick(wm([(-1.0, 0.0, 0.3), (1.0, 0.0, 1.5)], self_id=0), HEALTHY)
+    d = b.get_directive()
+    assert d.target[0] == pytest.approx(1.0)
+    assert d.target[2] == pytest.approx(0.3)
+
+
+def test_exchange_direct_path_same_altitude_still_gets_a_standoff():
+    """Without staggering, the swap partner really is at this element's
+    destination -- the OCCUPIED_M/STANDOFF_M step-skew defense still
+    applies exactly as it did before positions were 3D."""
+    b = BSE(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.EXCHANGE, direct_path=True))
+    b.tick(wm([(-1.0, 0.0, 1.0), (1.0, 0.0, 1.0)], self_id=0), HEALTHY)
+    d = b.get_directive()
+    assert d.target[2] == pytest.approx(1.0)
+    assert -1.0 < d.target[0] < 1.0

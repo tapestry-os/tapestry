@@ -44,15 +44,16 @@
 #include "choreo_script.h"
 #include "choreo_telemetry.h"
 
-/* Per-drone cruise altitude, staggered by element_id — same rationale as
- * cf21bl-formation (reduces downwash interaction), widened a bit beyond
- * hardware's 0.20 m stagger since Webots physics doesn't need the tighter
- * hardware battery/downwash tradeoff that set that value. Real margin, but
- * NOT what fixed the earlier slow-swap issue — see the "Known limitations"
- * section of ../../README.md, and the note in
- * examples/cf21bl-formation/change-partners.choreo.toml itself. */
+/* Default/idle altitude — the ramp target before Choreo has issued a
+ * directive at all (boot). Once FLIGHT_FLYING starts ticking Choreo, real
+ * altitude is Choreo-commanded (directive.target.z) instead: the automatic
+ * per-element stagger this constant used to carry is gone — vertical
+ * separation, if wanted, is now something a script expresses explicitly
+ * (e.g. distinct z per track/element), and the physical safety net for
+ * elements sharing an altitude is formation.c's existing repulsion/
+ * emergency-spring math (still not itself flight-validated in 3D — see
+ * the "Known limitations" section of ../../README.md). */
 #define ALT_BASE_M        0.30f
-#define ALT_STEP_PER_ID_M 0.40f
 
 #define LAND_TOUCHDOWN_M  0.05f
 
@@ -167,7 +168,13 @@ int main(int argc, char **argv)
     demo_setpoint_t target      = {0};
     bool            target_init = false;
 
-    const float cruise_alt_m = ALT_BASE_M + (float)element_id * ALT_STEP_PER_ID_M;
+    /* Choreo-commanded altitude setpoint — starts at the pre-Choreo
+     * default and is updated to directive.target.z below, once
+     * choreo_tick() has produced a MOVE_TO_POINT directive (see the
+     * FLIGHT_FLYING case). Rate-limited to it the same way x/y target
+     * tracking is rate-limited (TRACK_KP / the proportional law below),
+     * not jumped to. */
+    float z_setpoint_m = ALT_BASE_M;
 
     flight_state_t state           = FLIGHT_RAMPING;
     uint32_t        gossip_accum_ms = DEMO_GOSSIP_MS;
@@ -218,7 +225,7 @@ int main(int argc, char **argv)
 
         switch (state) {
         case FLIGHT_RAMPING:
-            if (pz < cruise_alt_m - 0.02f) {
+            if (pz < z_setpoint_m - 0.02f) {
                 sp.linear.z = 1.0f;
             } else {
                 state = FLIGHT_FLYING;
@@ -232,14 +239,15 @@ int main(int argc, char **argv)
              * is a climb-RATE command (see substrate_webots.h), so cruise
              * altitude is held by commanding a rate proportional to the
              * error, not a one-shot absolute setpoint. */
-            sp.linear.z = clampf((cruise_alt_m - pz) * 2.0f, -1.0f, 1.0f);
+            sp.linear.z = clampf((z_setpoint_m - pz) * 2.0f, -1.0f, 1.0f);
 
-            /* Deliberately horizontal-only — same rationale as
-             * cf21bl-formation's main.c, which carries the full comment:
-             * folding a near-cruise altitude into a radius check shrinks
-             * the effective horizontal margin for no safety benefit, and
-             * this was not itself confirmed under "make it 3D now", only
-             * peer-separation/collision math was. */
+            /* Deliberately horizontal-only, re-examined (not left stale)
+             * now that z is Choreo-commanded and genuinely varies rather
+             * than a fixed per-ID constant: kept as a radius, not a
+             * sphere, since this room has a flat floor and no modeled
+             * ceiling — a horizontal-only boundary is still the more
+             * natural safety envelope. Same rationale as
+             * cf21bl-formation's main.c, which carries the full comment. */
             float origin_dist = sqrtf(own_pos_m.x * own_pos_m.x
                                        + own_pos_m.y * own_pos_m.y);
             if (origin_dist > GEOFENCE_RADIUS_M) {
@@ -334,6 +342,7 @@ int main(int argc, char **argv)
             if (dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
                 last_dir_tx = dir->target.x;
                 last_dir_ty = dir->target.y;
+                z_setpoint_m = dir->target.z;
             }
             if ((quorum_up || self_referential) &&
                 dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
