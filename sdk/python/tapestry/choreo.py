@@ -151,10 +151,9 @@ class Goal:
     spin_rate_radps: float = 0.0                    # motion==SPIN only
     id:              int = 0     # caller-assigned goal identity; 0 = anonymous.
                                  # Opaque to Tapestry — never generated or
-                                 # interpreted here. Mirrors choreo_goal_t::id;
-                                 # see choreo.h for why it exists (goal identity
-                                 # for queueing/preemption, reserved additively
-                                 # so no signature has to change later).
+                                 # interpreted here. Mirrors choreo_goal_t::id.
+                                 # Used by parked_goal_id() to name which goal
+                                 # preempt_goal() displaced.
 
 
 @dataclass
@@ -242,6 +241,10 @@ class Choreo:
     # COUNT_*) — mirrors CHOREO_MEMBERSHIP_HOLD_MS (choreo.c).
     MEMBERSHIP_HOLD_MS = 2000
 
+    # Preemption stack depth (preempt_goal()) — mirrors
+    # CHOREO_MAX_PREEMPT_DEPTH (choreo.c).
+    MAX_PREEMPT_DEPTH = 1
+
     def __init__(self, element_id: int, capabilities: Optional[int] = None):
         self._bse          = BSE(element_id)
         self._goal: Optional[Goal] = None
@@ -271,6 +274,11 @@ class Choreo:
         # re-evaluations from tick() go through this candidate/hold-timer.
         self._track_candidate_idx: Optional[int] = None
         self._track_candidate_ms = 0
+        # Preemption stack: (goal, steps, step_idx, step_ms) tuples, mirrors
+        # choreo_parked_goal_t (choreo.c). n_steps/script_active aren't
+        # needed separately — len(steps) and "steps is not None" cover them,
+        # same encoding _steps already uses outside preemption.
+        self._parked: List[tuple] = []
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -282,13 +290,13 @@ class Choreo:
         Returns 0 on success.
         Returns -1 if the state is not IDLE, or if goal is None / GoalType.NONE.
         Returns -errno.EPERM if the element's capabilities do not satisfy
-        goal.required_caps.
+        goal.required_caps (a derived floor — see _derived_caps()).
         """
         if goal is None or goal.type == GoalType.NONE:
             return -1
         if self._state != ChoreoState.IDLE:
             return -1
-        if not self._caps_satisfied(goal.required_caps):
+        if not self._caps_satisfied(self._derived_caps(goal)):
             return -_errno.EPERM
         self._goal  = goal
         self._state = ChoreoState.CONFIGURED
@@ -307,40 +315,123 @@ class Choreo:
         self._state = ChoreoState.RUNNING
         return 0
 
-    def terminate(self) -> None:
+    def _terminate_hard(self) -> None:
         """
-        Abort the current goal or script and return to IDLE.
+        Unconditional full reset — drops any parked goal too.
 
-        Valid from any state.  Submits an IDLE intent to the BSE (the
-        quiescence signal) and clears the stored goal and any active script.
-        script_complete() is unaffected — it keeps reporting whether the
-        most recent script ran to completion.
+        Used for the pre-submit reset in submit_goal()/submit_script()/
+        submit_tracks(): an ordinary new submission always fully replaces
+        everything, whether or not a preemption happens to be active,
+        exactly as before preempt_goal() existed. terminate() (below) is
+        the pop-aware public path. Mirrors terminate_hard() (choreo.c).
         """
         self._state = ChoreoState.TERMINATED
         self._steps    = None
         self._step_idx = 0
         self._step_ms  = 0
+        self._parked.clear()
         self._count_locked = None   # a fresh submission starts fresh
         self._tracks   = None       # drop multi-track mode entirely
         self._n_tracks = 0
         self._bse.set_track_scope(0)   # bse's filter must not stay stuck nonzero
-        self._bse.submit_intent(BSEIntent())   # IDLE intent
+        self._bse.submit_intent(BSEIntent())   # IDLE intent; also drops BSE's parked stack
         self._goal  = None
         self._state = ChoreoState.IDLE
+
+    def terminate(self) -> None:
+        """
+        Abort the current goal or script.
+
+        If preempt_goal() has a goal parked, this RESUMES it instead of
+        going to IDLE: the parked goal (and, if it was a script, its exact
+        step/timer position) becomes active again exactly as it was at the
+        moment it was preempted, and this returns to RUNNING — repeated
+        calls unwind one preemption level at a time. With nothing parked
+        (the only case before preempt_goal() existed, and the common case
+        today), behavior is unchanged: submits an IDLE intent to the BSE
+        (the quiescence signal), clears any active script, and settles in
+        IDLE. script_complete() is unaffected either way — it keeps
+        reporting whether the most recent script ran to completion.
+        Mirrors choreo_terminate() (choreo.c).
+        """
+        if self._parked:
+            self._goal, self._steps, self._step_idx, self._step_ms = \
+                self._parked.pop()
+            self._bse.resume_intent()
+            self._state = ChoreoState.RUNNING
+            return
+        self._terminate_hard()
+
+    def preempt_goal(self, goal: Goal) -> int:
+        """
+        Run `goal` immediately, preserving the currently active goal (or
+        script, including its exact step/timer position) to resume
+        automatically later — via terminate()/cancel_goal() once `goal` is
+        done, or naturally when the current step's/track's advance calls
+        terminate() on natural completion.
+
+        Unlike submit_goal(), this does NOT discard what was running: it
+        is the mechanism side of a goal queue with preemption (v1.0 scope:
+        one level deep — a second preempt_goal() call while one is already
+        parked returns -errno.EBUSY).
+
+        Requires an active goal (RUNNING or SUSPENDED) to preempt — returns
+        -1 from IDLE/CONFIGURED/TERMINATED, since there is nothing to
+        preserve.
+
+        Mirrors choreo_preempt_goal() (choreo.c). Returns 0 on success, -1
+        if goal is None, GoalType.NONE, or nothing is active to preempt;
+        -errno.EBUSY if something is already parked; -errno.EPERM on
+        capability mismatch.
+        """
+        if goal is None or goal.type == GoalType.NONE:
+            return -1
+        if self._state not in (ChoreoState.RUNNING, ChoreoState.SUSPENDED):
+            return -1   # nothing active to preempt
+        if len(self._parked) >= self.MAX_PREEMPT_DEPTH:
+            return -_errno.EBUSY
+        if not self._caps_satisfied(self._derived_caps(goal)):
+            return -_errno.EPERM
+
+        rc = self._bse.preempt_intent(self._goal_to_intent(goal))
+        if rc != 0:
+            return rc   # BSE-side stack full — nothing was pushed here yet
+
+        self._parked.append((self._goal, self._steps, self._step_idx,
+                             self._step_ms))
+        self._goal  = goal
+        self._steps = None   # a preempting goal is a single goal, not a script
+        self._state = ChoreoState.RUNNING
+        return 0
+
+    def is_preempted(self) -> bool:
+        """True if preempt_goal() has a goal parked that terminate()/
+        cancel_goal() would resume. Mirrors choreo_is_preempted()."""
+        return len(self._parked) > 0
+
+    def parked_goal_id(self) -> int:
+        """The Goal.id of the parked goal (see that field's doc for why it
+        exists: naming which goal to resume, and reporting which goal
+        preempted which). 0 if nothing is parked, or if the parked goal
+        never set an id. Mirrors choreo_parked_goal_id()."""
+        return self._parked[-1][0].id if self._parked else 0
 
     def submit_goal(self, goal: Goal) -> int:
         """
         One-shot convenience: configure + deploy.
 
-        Calls terminate() first if a goal is already active, then calls
-        configure(goal) followed by deploy().
+        Unconditionally fully resets state first if anything is active —
+        including discarding any goal parked by preempt_goal(), unlike
+        terminate() — then calls configure(goal) followed by deploy(). An
+        ordinary new submission always replaces everything; use
+        preempt_goal() when the previous goal should survive.
         Returns 0 on success, -1 on invalid goal, -errno.EPERM on
         capability mismatch.
         """
         if goal is None:
             return -1
         if self._state != ChoreoState.IDLE:
-            self.terminate()
+            self._terminate_hard()
         self._script_done = False
         rc = self.configure(goal)
         if rc != 0:
@@ -365,7 +456,7 @@ class Choreo:
                 # until=achieved alone is not a sufficient exit, only a
                 # valid early-advance on top of a real duration bound.
                 return -1
-            if not self._caps_satisfied(st.goal.required_caps):
+            if not self._caps_satisfied(self._derived_caps(st.goal)):
                 return -_errno.EPERM
             if len(st.on) > CHOREO_MAX_TRANSITIONS:
                 return -1
@@ -392,7 +483,7 @@ class Choreo:
             return rc0
 
         if self._state != ChoreoState.IDLE:
-            self.terminate()
+            self._terminate_hard()
         self._script_done = False
 
         rc = self.configure(steps[0].goal)
@@ -430,7 +521,9 @@ class Choreo:
         return self._collective_achieved(wm_entries)
 
     def cancel_goal(self) -> None:
-        """Cancel the current goal and return to IDLE."""
+        """Cancel the current goal. Thin wrapper around terminate() — see
+        that function for the "resumes a parked goal instead of going to
+        IDLE, if one exists" behavior."""
         self.terminate()
 
     def goal_status(self) -> ChoreoState:
@@ -539,7 +632,7 @@ class Choreo:
                 return rc0
 
         if self._state != ChoreoState.IDLE:
-            self.terminate()
+            self._terminate_hard()
         self._script_done = False
 
         self._tracks             = list(tracks)
@@ -750,6 +843,23 @@ class Choreo:
         if required & ChoreoCapabilities.BONDING:
             return False
         return True
+
+    @staticmethod
+    def _derived_caps(goal: Goal) -> int:
+        """
+        Choreo SDK Design doc §11: capability requirements are a derived
+        floor, not solely the author's explicit required_caps — an axis
+        value that demands a capability requires it whether or not the
+        author declared it.  Mirrors derived_caps() in choreo.c: only
+        motion == SPIN -> LOCOMOTION is derived today (safe to enforce —
+        it maps to the existing _SCR_CAP_ACTUATOR bit).  frame == ABSOLUTE's
+        implied "absolute positioning" floor is NOT derived here — see
+        choreo.c's comment for why (no capability bit for it exists yet).
+        """
+        caps = goal.required_caps
+        if goal.motion == BSEMotion.SPIN:
+            caps |= ChoreoCapabilities.LOCOMOTION
+        return caps
 
     @staticmethod
     def _goal_to_intent(goal: Goal) -> BSEIntent:

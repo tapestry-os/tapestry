@@ -116,6 +116,11 @@ class BSEAnchorSelector(IntEnum):
 ANCHOR_HOLD_MS     = 2000   # mirrors TAPESTRY_BSE_ANCHOR_HOLD_MS (bse.h)
 ELEMENT_ID_INVALID = 0xFF   # mirrors csm.h
 
+# Preemption stack depth (bse.h's bse_preempt_intent()/bse_resume_intent()).
+# Bounded at 1, matching BSE_MAX_PREEMPT_DEPTH in bse.c and choreo.py's
+# CHOREO_MAX_PREEMPT_DEPTH.
+BSE_MAX_PREEMPT_DEPTH = 1
+
 
 class BSEMotion(IntEnum):
     """§6 motion modifiers, FORM only.  Mirrors tapestry_bse_motion_t
@@ -182,6 +187,9 @@ class BSE:
         self._directive = BSEDirective()
         self._track_scope: int = 0
         self._reset_goal_state()
+        # Preemption stack (mirrors bse.c's s_parked_intent/s_parked_act).
+        self._parked_intent: List[BSEIntent] = []
+        self._parked_activation: List[tuple] = []
 
     def set_track_scope(self, track: int) -> None:
         """Restrict _participants() to peers gossiping the same
@@ -212,10 +220,77 @@ class BSE:
     def submit_intent(self, intent: BSEIntent) -> None:
         self._intent = intent
         self._reset_goal_state()
+        # An ordinary submit always fully discards — including anything
+        # preempt_intent() had parked (mirrors bse_submit_intent() setting
+        # s_parked_depth = 0; see choreo.py's terminate_hard()).
+        self._parked_intent.clear()
+        self._parked_activation.clear()
         if intent.type == BSEIntentType.IDLE:
             # Quiescence takes effect immediately (mirrors bse.c — the
             # Choreographer stops ticking after terminate).
             self._directive = BSEDirective(type=BSEDirectiveType.IDLE)
+
+    def _save_activation(self) -> tuple:
+        """Snapshot of exactly the activation-scoped state bse_activation_t
+        (bse.c) groups — NOT _goal_pt/_anchor_lost, which are tick-scoped
+        and always recomputed by tick() regardless of which intent is
+        active, so there is nothing to preserve for them across a
+        push/pop."""
+        return (self._achieved, self._achieve_accum, self._hold_station,
+                self._ex, self._move_offset, self._anchor_locked_id,
+                self._anchor_candidate_id, self._anchor_candidate_ms,
+                self._spin_theta)
+
+    def _restore_activation(self, snapshot: tuple) -> None:
+        (self._achieved, self._achieve_accum, self._hold_station,
+         self._ex, self._move_offset, self._anchor_locked_id,
+         self._anchor_candidate_id, self._anchor_candidate_ms,
+         self._spin_theta) = snapshot
+
+    def preempt_intent(self, intent: BSEIntent) -> int:
+        """Like submit_intent(), but saves the displaced intent and its
+        full activation state instead of discarding it — resume_intent()
+        restores it verbatim (HOLD station, EXCHANGE snapshot/arc progress,
+        MOVE offset, achievement accumulator all survive the round trip).
+        Mirrors bse_preempt_intent() (bse.h). Bounded stack, depth
+        BSE_MAX_PREEMPT_DEPTH (1) — a second preempt while one is already
+        parked returns -1.
+
+        The preempting intent becomes active immediately, exactly like
+        submit_intent(). Returns 0 on success, -1 if the stack is full.
+        """
+        if len(self._parked_intent) >= BSE_MAX_PREEMPT_DEPTH:
+            return -1   # stack full
+        self._parked_intent.append(self._intent)
+        self._parked_activation.append(self._save_activation())
+
+        self._intent = intent
+        self._reset_goal_state()
+        if intent.type == BSEIntentType.IDLE:
+            self._directive = BSEDirective(type=BSEDirectiveType.IDLE)
+        return 0
+
+    def resume_intent(self) -> int:
+        """Pop the most recently preempted intent back to active, restoring
+        its saved activation state exactly as it was at the moment it was
+        displaced. The intent active before this call is discarded (same
+        semantics as submit_intent() displacing it). Mirrors
+        bse_resume_intent() (bse.h). Returns 0 on success, -1 if nothing is
+        parked."""
+        if not self._parked_intent:
+            return -1   # nothing parked
+        self._intent = self._parked_intent.pop()
+        self._restore_activation(self._parked_activation.pop())
+        # Tick-scoped goal point was never saved — invalidate rather than
+        # leave it referencing the intent that was active a moment ago.
+        # tick() recomputes it fresh on the next call either way.
+        self._goal_pt = None
+        return 0
+
+    def has_parked_intent(self) -> bool:
+        """True if preempt_intent() has saved an intent that
+        resume_intent() would restore. Mirrors bse_has_parked_intent()."""
+        return len(self._parked_intent) > 0
 
     def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
         intent = self._intent
