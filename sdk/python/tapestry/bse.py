@@ -94,6 +94,36 @@ class BSEDirectiveType(IntEnum):
     MAINTAIN_SPRING = 3
 
 
+class BSEFrame(IntEnum):
+    """Choreo SDK Design doc §5 frame ladder, FORM/CONVERGE only. Mirrors
+    tapestry_bse_frame_t (bse.h) — see that header for the full rationale
+    (ABSOLUTE=0 as the compat-preserving default, why NEWEST/OLDEST aren't
+    implemented yet)."""
+    ABSOLUTE   = 0
+    COLLECTIVE = 1
+    ELEMENT    = 2
+
+
+class BSEAnchorSelector(IntEnum):
+    """§5.2 anchor selectors, meaningful only when frame == ELEMENT.
+    Mirrors tapestry_bse_anchor_selector_t (bse.h)."""
+    LEADER        = 0
+    ID            = 1
+    SELF          = 2
+    LOWEST_ENERGY = 3
+
+
+ANCHOR_HOLD_MS     = 2000   # mirrors TAPESTRY_BSE_ANCHOR_HOLD_MS (bse.h)
+ELEMENT_ID_INVALID = 0xFF   # mirrors csm.h
+
+
+class BSEMotion(IntEnum):
+    """§6 motion modifiers, FORM only.  Mirrors tapestry_bse_motion_t
+    (bse.h) — see that header for why CONVERGE never reads this."""
+    STATIC = 0
+    SPIN   = 1
+
+
 # ── Data classes ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -108,6 +138,11 @@ class BSEIntent:
     achieve_hold_ms: int = 0       # 0 → ACHIEVE_HOLD_MS_DEFAULT
     id: int = 0                    # originating goal identity; opaque, unread
                                    # here. Mirrors tapestry_bse_intent_t::id
+    frame:     BSEFrame = BSEFrame.ABSOLUTE   # FORM/CONVERGE only (bse.h §5)
+    anchor:    BSEAnchorSelector = BSEAnchorSelector.LEADER  # frame==ELEMENT only
+    anchor_id: int = 0                                       # anchor==ID only
+    motion:          BSEMotion = BSEMotion.STATIC  # FORM only (bse.h §6)
+    spin_rate_radps: float = 0.0                   # motion==SPIN only
 
 
 @dataclass
@@ -144,7 +179,15 @@ class BSE:
         self.element_id = element_id
         self._intent    = BSEIntent()
         self._directive = BSEDirective()
+        self._track_scope: int = 0
         self._reset_goal_state()
+
+    def set_track_scope(self, track: int) -> None:
+        """Restrict _participants() to peers gossiping the same
+        current_track (Choreo SDK Design doc §7; mirrors
+        bse_set_track_scope()).  Defaults to 0, a no-op filter — every
+        peer on a script with no [[tracks]] gossips current_track=0."""
+        self._track_scope = track
 
     def _reset_goal_state(self) -> None:
         self._achieved        = False
@@ -153,6 +196,17 @@ class BSE:
         self._hold_station: Optional[Tuple[float, float]] = None
         self._ex: Optional[dict] = None   # exchange snapshot/arc state
         self._move_offset: Optional[Tuple[float, float]] = None
+        # FORM/CONVERGE frame == ELEMENT: debounced anchor selector
+        # resolution (see ANCHOR_HOLD_MS). None means "unset".
+        self._anchor_locked_id: Optional[int]    = None
+        self._anchor_candidate_id: Optional[int] = None
+        self._anchor_candidate_ms: int           = 0
+        # FORM motion == SPIN: accumulated rotation since activation. Pure
+        # time integration, reset only on a new activation.
+        self._spin_theta: float = 0.0
+        # Tick-scoped (also reset at the top of tick(), like _goal_pt) —
+        # see anchor_lost().
+        self._anchor_lost: bool = False
 
     def submit_intent(self, intent: BSEIntent) -> None:
         self._intent = intent
@@ -165,6 +219,7 @@ class BSE:
     def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
         intent = self._intent
         self._goal_pt = None
+        self._anchor_lost = False
 
         if intent.type == BSEIntentType.IDLE:
             self._directive = BSEDirective(type=BSEDirectiveType.IDLE)
@@ -176,7 +231,7 @@ class BSE:
             self._tick_exchange(wm_entries)
 
         elif intent.type == BSEIntentType.FORM:
-            self._directive = self._form_directive(wm_entries, intent)
+            self._directive = self._form_directive(wm_entries, intent, scr_state)
             if self._directive.type == BSEDirectiveType.MOVE_TO_POINT:
                 self._goal_pt = self._directive.target
 
@@ -188,11 +243,20 @@ class BSE:
         elif intent.type == BSEIntentType.CONVERGE:
             # All elements gather at the identical point — deliberately
             # different from MOVE, which preserves formation (see below).
-            self._directive = BSEDirective(
-                type   = BSEDirectiveType.MOVE_TO_POINT,
-                target = intent.target,
-            )
-            self._goal_pt = intent.target
+            # Frame resolution (bse.h §5): ABSOLUTE (default) makes eff
+            # == intent.target exactly — no-op for every existing caller.
+            # intent.motion is deliberately never read here — see bse.h's
+            # CONVERGE comment (its target IS the frame origin, so
+            # "rotating the offset" is a no-op).
+            eff = self._resolve_effective_target(wm_entries, intent, scr_state)
+            if eff is None:
+                self._directive = BSEDirective(type=BSEDirectiveType.HOLD)
+            else:
+                self._directive = BSEDirective(
+                    type   = BSEDirectiveType.MOVE_TO_POINT,
+                    target = eff,
+                )
+                self._goal_pt = eff
 
         elif intent.type == BSEIntentType.DISPERSE:
             self._directive = BSEDirective(
@@ -213,6 +277,15 @@ class BSE:
         """Minimal L6 feedback controller output — see bse.h."""
         return self._achieved
 
+    def anchor_lost(self) -> bool:
+        """True if the last tick() had a FORM/CONVERGE intent with
+        frame == ELEMENT and could not resolve any anchor position —
+        never locked one yet, or the previously-locked anchor's peer went
+        stale/inactive.  False for every other frame or intent type.
+        Tick-scoped, like goal_achieved().  This is the source for
+        ChoreoEvent.ANCHOR_LOST (choreo.py §8.2)."""
+        return self._anchor_lost
+
     # ── Internal ─────────────────────────────────────────────────────────────
 
     def _own_position(self, wm_entries: List[dict]) -> Optional[Tuple[float, float]]:
@@ -224,17 +297,133 @@ class BSE:
         return None
 
     def _participants(self, wm_entries: List[dict]):
-        """Self + fresh active peers as [(id, (x, y))], ID-sorted."""
+        """Self + fresh active SAME-TRACK peers as [(id, (x, y))],
+        ID-sorted.  Track-filtered via e['current_track'] == self._track_scope
+        (§7, wire v4, mirrors collect_participants() in bse.c) — a peer
+        gossiping a different track is helping a different collective
+        activity (or none) and must not skew centroid/rank here.
+        _track_scope defaults to 0, matching every peer's gossiped
+        current_track on a script with no tracks, so this is a no-op
+        filter for every existing (non-tracked) caller."""
         parts = []
         for e in wm_entries:
             if e.get('is_self', False):
                 parts.append((self.element_id,
                               (float(e.get('x', 0.0)), float(e.get('y', 0.0)))))
-            elif e.get('is_active') and not e.get('is_stale'):
+            elif e.get('is_active') and not e.get('is_stale') \
+                    and e.get('current_track', 0) == self._track_scope:
                 parts.append((int(e['id']),
                               (float(e.get('x', 0.0)), float(e.get('y', 0.0)))))
         parts.sort(key=lambda p: p[0])
         return parts
+
+    # ── Frames and anchors (FORM / CONVERGE, bse.h §5) ─────────────────────
+
+    def _lookup_position_by_id(self, wm_entries: List[dict],
+                               elem_id: int) -> Optional[Tuple[float, float]]:
+        """Current position of `elem_id` among self + fresh peers, or None
+        if not currently resolvable (gone, stale, or unknown)."""
+        for e in wm_entries:
+            is_self = e.get('is_self', False)
+            eid = self.element_id if is_self else e.get('id')
+            if eid != elem_id:
+                continue
+            if is_self:
+                if 'x' in e and 'y' in e:
+                    return (float(e['x']), float(e['y']))
+                return None
+            if e.get('is_active') and not e.get('is_stale'):
+                return (float(e.get('x', 0.0)), float(e.get('y', 0.0)))
+        return None
+
+    def _resolve_anchor_selector(self, wm_entries: List[dict], intent: BSEIntent,
+                                 scr_state: dict) -> Optional[int]:
+        """This tick's raw (undebounced) anchor selector -> an element id,
+        or None if no candidate exists right now.  Ties (LOWEST_ENERGY)
+        break by lowest id — every element must derive the SAME anchor id
+        from the same world-model snapshot."""
+        sel = intent.anchor
+        if sel == BSEAnchorSelector.SELF:
+            return self.element_id
+        if sel == BSEAnchorSelector.ID:
+            return intent.anchor_id
+        if sel == BSEAnchorSelector.LEADER:
+            leader = scr_state.get('leader_id', ELEMENT_ID_INVALID)
+            return None if leader == ELEMENT_ID_INVALID else leader
+        if sel == BSEAnchorSelector.LOWEST_ENERGY:
+            best_id: Optional[int] = None
+            best_energy = 0
+            for e in wm_entries:
+                is_self = e.get('is_self', False)
+                if not is_self and not (e.get('is_active') and not e.get('is_stale')):
+                    continue
+                eid    = self.element_id if is_self else e.get('id')
+                energy = e.get('energy_level', 0)
+                if best_id is None or energy < best_energy or \
+                        (energy == best_energy and eid < best_id):
+                    best_id, best_energy = eid, energy
+            return best_id
+        return None
+
+    def _resolve_effective_target(self, wm_entries: List[dict], intent: BSEIntent,
+                                  scr_state: dict) -> Optional[Tuple[float, float]]:
+        """Resolve the effective FORM/CONVERGE target for this tick, per
+        intent.frame.  ABSOLUTE returns intent.target unchanged.
+        COLLECTIVE returns the live participant centroid.  ELEMENT
+        resolves and DEBOUNCES the anchor selector (ANCHOR_HOLD_MS) and
+        returns None while no anchor has ever stabilized.
+
+        The selector->id and id->position steps are deliberately split
+        (mirrors bse.c): debouncing is about choosing between competing
+        VALID anchor candidates, not about masking one that has genuinely
+        disappeared — that fails immediately, same as EXCHANGE's own
+        can't-compute-this-tick HOLD fallback.
+        """
+        if intent.frame == BSEFrame.ABSOLUTE:
+            return intent.target
+
+        if intent.frame == BSEFrame.COLLECTIVE:
+            parts = self._participants(wm_entries)
+            if not parts:
+                return None
+            cx = sum(p[1][0] for p in parts) / len(parts)
+            cy = sum(p[1][1] for p in parts) / len(parts)
+            return (cx, cy)
+
+        # BSEFrame.ELEMENT.  Every path below funnels through `resolved`
+        # so anchor_lost() (CHOREO_EVENT_ANCHOR_LOST's source) has one
+        # place to be set, instead of repeating it at every return.
+        resolved = None
+        raw_id = self._resolve_anchor_selector(wm_entries, intent, scr_state)
+        if raw_id is None:
+            self._anchor_locked_id    = None
+            self._anchor_candidate_id = None
+        elif self._anchor_locked_id is not None and raw_id == self._anchor_locked_id:
+            self._anchor_candidate_id = None   # stable — no pending switch
+            resolved = self._lookup_position_by_id(wm_entries, raw_id)
+        else:
+            # raw_id differs from the locked anchor (or nothing locked yet).
+            if self._anchor_candidate_id == raw_id:
+                self._anchor_candidate_ms += WM_CYCLE_MS
+            else:
+                self._anchor_candidate_id = raw_id
+                self._anchor_candidate_ms = 0
+
+            if self._anchor_candidate_ms >= ANCHOR_HOLD_MS:
+                self._anchor_locked_id    = raw_id
+                self._anchor_candidate_id = None
+                resolved = self._lookup_position_by_id(wm_entries, raw_id)
+            elif self._anchor_locked_id is not None:
+                # Candidate not yet confirmed: keep using the still-locked
+                # anchor (don't disturb a stable anchor for an unconfirmed
+                # switch).
+                resolved = self._lookup_position_by_id(wm_entries, self._anchor_locked_id)
+            # else: nothing locked yet — first-ever resolution waits out
+            # the same hold time as any other switch; resolved stays None.
+
+        if resolved is None:
+            self._anchor_lost = True
+        return resolved
 
     def _tick_hold(self, wm_entries: List[dict]) -> None:
         if self._hold_station is None:
@@ -398,11 +587,12 @@ class BSE:
         self._achieved = self._achieve_accum >= hold
 
     def _form_directive(self, wm_entries: List[dict],
-                        intent: BSEIntent) -> BSEDirective:
+                        intent: BSEIntent, scr_state: dict) -> BSEDirective:
         """
         Assign self a vertex per intent.shape: CIRCLE (regular N-gon), LINE
         (evenly spaced on the X axis), or GRID (near-square rows/cols,
-        radius as cell spacing) — all centered on intent.target.
+        radius as cell spacing) — all centered on the resolved frame target
+        (bse.h §5; ABSOLUTE/default keeps this exactly intent.target).
         N = active + fresh element count (including self).
         Rank = position of self.element_id in the sorted active-ID list.
         """
@@ -410,6 +600,7 @@ class BSE:
             e['id'] for e in wm_entries
             if e.get('is_active') and not e.get('is_stale')
                and not e.get('is_self', False)
+               and e.get('current_track', 0) == self._track_scope
         )
         # Always include self
         if self.element_id not in active_ids:
@@ -419,28 +610,46 @@ class BSE:
         if not active_ids:
             return BSEDirective(type=BSEDirectiveType.HOLD)
 
+        eff_target = self._resolve_effective_target(wm_entries, intent, scr_state)
+        if eff_target is None:
+            return BSEDirective(type=BSEDirectiveType.HOLD)
+
         rank = active_ids.index(self.element_id)
         n    = len(active_ids)
-        tx, ty = intent.target
 
+        # Own vertex OFFSET from eff_target (the frame origin) — computed
+        # separately so motion == SPIN (below) can rotate just the offset,
+        # shape-agnostically, instead of every shape needing its own
+        # rotation math.
         if intent.shape == BSEShape.LINE:
             if n > 1:
                 step = (2.0 * intent.radius) / (n - 1)
-                tx = intent.target[0] - intent.radius + step * rank
+                ox = -intent.radius + step * rank
+            else:
+                ox = 0.0
+            oy = 0.0
         elif intent.shape == BSEShape.GRID:
             cols = math.ceil(math.sqrt(n))
             rows = math.ceil(n / cols)
             col, row = rank % cols, rank // cols
-            tx = intent.target[0] + (col - 0.5 * (cols - 1)) * intent.radius
-            ty = intent.target[1] + (row - 0.5 * (rows - 1)) * intent.radius
+            ox = (col - 0.5 * (cols - 1)) * intent.radius
+            oy = (row - 0.5 * (rows - 1)) * intent.radius
         else:
             angle = 2.0 * math.pi * rank / n
-            tx = intent.target[0] + intent.radius * math.cos(angle)
-            ty = intent.target[1] + intent.radius * math.sin(angle)
+            ox = intent.radius * math.cos(angle)
+            oy = intent.radius * math.sin(angle)
+
+        # Motion (bse.h §6): SPIN rotates the offset about the frame
+        # origin at spin_rate_radps.  Achievement generalizes unchanged —
+        # _goal_pt is tick-scoped and simply tracks the rotating vertex.
+        if intent.motion == BSEMotion.SPIN:
+            self._spin_theta += intent.spin_rate_radps * (WM_CYCLE_MS * 0.001)
+            c, s = math.cos(self._spin_theta), math.sin(self._spin_theta)
+            ox, oy = ox * c - oy * s, ox * s + oy * c
 
         return BSEDirective(
             type   = BSEDirectiveType.MOVE_TO_POINT,
-            target = (tx, ty),
+            target = (eff_target[0] + ox, eff_target[1] + oy),
         )
 
     def _move_directive(self, wm_entries: List[dict],

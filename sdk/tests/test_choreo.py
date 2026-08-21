@@ -13,10 +13,12 @@ import errno
 import pytest
 from helpers import QUORUM_DEGRADED, QUORUM_HEALTHY, QUORUM_LOST, scr, solo, wm
 
-from tapestry.bse import BSEDirectiveType
-from tapestry.choreo import (Choreo, ChoreoCapabilities, ChoreoScope,
-                             ChoreoState, ChoreoStep, Goal, GoalShape,
-                             GoalType)
+from tapestry.bse import BSEDirectiveType, BSEFrame, BSEMotion, BSEAnchorSelector
+from tapestry.choreo import (Choreo, ChoreoCapabilities, ChoreoEvent,
+                             ChoreoScope, ChoreoState, ChoreoStep,
+                             ChoreoTrack, ChoreoTrackFilter,
+                             ChoreoTransition, ELEMENT_HEALTH_LOW_BATTERY,
+                             Goal, GoalShape, GoalType)
 
 HEALTHY  = scr(QUORUM_HEALTHY)
 DEGRADED = scr(QUORUM_DEGRADED)
@@ -170,6 +172,37 @@ def test_submit_script_rejects_an_empty_goal_in_any_position():
     good = timed()
     bad = ChoreoStep(goal=Goal(type=GoalType.NONE), max_duration_ms=100)
     assert Choreo(element_id=0).submit_script([good, bad]) == -1
+
+
+def test_submit_script_rejects_spin_with_no_duration_bound():
+    """A non-terminal motion never "completes" — until=achieved alone is
+    not a sufficient exit, only a valid early-advance on top of a real
+    duration bound."""
+    bad = ChoreoStep(
+        goal=Goal(type=GoalType.FORM, shape=GoalShape.CIRCLE, radius=3.0,
+                 motion=BSEMotion.SPIN, spin_rate_radps=0.5),
+        max_duration_ms=0, advance_on_achieved=True)
+    assert Choreo(element_id=0).submit_script([bad]) == -1
+
+    good = ChoreoStep(
+        goal=Goal(type=GoalType.FORM, shape=GoalShape.CIRCLE, radius=3.0,
+                 motion=BSEMotion.SPIN, spin_rate_radps=0.5),
+        max_duration_ms=60_000)
+    assert Choreo(element_id=0).submit_script([good]) == 0
+
+
+def test_submit_script_rejects_too_many_transitions():
+    bad = ChoreoStep(
+        goal=Goal(type=GoalType.HOLD), max_duration_ms=1000,
+        on=[ChoreoTransition(event=ChoreoEvent.ACHIEVED, goto_step_idx=0)] * 5)
+    assert Choreo(element_id=0).submit_script([bad]) == -1
+
+
+def test_submit_script_rejects_an_out_of_range_goto():
+    bad = ChoreoStep(
+        goal=Goal(type=GoalType.HOLD), max_duration_ms=1000,
+        on=[ChoreoTransition(event=ChoreoEvent.ACHIEVED, goto_step_idx=5)])
+    assert Choreo(element_id=0).submit_script([bad]) == -1
 
 
 def test_submit_script_validates_capabilities_up_front():
@@ -418,3 +451,194 @@ def test_an_unmapped_goal_type_becomes_an_idle_intent():
     from tapestry.bse import BSEIntentType
     intent = Choreo._goal_to_intent(Goal(type=GoalType.NONE))
     assert intent.type == BSEIntentType.IDLE
+
+
+# ── Events + transitions (Choreo SDK Design doc §8, single track) ──────────
+
+def test_explicit_achieved_transition_skips_a_step():
+    c = Choreo(element_id=0)
+    steps = [
+        ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000,
+                  on=[ChoreoTransition(event=ChoreoEvent.ACHIEVED, goto_step_idx=2)]),
+        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(99.0, 99.0)),
+                  max_duration_ms=60_000),
+        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(7.0, 7.0)),
+                  max_duration_ms=60_000),
+    ]
+    assert c.submit_script(steps) == 0
+    for _ in range(3):
+        c.tick(solo(), HEALTHY)
+    assert c.script_step() == 2
+    assert c.get_directive().target == (7.0, 7.0)
+
+
+def test_element_joined_and_lost_cycle_the_welcome_dance():
+    """The design doc's §8.3 flagship demo for this feature."""
+    c = Choreo(element_id=0)
+    steps = [
+        ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=300_000,
+                  on=[ChoreoTransition(event=ChoreoEvent.ELEMENT_JOINED, goto_step_idx=1)]),
+        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(1.0, 1.0)),
+                  max_duration_ms=300_000,
+                  on=[ChoreoTransition(event=ChoreoEvent.ELEMENT_LOST, goto_step_idx=0)]),
+    ]
+    assert c.submit_script(steps) == 0
+    for _ in range(5):
+        c.tick(solo(), HEALTHY)
+    assert c.script_step() == 0
+
+    entries = wm([(0, 0), (5, 5)], self_id=0)
+    for _ in range(19):
+        c.tick(entries, HEALTHY)
+    assert c.script_step() == 0, "still debouncing the join"
+    for _ in range(2):
+        c.tick(entries, HEALTHY)
+    assert c.script_step() == 1, "element_joined fired after the debounce"
+
+    entries = wm([(0, 0), (5, 5)], self_id=0, stale=[1])
+    for _ in range(21):
+        c.tick(entries, HEALTHY)
+    assert c.script_step() == 0, "element_lost cycled back to step 0"
+
+
+def test_count_transitions_check_in_declaration_order():
+    c = Choreo(element_id=0)
+    steps = [
+        ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000, on=[
+            ChoreoTransition(event=ChoreoEvent.COUNT_EQ, threshold=3, goto_step_idx=2),
+            ChoreoTransition(event=ChoreoEvent.COUNT_GTE, threshold=2, goto_step_idx=1),
+        ]),
+        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(1.0, 1.0)), max_duration_ms=60_000),
+        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(3.0, 3.0)), max_duration_ms=60_000),
+    ]
+    assert c.submit_script(steps) == 0
+    c.tick(wm([(0, 0), (1, 1), (2, 2)], self_id=0), HEALTHY)
+    assert c.script_step() == 2, "count_eq(3), declared first, wins over count_gte(2)"
+
+
+def test_anchor_lost_transition():
+    c = Choreo(element_id=0)
+    steps = [
+        ChoreoStep(
+            goal=Goal(type=GoalType.CONVERGE, frame=BSEFrame.ELEMENT,
+                     anchor=BSEAnchorSelector.ID, anchor_id=9),
+            max_duration_ms=60_000,
+            on=[ChoreoTransition(event=ChoreoEvent.ANCHOR_LOST, goto_step_idx=1)]),
+        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(4.0, 4.0)), max_duration_ms=60_000),
+    ]
+    assert c.submit_script(steps) == 0
+    c.tick(solo(), HEALTHY)
+    assert c.script_step() == 1, "an anchor that was never fresh transitions immediately"
+
+
+def test_goto_end_completes_the_script_early():
+    c = Choreo(element_id=0)
+    steps = [
+        ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000,
+                  on=[ChoreoTransition(event=ChoreoEvent.ACHIEVED, goto_step_idx=1)]),
+    ]
+    assert c.submit_script(steps) == 0
+    for _ in range(3):
+        c.tick(solo(), HEALTHY)
+    assert c.script_complete()
+
+
+# ── Tracks (choreo.h §7) ─────────────────────────────────────────────────────
+
+def test_track_capability_filter_falls_through_to_catchall():
+    c = Choreo(element_id=0, capabilities=0)   # no SENSOR cap
+    sensing = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    catchall = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(9.0, 9.0)),
+                            max_duration_ms=60_000)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(required_caps=ChoreoCapabilities.SENSING),
+                    steps=sensing),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=catchall),
+    ]
+    assert c.submit_tracks(solo(), tracks) == 0
+    assert c.current_track() == 1, "no SENSOR cap must fall through to the catch-all track"
+
+
+def test_track_capability_filter_matches_first_track():
+    c = Choreo(element_id=0, capabilities=CAP_SENSOR)
+    sensing = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    catchall = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(9.0, 9.0)),
+                            max_duration_ms=60_000)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(required_caps=ChoreoCapabilities.SENSING),
+                    steps=sensing),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=catchall),
+    ]
+    assert c.submit_tracks(solo(), tracks) == 0
+    assert c.current_track() == 0, "SENSOR cap must match the first declared track"
+
+
+def test_track_no_match_and_no_catchall_is_rejected():
+    c = Choreo(element_id=0, capabilities=0)
+    steps = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    tracks = [ChoreoTrack(filter=ChoreoTrackFilter(required_caps=ChoreoCapabilities.SENSING),
+                          steps=steps)]
+    assert c.submit_tracks(solo(), tracks) == -1
+
+
+def test_track_energy_low_migration_is_debounced():
+    c = Choreo(element_id=0)
+    low_battery = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(0.0, 0.0)),
+                              max_duration_ms=60_000)]
+    normal = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(requires_energy_low=True), steps=low_battery),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=normal),
+    ]
+    entries = solo()
+    assert c.submit_tracks(entries, tracks) == 0
+    assert c.current_track() == 1, "starts on the catch-all track, not low"
+
+    entries[0]["health_flags"] = ELEMENT_HEALTH_LOW_BATTERY
+    for _ in range(19):
+        c.tick(entries, HEALTHY)
+    assert c.current_track() == 1, "still debouncing the low-battery switch"
+    for _ in range(2):
+        c.tick(entries, HEALTHY)
+    assert c.current_track() == 0, "migrated to the low-battery track after the debounce hold"
+    assert c.get_directive().target == pytest.approx((0.0, 0.0))
+
+
+def test_track_scoped_collective_excludes_other_track_peer():
+    c = Choreo(element_id=0)
+    entries = wm([(0.0, 0.0), (10.0, 0.0), (100.0, 100.0)], self_id=0)
+    entries[1]["current_track"] = 0   # same track as self
+    entries[2]["current_track"] = 1   # DIFFERENT track
+    steps = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, frame=BSEFrame.COLLECTIVE),
+                        max_duration_ms=60_000)]
+    tracks = [ChoreoTrack(filter=ChoreoTrackFilter(), steps=steps)]
+    assert c.submit_tracks(entries, tracks) == 0
+    c.tick(entries, HEALTHY)
+    assert c.get_directive().target == pytest.approx((5.0, 0.0)), \
+        "collective centroid must exclude the different-track peer"
+
+
+def test_track_default_still_counts_default_track_peer():
+    c = Choreo(element_id=0)
+    entries = wm([(0.0, 0.0), (10.0, 0.0)], self_id=0)   # current_track defaults absent -> 0
+    steps = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, frame=BSEFrame.COLLECTIVE),
+                        max_duration_ms=60_000)]
+    assert c.submit_script(steps) == 0
+    assert c.current_track() == 0
+    c.tick(entries, HEALTHY)
+    assert c.get_directive().target == pytest.approx((5.0, 0.0)), \
+        "a no-tracks script still counts a default-track peer"
+
+
+def test_track_ordinary_goal_drops_multitrack_mode():
+    c = Choreo(element_id=0)
+    steps = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(requires_energy_low=True), steps=steps),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=steps),
+    ]
+    assert c.submit_tracks(solo(), tracks) == 0
+    assert c.current_track() == 1
+
+    assert c.submit_goal(Goal(type=GoalType.HOLD)) == 0
+    assert c.current_track() == 0, "an ordinary goal submission must drop multi-track mode"

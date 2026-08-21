@@ -53,6 +53,16 @@ static element_id_t            s_self_id;
 static tapestry_bse_intent_t   s_intent;
 static tapestry_bse_directive_t s_directive;
 
+/* Choreo SDK Design doc §7 tracks: which track (by index) THIS element is
+ * currently active in — an L7 concept, but stored here rather than
+ * threaded through every bse_tick() call, since a file-scope static that
+ * defaults to 0 (matching every non-tracked script's implicit single
+ * track) needs no signature changes anywhere.  Set via
+ * bse_set_track_scope(); collect_participants() reads it to filter peers
+ * by e->state.current_track == this, so FORM/EXCHANGE/MOVE only ever
+ * counts peers actually helping the SAME track — see that function. */
+static uint8_t s_track_scope;
+
 /* ── Per-activation state ─────────────────────────────────────────────────── */
 /*
  * bse_activation_t — everything an intent accumulates between the moment it
@@ -94,6 +104,22 @@ typedef struct {
     /* MOVE: own offset from the participant centroid, snapshot at activation */
     bool                move_captured;
     tapestry_position_t move_offset;   /* own anchor - snapshot centroid */
+
+    /* FORM motion == SPIN: accumulated rotation since activation.  Pure
+     * time integration — unaffected by frame/anchor motion, reset only on
+     * a new activation, same as ex_progress accumulates EXCHANGE's arc. */
+    float spin_theta;
+
+    /* FORM/CONVERGE frame == ELEMENT: debounced anchor selector resolution
+     * (bse.h's TAPESTRY_BSE_ANCHOR_HOLD_MS comment).  anchor_locked is the
+     * currently-committed anchor id a directive is computed against;
+     * anchor_candidate/anchor_candidate_ms track a differing raw selector
+     * result until it has been stable long enough to be promoted. */
+    bool          anchor_locked;
+    element_id_t  anchor_locked_id;
+    bool          anchor_candidate_valid;
+    element_id_t  anchor_candidate_id;
+    uint32_t      anchor_candidate_ms;
 } bse_activation_t;
 
 static bse_activation_t s_act;
@@ -101,6 +127,8 @@ static bse_activation_t s_act;
 /* Tick-scoped: recomputed by every bse_tick(), never carried across one. */
 static bool                s_goal_pt_valid;   /* goal point computed this tick */
 static tapestry_position_t s_goal_pt;
+static bool                s_anchor_lost;     /* frame==ELEMENT couldn't resolve
+                                                * this tick — see bse_anchor_lost() */
 
 /* ── Preemption stack ─────────────────────────────────────────────────────── */
 /*
@@ -136,15 +164,24 @@ static bool own_position(const world_model_t *wm, tapestry_position_t *out)
     return false;
 }
 
-/* Collect self + fresh, trusted active peers, ID-sorted.  Returns count;
- * fills ids[] and positions[] in sorted order, and writes self's rank to
- * *own_rank (-1 if self entry missing).
+/* Collect self + fresh, trusted, SAME-TRACK active peers, ID-sorted.
+ * Returns count; fills ids[] and positions[] in sorted order, and writes
+ * self's rank to *own_rank (-1 if self entry missing).
  *
  * Trust-filtered via scr_peer_is_trusted() — the same whitelist/anomaly
  * check scr_tick() applies when building its own candidate set — so the
  * rank and count computed here agree with scr->task_slot/swarm_size, and an
  * anomaly-excluded or non-whitelisted peer cannot steer formation geometry
- * (centroid, arc, vertex assignment) despite being excluded from quorum. */
+ * (centroid, arc, vertex assignment) despite being excluded from quorum.
+ *
+ * Track-filtered via e->state.current_track == s_track_scope (§7, wire
+ * v4): a peer gossiping a DIFFERENT track is helping a different
+ * collective activity (or none) and must not be counted here, e.g. one
+ * FORMing a shape shouldn't have its vertex count/positions skewed by a
+ * peer that's off doing something else — see bse_set_track_scope().
+ * s_track_scope defaults to 0, matching every peer's gossiped
+ * current_track on a script with no tracks, so this is a no-op filter
+ * for every existing (non-tracked) caller. */
 static int collect_participants(const world_model_t *wm,
                                 const scr_state_t *scr,
                                 element_id_t ids[MAX_ELEMENTS],
@@ -157,7 +194,8 @@ static int collect_participants(const world_model_t *wm,
         const wm_entry_t *e = &wm->entries[i];
         bool participant = e->is_self ||
                            (e->is_active && !e->is_stale &&
-                            scr_peer_is_trusted(scr, e->state.id));
+                            scr_peer_is_trusted(scr, e->state.id) &&
+                            e->state.current_track == s_track_scope);
         if (!participant) {
             continue;
         }
@@ -192,6 +230,187 @@ static int collect_participants(const world_model_t *wm,
         }
     }
     return count;
+}
+
+/* ── Frames and anchors (FORM / CONVERGE, bse.h §5) ──────────────────────── */
+
+/* Current position of element `id` among self + fresh trusted peers, or
+ * false if not currently resolvable (gone, stale, or excluded). */
+static bool lookup_anchor_position(const world_model_t *wm,
+                                   const scr_state_t *scr,
+                                   element_id_t id,
+                                   tapestry_position_t *out)
+{
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_self) {
+            if (id == s_self_id) {
+                out->x = e->state.position.x;
+                out->y = e->state.position.y;
+                return true;
+            }
+            continue;
+        }
+        if (e->is_active && !e->is_stale && e->state.id == id &&
+            scr_peer_is_trusted(scr, id)) {
+            out->x = e->state.position.x;
+            out->y = e->state.position.y;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* This tick's raw (undebounced) anchor selector → an element id.  Does NOT
+ * check whether that id currently has a resolvable position — see
+ * lookup_anchor_position() for that split (see resolve_effective_target()'s
+ * comment for why they're separate).  Ties (LOWEST_ENERGY) break by lowest
+ * id: every element must derive the SAME anchor id from the same world-
+ * model snapshot (P4) — an undeterministic tiebreak would let elements
+ * disagree on who the anchor is. */
+static bool resolve_anchor_selector(const world_model_t *wm,
+                                    const scr_state_t *scr,
+                                    element_id_t *out_id)
+{
+    switch (s_intent.anchor) {
+    case TAPESTRY_BSE_ANCHOR_SELF:
+        *out_id = s_self_id;
+        return true;
+
+    case TAPESTRY_BSE_ANCHOR_ID:
+        *out_id = s_intent.anchor_id;
+        return true;
+
+    case TAPESTRY_BSE_ANCHOR_LEADER: {
+        element_id_t leader = scr_get_leader(scr);
+        if (leader == ELEMENT_ID_INVALID) {
+            return false;
+        }
+        *out_id = leader;
+        return true;
+    }
+
+    case TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY: {
+        bool         found      = false;
+        int          min_energy = 0;
+        element_id_t min_id     = 0;
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &wm->entries[i];
+            bool candidate = e->is_self ||
+                             (e->is_active && !e->is_stale &&
+                              scr_peer_is_trusted(scr, e->state.id));
+            if (!candidate) {
+                continue;
+            }
+            element_id_t id     = e->is_self ? s_self_id : e->state.id;
+            int          energy = e->state.energy_level;
+            if (!found || energy < min_energy ||
+                (energy == min_energy && id < min_id)) {
+                found      = true;
+                min_energy = energy;
+                min_id     = id;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+        *out_id = min_id;
+        return true;
+    }
+
+    default:
+        return false;
+    }
+}
+
+/*
+ * Resolve the effective FORM/CONVERGE target for this tick, per
+ * intent.frame (bse.h).  ABSOLUTE returns intent.target unchanged — never
+ * fails, and is the zero/default value so every existing caller is
+ * unaffected.  COLLECTIVE returns the live participant centroid (fails
+ * only if there are literally no participants, which never happens since
+ * self always counts).  ELEMENT resolves and DEBOUNCES the anchor selector
+ * (bse.h's TAPESTRY_BSE_ANCHOR_HOLD_MS) and fails while no anchor has ever
+ * stabilized.
+ *
+ * The selector→id and id→position steps are deliberately split
+ * (resolve_anchor_selector() / lookup_anchor_position()): debouncing is
+ * about choosing between competing VALID anchor candidates (e.g. a
+ * leadership flip or a lowest-energy tie see-sawing) — it is NOT meant to
+ * mask an anchor that has genuinely disappeared (no election yet, an
+ * explicit id that was never fresh).  That case fails immediately, same
+ * as EXCHANGE's own can't-compute-this-tick HOLD fallback; L4's own
+ * staleness threshold already smooths transient gossip gaps for the
+ * peer-lookup side.
+ */
+static bool resolve_effective_target(const world_model_t *wm,
+                                     const scr_state_t *scr,
+                                     tapestry_position_t *out)
+{
+    if (s_intent.frame == TAPESTRY_BSE_FRAME_ABSOLUTE) {
+        *out = s_intent.target;
+        return true;
+    }
+
+    if (s_intent.frame == TAPESTRY_BSE_FRAME_COLLECTIVE) {
+        element_id_t        ids[MAX_ELEMENTS];
+        tapestry_position_t pos[MAX_ELEMENTS];
+        int                 rank;
+        int count = collect_participants(wm, scr, ids, pos, &rank);
+        if (count == 0) {
+            return false;
+        }
+        float cx = 0.0f, cy = 0.0f;
+        for (int i = 0; i < count; i++) {
+            cx += pos[i].x;
+            cy += pos[i].y;
+        }
+        out->x = cx / (float)count;
+        out->y = cy / (float)count;
+        return true;
+    }
+
+    /* TAPESTRY_BSE_FRAME_ELEMENT.  Every path below funnels through
+     * `resolved` so bse_anchor_lost() (the CHOREO_EVENT_ANCHOR_LOST
+     * source) has one place to be set, instead of repeating it at every
+     * return. */
+    bool resolved = false;
+    element_id_t raw_id;
+    if (!resolve_anchor_selector(wm, scr, &raw_id)) {
+        s_act.anchor_locked          = false;
+        s_act.anchor_candidate_valid = false;
+    } else if (s_act.anchor_locked && raw_id == s_act.anchor_locked_id) {
+        s_act.anchor_candidate_valid = false;   /* stable — no pending switch */
+        resolved = lookup_anchor_position(wm, scr, raw_id, out);
+    } else {
+        /* raw_id differs from the locked anchor (or nothing locked yet). */
+        if (s_act.anchor_candidate_valid && s_act.anchor_candidate_id == raw_id) {
+            s_act.anchor_candidate_ms += WM_CYCLE_MS;
+        } else {
+            s_act.anchor_candidate_id    = raw_id;
+            s_act.anchor_candidate_ms    = 0;
+            s_act.anchor_candidate_valid = true;
+        }
+
+        if (s_act.anchor_candidate_ms >= TAPESTRY_BSE_ANCHOR_HOLD_MS) {
+            s_act.anchor_locked          = true;
+            s_act.anchor_locked_id       = raw_id;
+            s_act.anchor_candidate_valid = false;
+            resolved = lookup_anchor_position(wm, scr, raw_id, out);
+        } else if (s_act.anchor_locked) {
+            /* Candidate not yet confirmed: keep using the still-locked
+             * anchor (don't disturb a stable anchor for an unconfirmed
+             * switch). */
+            resolved = lookup_anchor_position(wm, scr, s_act.anchor_locked_id, out);
+        }
+        /* else: nothing locked yet — first-ever resolution waits out the
+         * same hold time as any other switch; resolved stays false. */
+    }
+
+    if (!resolved) {
+        s_anchor_lost = true;
+    }
+    return resolved;
 }
 
 /*
@@ -296,6 +515,9 @@ static void reset_activation(void)
     s_act.hold_captured    = false;
     s_act.ex_captured      = false;
     s_act.move_captured    = false;
+    s_act.anchor_locked           = false;
+    s_act.anchor_candidate_valid  = false;
+    s_act.spin_theta              = 0.0f;
 }
 
 void bse_init(element_id_t self_id)
@@ -306,6 +528,7 @@ void bse_init(element_id_t self_id)
     s_intent.type    = TAPESTRY_BSE_INTENT_IDLE;
     s_directive.type = TAPESTRY_BSE_DIRECTIVE_IDLE;
     s_parked_depth   = 0;
+    s_track_scope    = 0;
 
     reset_activation();
 }
@@ -381,6 +604,7 @@ bool bse_has_parked_intent(void)
 void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 {
     s_goal_pt_valid = false;
+    s_anchor_lost   = false;
 
     switch (s_intent.type) {
 
@@ -496,18 +720,29 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             break;
         }
 
-        tapestry_position_t tgt;
+        /* Frame resolution (bse.h §5) — eff_target replaces every use of
+         * intent.target below; ABSOLUTE (default) makes eff_target ==
+         * intent.target exactly, so this is a no-op for every existing
+         * caller. */
+        tapestry_position_t eff_target;
+        if (!resolve_effective_target(wm, scr, &eff_target)) {
+            s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
+            break;
+        }
+
+        /* Own vertex OFFSET from eff_target (the frame origin) — computed
+         * separately from eff_target itself so motion == SPIN (below) can
+         * rotate just the offset, shape-agnostically, instead of every
+         * shape needing its own rotation math. */
+        float ox, oy;
         switch (s_intent.shape) {
         case TAPESTRY_BSE_SHAPE_LINE: {
-            /* Evenly spaced along the X axis, centered on intent.target,
-             * spanning [-radius, +radius]. */
-            if (count > 1) {
-                float step = (2.0f * s_intent.radius) / (float)(count - 1);
-                tgt.x = s_intent.target.x - s_intent.radius + step * (float)rank;
-            } else {
-                tgt.x = s_intent.target.x;
-            }
-            tgt.y = s_intent.target.y;
+            /* Evenly spaced along the X axis, spanning [-radius, +radius]. */
+            ox = (count > 1)
+                 ? -s_intent.radius
+                   + (2.0f * s_intent.radius) / (float)(count - 1) * (float)rank
+                 : 0.0f;
+            oy = 0.0f;
             break;
         }
         case TAPESTRY_BSE_SHAPE_GRID: {
@@ -516,20 +751,36 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             int rows = (int)ceilf((float)count / (float)cols);
             int col  = rank % cols;
             int row  = rank / cols;
-            tgt.x = s_intent.target.x
-                    + ((float)col - 0.5f * (float)(cols - 1)) * s_intent.radius;
-            tgt.y = s_intent.target.y
-                    + ((float)row - 0.5f * (float)(rows - 1)) * s_intent.radius;
+            ox = ((float)col - 0.5f * (float)(cols - 1)) * s_intent.radius;
+            oy = ((float)row - 0.5f * (float)(rows - 1)) * s_intent.radius;
             break;
         }
         case TAPESTRY_BSE_SHAPE_CIRCLE:
         default: {
             float angle = 2.0f * BSE_PI * (float)rank / (float)count;
-            tgt.x = s_intent.target.x + s_intent.radius * cosf(angle);
-            tgt.y = s_intent.target.y + s_intent.radius * sinf(angle);
+            ox = s_intent.radius * cosf(angle);
+            oy = s_intent.radius * sinf(angle);
             break;
         }
         }
+
+        /* Motion (bse.h §6): SPIN rotates the offset about the frame
+         * origin at spin_rate_radps.  Achievement generalizes unchanged —
+         * s_goal_pt is tick-scoped and simply tracks the rotating vertex. */
+        if (s_intent.motion == TAPESTRY_BSE_MOTION_SPIN) {
+            s_act.spin_theta += s_intent.spin_rate_radps
+                               * ((float)WM_CYCLE_MS * 0.001f);
+            float c = cosf(s_act.spin_theta);
+            float s = sinf(s_act.spin_theta);
+            float rox = ox * c - oy * s;
+            float roy = ox * s + oy * c;
+            ox = rox;
+            oy = roy;
+        }
+
+        tapestry_position_t tgt;
+        tgt.x = eff_target.x + ox;
+        tgt.y = eff_target.y + oy;
 
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
         s_directive.target = tgt;
@@ -577,14 +828,27 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
         break;
     }
 
-    case TAPESTRY_BSE_INTENT_CONVERGE:
+    case TAPESTRY_BSE_INTENT_CONVERGE: {
         /* All elements gather at the identical point — deliberately
-         * different from MOVE (see above), which preserves formation. */
+         * different from MOVE (see above), which preserves formation.
+         * Frame resolution (bse.h §5): ABSOLUTE (default) makes eff_target
+         * == intent.target exactly — no-op for every existing caller.
+         * intent.motion is deliberately never read here — CONVERGE's
+         * target IS the frame origin (zero offset from it), so "rotating
+         * the offset" (bse.h §6) is a no-op; script_toml.py rejects
+         * motion = "spin" on converge rather than silently accept a goal
+         * that visibly does nothing. */
+        tapestry_position_t eff_target;
+        if (!resolve_effective_target(wm, scr, &eff_target)) {
+            s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
+            break;
+        }
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
-        s_directive.target = s_intent.target;
-        s_goal_pt          = s_intent.target;
+        s_directive.target = eff_target;
+        s_goal_pt          = eff_target;
         s_goal_pt_valid    = true;
         break;
+    }
 
     case TAPESTRY_BSE_INTENT_DISPERSE:
         s_directive.type     = TAPESTRY_BSE_DIRECTIVE_MAINTAIN_SPRING;
@@ -676,4 +940,14 @@ const tapestry_bse_directive_t *bse_get_directive(void)
 bool bse_goal_achieved(void)
 {
     return s_act.achieved;
+}
+
+bool bse_anchor_lost(void)
+{
+    return s_anchor_lost;
+}
+
+void bse_set_track_scope(uint8_t track)
+{
+    s_track_scope = track;
 }

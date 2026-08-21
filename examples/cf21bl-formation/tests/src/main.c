@@ -1007,4 +1007,627 @@ ZTEST(choreo_script, test_ordinary_submit_while_preempted_drops_parked_goal)
                   "must resume the goal from the dropping submit, not the discarded HOLD");
 }
 
+/* ── Frames + anchors (Choreo SDK Design doc §5, FORM/CONVERGE only) ────── */
+
+ZTEST(choreo_script, test_frame_absolute_is_unchanged_default)
+{
+    /* frame left at its zero value (ABSOLUTE) must behave byte-identical
+     * to every goal submitted before this feature existed. */
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE, .target = { 7.0f, 3.0f } };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT, "directive");
+    zassert_within(d->target.x, 7.0f, EPS, "absolute target.x unchanged");
+    zassert_within(d->target.y, 3.0f, EPS, "absolute target.y unchanged");
+}
+
+ZTEST(choreo_script, test_frame_collective_converge_gathers_at_centroid)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 4.0f, 0.0f, false);   /* centroid = (2,0) */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_COLLECTIVE };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 2.0f, EPS, "collective centroid.x");
+    zassert_within(d->target.y, 0.0f, EPS, "collective centroid.y");
+}
+
+ZTEST(choreo_script, test_frame_collective_form_centers_shape_on_centroid)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 10.0f, 0.0f, false);   /* centroid = (5,0) */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_FORM, .shape = TAPESTRY_BSE_SHAPE_LINE,
+                        .radius = 3.0f, .frame = TAPESTRY_BSE_FRAME_COLLECTIVE };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    /* self is rank 0 of 2 on a LINE spanning [-3,+3] around centroid (5,0) */
+    zassert_within(d->target.x, 2.0f, EPS, "form-collective rank0 x");
+}
+
+ZTEST(choreo_script, test_frame_element_anchor_debounces_before_locking)
+{
+    /* A brand-new anchor resolution must not drive a directive until it
+     * has been stable for TAPESTRY_BSE_ANCHOR_HOLD_MS (2000ms) — the same
+     * flight-discovered lesson QUORUM_UP_MS encodes elsewhere. */
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 3.0f, 4.0f);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_SELF };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+
+    for (int i = 0; i < 19; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
+                  "still debouncing before the hold time elapses");
+
+    scr_tick(&scr, &wm); choreo_tick(&wm, &scr);
+    scr_tick(&scr, &wm); choreo_tick(&wm, &scr);   /* tick 21: 2000ms reached */
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "locked in after the hold time");
+    zassert_within(d->target.x, 3.0f, EPS, "self-anchor target.x");
+    zassert_within(d->target.y, 4.0f, EPS, "self-anchor target.y");
+}
+
+ZTEST(choreo_script, test_frame_element_leader_anchor_tracks_live)
+{
+    choreo_init(1);
+    scr_state_t scr;
+    scr_init(&scr, 1, 0, 0, SCR_CAP_NONE);   /* id 0 outranks id 1 -> leader */
+
+    wm_reset();
+    wm_set_self(1, 1, 9.0f, 9.0f);
+    wm_set_peer(0, 5.0f, 5.0f, false);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_LEADER };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 21; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 5.0f, EPS, "leader-anchor target.x");
+    zassert_within(d->target.y, 5.0f, EPS, "leader-anchor target.y");
+
+    /* The leader vanishing (goes stale) must not silently keep steering
+     * toward its last known position, nor snap to the new leader before
+     * that switch has been confirmed stable — it falls back to HOLD
+     * immediately (undebounced loss, same as EXCHANGE's own can't-
+     * compute-this-tick fallback; debouncing is only for choosing between
+     * competing VALID candidates). */
+    wm.entries[0].is_stale = true;
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
+                  "leader vanishing falls back to HOLD immediately");
+
+    wm.entries[0].is_stale = false;
+    for (int i = 0; i < 21; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    d = choreo_get_directive();
+    zassert_within(d->target.x, 5.0f, EPS, "leader-anchor relocks after reappearing");
+}
+
+ZTEST(choreo_script, test_frame_element_id_anchor_live_no_lag)
+{
+    /* §5.3: element-frame anchors bind LIVE, not snapshotted — once
+     * locked, the SAME anchor's position must track it every tick with
+     * no additional debounce (debounce only gates switching WHICH id is
+     * the anchor). */
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 1.0f, 1.0f, false);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_ID, .anchor_id = 1 };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 21; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_within(choreo_get_directive()->target.x, 1.0f, EPS, "locked onto peer 1");
+
+    wm_set_peer(1, 8.0f, 8.0f, false);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 8.0f, EPS,
+                   "live tracking, no additional debounce lag");
+}
+
+ZTEST(choreo_script, test_frame_element_lowest_energy_anchor)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm.entries[0].state.energy_level = 90;
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm.entries[1].state.energy_level = 80;
+    wm_set_peer(2, 9.0f, 9.0f, false);
+    wm.entries[2].state.energy_level = 20;   /* lowest */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 21; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
+                   "lowest-energy anchor picks peer 2");
+}
+
+/* ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────── */
+
+ZTEST(choreo_script, test_motion_spin_rotates_the_form_vertex)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 5.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = {
+        .type = CHOREO_GOAL_FORM, .shape = TAPESTRY_BSE_SHAPE_CIRCLE,
+        .radius = 5.0f, .target = { 0.0f, 0.0f },
+        .motion = TAPESTRY_BSE_MOTION_SPIN, .spin_rate_radps = 0.5f,
+    };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+
+    scr_tick(&scr, &wm); choreo_tick(&wm, &scr);   /* t=0.1s */
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    float theta = 0.5f * 0.1f;
+    zassert_within(d->target.x, 5.0f * cosf(theta), EPS, "spin tick1 x");
+    zassert_within(d->target.y, 5.0f * sinf(theta), EPS, "spin tick1 y");
+
+    for (int i = 0; i < 19; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    d = choreo_get_directive();   /* t=2.0s total */
+    theta = 0.5f * 2.0f;
+    zassert_within(d->target.x, 5.0f * cosf(theta), EPS, "spin t=2s x");
+    zassert_within(d->target.y, 5.0f * sinf(theta), EPS, "spin t=2s y");
+}
+
+ZTEST(choreo_script, test_motion_spin_ignored_by_converge)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = {
+        .type = CHOREO_GOAL_CONVERGE, .target = { 4.0f, 4.0f },
+        .motion = TAPESTRY_BSE_MOTION_SPIN, .spin_rate_radps = 1.0f,
+    };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 50; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 4.0f, EPS, "converge ignores motion x");
+    zassert_within(d->target.y, 4.0f, EPS, "converge ignores motion y");
+}
+
+ZTEST(choreo_script, test_motion_spin_with_no_duration_bound_is_rejected)
+{
+    /* A non-terminal motion never "completes" — until=achieved alone is
+     * not a sufficient exit, only a valid early-advance on top of a real
+     * duration bound. */
+    choreo_init(0);
+    static const choreo_step_t bad[] = {
+        { .goal = { .type = CHOREO_GOAL_FORM, .shape = TAPESTRY_BSE_SHAPE_CIRCLE,
+                   .radius = 3.0f, .motion = TAPESTRY_BSE_MOTION_SPIN,
+                   .spin_rate_radps = 0.5f },
+          .advance_on_achieved = true, .max_duration_ms = 0 },
+    };
+    zassert_equal(choreo_submit_script(bad, 1), -1,
+                  "spin with no duration bound must be rejected");
+
+    static const choreo_step_t good[] = {
+        { .goal = { .type = CHOREO_GOAL_FORM, .shape = TAPESTRY_BSE_SHAPE_CIRCLE,
+                   .radius = 3.0f, .motion = TAPESTRY_BSE_MOTION_SPIN,
+                   .spin_rate_radps = 0.5f },
+          .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(good, 1), 0,
+                  "spin with a real duration bound must be accepted");
+}
+
+/* ── Events + transitions (Choreo SDK Design doc §8, single track) ──────── */
+
+ZTEST(choreo_script, test_explicit_achieved_transition_skips_a_step)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_ACHIEVED, .goto_step_idx = 2 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 99.0f, 99.0f } },
+          .max_duration_ms = 60000 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 7.0f, 7.0f } },
+          .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 3), 0, "submit failed");
+    for (int i = 0; i < 3; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_script_step(), 2, "must skip step 1 via the explicit transition");
+    zassert_within(choreo_get_directive()->target.x, 7.0f, EPS, "landed on step 2");
+}
+
+/* Regression scenario: the design doc's "welcome dance" (§8.3) — the
+ * flagship demo for this feature. A fourth element joining redirects to
+ * an "orbit" step; it leaving redirects back. */
+ZTEST(choreo_script, test_element_joined_and_lost_cycle_the_welcome_dance)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);   /* solo: swarm_size = 1 */
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 300000,
+          .on = { { .event = CHOREO_EVENT_ELEMENT_JOINED, .goto_step_idx = 1 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 1.0f, 1.0f } },
+          .max_duration_ms = 300000,
+          .on = { { .event = CHOREO_EVENT_ELEMENT_LOST, .goto_step_idx = 0 } },
+          .n_transitions = 1 },
+    };
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+    for (int i = 0; i < 5; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_script_step(), 0, "still step 0 while solo");
+
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    for (int i = 0; i < 19; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_script_step(), 0, "still debouncing the join");
+    for (int i = 0; i < 2; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_script_step(), 1, "element_joined fired after the debounce");
+
+    wm.entries[1].is_stale = true;
+    for (int i = 0; i < 21; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_script_step(), 0, "element_lost cycled back to step 0");
+}
+
+ZTEST(choreo_script, test_count_transitions_check_in_declaration_order)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 1.0f, 1.0f, false);
+    wm_set_peer(2, 2.0f, 2.0f, false);
+    scr_tick(&scr, &wm);   /* swarm_size = 3 */
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on = {
+              { .event = CHOREO_EVENT_COUNT_EQ, .threshold = 3, .goto_step_idx = 2 },
+              { .event = CHOREO_EVENT_COUNT_GTE, .threshold = 2, .goto_step_idx = 1 },
+          },
+          .n_transitions = 2 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 1.0f, 1.0f } },
+          .max_duration_ms = 60000 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 3.0f, 3.0f } },
+          .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 3), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 2,
+                  "count_eq(3), declared first, wins over count_gte(2)");
+}
+
+ZTEST(choreo_script, test_anchor_lost_transition)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE,
+                   .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                   .anchor = TAPESTRY_BSE_ANCHOR_ID, .anchor_id = 9 },
+          .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_ANCHOR_LOST, .goto_step_idx = 1 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 4.0f, 4.0f } },
+          .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 1,
+                  "an anchor that was never fresh transitions immediately");
+}
+
+ZTEST(choreo_script, test_goto_end_completes_the_script_early)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_ACHIEVED, .goto_step_idx = 1 } },
+          .n_transitions = 1 },   /* goto_step_idx == n_steps == "end" */
+    };
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+    for (int i = 0; i < 3; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_true(choreo_script_complete(), "goto=end must complete the script");
+}
+
+ZTEST(choreo_script, test_out_of_range_goto_is_rejected_at_submit)
+{
+    choreo_init(0);
+    static const choreo_step_t bad[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_ACHIEVED, .goto_step_idx = 5 } },
+          .n_transitions = 1 },
+    };
+    zassert_equal(choreo_submit_script(bad, 1), -1,
+                  "an out-of-range goto_step_idx must be rejected up front");
+}
+
+ZTEST(choreo_script, test_track_capability_filter_falls_through_to_catchall)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);   /* no sensor */
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t sensing_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    static const choreo_step_t catchall_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 9.0f, 9.0f } },
+          .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[2] = {
+        { .filter = { .required_caps = CHOREO_CAP_SENSING },
+          .steps = sensing_steps, .n_steps = 1 },
+        { .filter = { 0 }, .steps = catchall_steps, .n_steps = 1 },
+    };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 2), 0, "submit failed");
+    zassert_equal(choreo_current_track(), 1,
+                  "no SENSOR cap must fall through to the catch-all track");
+}
+
+ZTEST(choreo_script, test_track_capability_filter_matches_first_track)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_SENSOR);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t sensing_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    static const choreo_step_t catchall_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 9.0f, 9.0f } },
+          .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[2] = {
+        { .filter = { .required_caps = CHOREO_CAP_SENSING },
+          .steps = sensing_steps, .n_steps = 1 },
+        { .filter = { 0 }, .steps = catchall_steps, .n_steps = 1 },
+    };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 2), 0, "submit failed");
+    zassert_equal(choreo_current_track(), 0,
+                  "SENSOR cap must match the first declared track");
+}
+
+ZTEST(choreo_script, test_track_no_match_and_no_catchall_is_rejected)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t steps[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[1] = {
+        { .filter = { .required_caps = CHOREO_CAP_SENSING }, .steps = steps, .n_steps = 1 },
+    };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 1), -1,
+                  "no catch-all and no match must be rejected at submission");
+}
+
+ZTEST(choreo_script, test_track_energy_low_migration_is_debounced)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm.entries[0].state.health_flags = ELEMENT_HEALTH_OK;
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t low_battery_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
+          .max_duration_ms = 60000 },
+    };
+    static const choreo_step_t normal_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[2] = {
+        { .filter = { .requires_energy_low = true },
+          .steps = low_battery_steps, .n_steps = 1 },
+        { .filter = { 0 }, .steps = normal_steps, .n_steps = 1 },
+    };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 2), 0, "submit failed");
+    zassert_equal(choreo_current_track(), 1, "starts on the catch-all track, not low");
+
+    wm.entries[0].state.health_flags = ELEMENT_HEALTH_LOW_BATTERY;
+    for (int i = 0; i < 19; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_current_track(), 1, "still debouncing the low-battery switch");
+    for (int i = 0; i < 2; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_current_track(), 0,
+                  "migrated to the low-battery track after the debounce hold");
+    zassert_within(choreo_get_directive()->target.x, 0.0f, EPS,
+                   "directive now driven by the low-battery track's goal");
+}
+
+ZTEST(choreo_script, test_track_scoped_collective_excludes_other_track_peer)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 10.0f, 0.0f, false);
+    wm.entries[1].state.current_track = 0;    /* same track as self */
+    wm_set_peer(2, 100.0f, 100.0f, false);
+    wm.entries[2].state.current_track = 1;    /* DIFFERENT track */
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t steps[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE,
+                   .frame = TAPESTRY_BSE_FRAME_COLLECTIVE },
+          .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[1] = { { .filter = { 0 }, .steps = steps, .n_steps = 1 } };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 1), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+
+    /* Centroid of self(0,0) + peer1(10,0) only == (5,0); peer2 on a
+     * different track must not skew it toward (100,100). */
+    zassert_within(choreo_get_directive()->target.x, 5.0f, EPS,
+                   "collective centroid must exclude the different-track peer");
+    zassert_within(choreo_get_directive()->target.y, 0.0f, EPS,
+                   "collective centroid must exclude the different-track peer");
+}
+
+ZTEST(choreo_script, test_track_default_still_counts_default_track_peer)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 10.0f, 0.0f, false);   /* current_track defaults to 0, like every peer today */
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t steps[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE,
+                   .frame = TAPESTRY_BSE_FRAME_COLLECTIVE },
+          .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(steps, 1), 0, "submit failed");
+    zassert_equal(choreo_current_track(), 0, "a no-tracks script reports track 0");
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 5.0f, EPS,
+                   "a no-tracks script still counts a default-track peer");
+}
+
+ZTEST(choreo_script, test_track_ordinary_goal_drops_multitrack_mode)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t steps[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[2] = {
+        { .filter = { .requires_energy_low = true }, .steps = steps, .n_steps = 1 },
+        { .filter = { 0 }, .steps = steps, .n_steps = 1 },
+    };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 2), 0, "submit tracks failed");
+    zassert_equal(choreo_current_track(), 1, "on the catch-all track");
+
+    choreo_goal_t plain = { .type = CHOREO_GOAL_HOLD };
+    zassert_equal(choreo_submit_goal(&plain), 0, "submit plain goal over tracks failed");
+    zassert_equal(choreo_current_track(), 0,
+                  "an ordinary goal submission must drop multi-track mode");
+}
+
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

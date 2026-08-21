@@ -7,8 +7,9 @@ scope. Backed by the BSE engine from sdk/python/tapestry/bse.py.
 """
 
 import errno as _errno
-from .bse import BSE, BSEIntent, BSEIntentType, BSEShape, BSEDirective
-from dataclasses import dataclass
+from .bse import (BSE, BSEIntent, BSEIntentType, BSEShape, BSEDirective,
+                  BSEFrame, BSEAnchorSelector, BSEMotion)
+from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional, List
 
@@ -73,8 +74,48 @@ class GoalShape(IntEnum):
     GRID   = 3
 
 
+class ChoreoEvent(IntEnum):
+    """Choreo SDK Design doc §8.2's event vocabulary, this subset only
+    (the "welcome dance" demo, §8.3's flagship for this feature, uses
+    only ELEMENT_JOINED/ELEMENT_LOST).  Mirrors choreo_event_t (choreo.h)
+    — see that header for why quorum_degraded/quorum_lost/
+    quorum_recovered aren't here yet (they'd need to suppress the
+    engine's existing automatic RUNNING -> SUSPENDED transition, which
+    needs its own careful design)."""
+    ACHIEVED       = 0
+    ELEMENT_JOINED = 1
+    ELEMENT_LOST   = 2
+    COUNT_GTE      = 3   # threshold
+    COUNT_EQ       = 4   # threshold
+    ANCHOR_LOST    = 5
+
+
+# Bounded to match choreo.h's CHOREO_MAX_TRANSITIONS — enforced in
+# submit_script() so a script validated in Python won't silently exceed
+# what the C runtime's fixed-size array can hold.
+CHOREO_MAX_TRANSITIONS = 4
+
+# Bounded to match choreo.h's CHOREO_MAX_TRACKS.
+CHOREO_MAX_TRACKS = 4
+
+# Mirrors csm.h's ELEMENT_HEALTH_LOW_BATTERY bit — the wire-gossiped
+# health_flags bitmask, not a locally-recomputed energy_level threshold
+# (that derivation is platform-specific; see main.c's cf21bl_pm_battery_low()).
+ELEMENT_HEALTH_LOW_BATTERY = 0x01
+
+
+@dataclass
+class ChoreoTransition:
+    """One guarded transition (choreo_transition_t, choreo.h).
+    goto_step_idx == len(steps) is "end" — completes the script from
+    anywhere, exactly like naturally completing the last step."""
+    event:         ChoreoEvent
+    goto_step_idx: int
+    threshold:     int = 0   # COUNT_GTE / COUNT_EQ only
+
+
 class ChoreoScope(IntEnum):
-    """Whose achievement gates an advance_on_achieved step (design doc v0.2
+    """Whose achievement gates an advance_on_achieved step (design doc
     §8.5). SELF (default) is this element's own achievement only. ALL is
     the collective predicate — this element's own achievement AND every
     fresh peer's gossiped achieved bit (see Choreo._collective_achieved).
@@ -103,6 +144,11 @@ class Goal:
     direct_path:     bool = False  # EXCHANGE beeline vs arc (see bse.py)
     achieve_eps:     float = 0.0 # achievement radius (0 → BSE default)
     achieve_hold_ms: int = 0     # sustain time, ms (0 → BSE default)
+    frame:           BSEFrame = BSEFrame.ABSOLUTE   # FORM/CONVERGE only (bse.py §5)
+    anchor:          BSEAnchorSelector = BSEAnchorSelector.LEADER  # frame==ELEMENT only
+    anchor_id:       int = 0     # anchor==ID only
+    motion:          BSEMotion = BSEMotion.STATIC   # FORM only (bse.py §6)
+    spin_rate_radps: float = 0.0                    # motion==SPIN only
     id:              int = 0     # caller-assigned goal identity; 0 = anonymous.
                                  # Opaque to Tapestry — never generated or
                                  # interpreted here. Mirrors choreo_goal_t::id;
@@ -115,17 +161,41 @@ class Goal:
 class ChoreoStep:
     """One step of a linear Choreo script (the minimal Choreo container).
 
-    A step advances when its goal is achieved (advance_on_achieved) or when
-    max_duration_ms elapses (nonzero).  A step with neither would stall —
-    submit_script() rejects it.  Completing the last step terminates the
-    script: directive IDLE, the substrate-neutral quiescence signal (each
-    platform maps it to its own inactive posture; "take off" and "land"
-    never appear in the goal vocabulary).
+    A step advances on the FIRST matching declared transition (`on`,
+    checked in order — §8.2/§8.3), or, absent any match, when its goal is
+    achieved (advance_on_achieved) or max_duration_ms elapses (nonzero) —
+    the rule every step had before transitions existed.  A step with none
+    of these would stall — submit_script() rejects it.  Completing the
+    last step (or a transition's goto_step_idx == len(steps), "end")
+    terminates the script: directive IDLE, the substrate-neutral
+    quiescence signal (each platform maps it to its own inactive posture;
+    "take off" and "land" never appear in the goal vocabulary).
     """
     goal:                Goal
     max_duration_ms:     int = 0
     advance_on_achieved: bool = False
     scope:               int = ChoreoScope.SELF   # whose achievement counts
+    on: List[ChoreoTransition] = field(default_factory=list)
+
+
+@dataclass
+class ChoreoTrackFilter:
+    """Which elements belong to a track, evaluated by each element
+    against its OWN state only (never a peer's) — mirrors
+    choreo_track_filter_t (choreo.h §7).  The zero value (both fields
+    false/0) matches every element — the "all" default a script with no
+    [[tracks]] uses."""
+    required_caps:       int  = ChoreoCapabilities.NONE
+    requires_energy_low: bool = False
+
+
+@dataclass
+class ChoreoTrack:
+    """One participant-scoped step sequence (choreo_track_t, choreo.h
+    §7).  An element runs exactly one track at a time — filters are
+    evaluated in declaration order, first match wins."""
+    filter: ChoreoTrackFilter
+    steps:  List[ChoreoStep]
 
 
 # ── Choreo ────────────────────────────────────────────────────────────────────
@@ -168,6 +238,10 @@ class Choreo:
 
     WM_CYCLE_MS = 100   # step timers integrate time on this tick period
 
+    # Membership debounce hold time (CHOREO_EVENT_ELEMENT_JOINED/LOST/
+    # COUNT_*) — mirrors CHOREO_MEMBERSHIP_HOLD_MS (choreo.c).
+    MEMBERSHIP_HOLD_MS = 2000
+
     def __init__(self, element_id: int, capabilities: Optional[int] = None):
         self._bse          = BSE(element_id)
         self._goal: Optional[Goal] = None
@@ -177,6 +251,26 @@ class Choreo:
         self._step_idx     = 0
         self._step_ms      = 0
         self._script_done  = False
+        # One debounce timer per Choreo instance, continuous across the
+        # whole script's lifetime (not reset per-step) — see
+        # _update_membership_debounce().
+        self._count_locked: Optional[int] = None
+        self._count_candidate: Optional[int] = None
+        self._count_candidate_ms = 0
+        # Tracks (choreo.h §7).  s_steps/s_step_idx/s_step_ms/s_goal above
+        # are reused AS-IS to mean "the ACTIVE track's step state" — an
+        # element runs one track at a time.  _tracks is None outside
+        # multi-track mode.
+        self._tracks: Optional[List[ChoreoTrack]] = None
+        self._n_tracks = 0
+        self._active_track_idx = 0
+        self._track_step_idx: List[int] = [0] * CHOREO_MAX_TRACKS
+        # Debounced track-selection state — same shape as the membership
+        # debounce above, but the very first determination (inside
+        # submit_tracks()) is immediate/undebounced; only subsequent
+        # re-evaluations from tick() go through this candidate/hold-timer.
+        self._track_candidate_idx: Optional[int] = None
+        self._track_candidate_ms = 0
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -226,6 +320,10 @@ class Choreo:
         self._steps    = None
         self._step_idx = 0
         self._step_ms  = 0
+        self._count_locked = None   # a fresh submission starts fresh
+        self._tracks   = None       # drop multi-track mode entirely
+        self._n_tracks = 0
+        self._bse.set_track_scope(0)   # bse's filter must not stay stuck nonzero
         self._bse.submit_intent(BSEIntent())   # IDLE intent
         self._goal  = None
         self._state = ChoreoState.IDLE
@@ -249,6 +347,36 @@ class Choreo:
             return rc
         return self.deploy()
 
+    def _validate_steps(self, steps: List[ChoreoStep]) -> int:
+        """Validate every step up front — a script (or, per-track, a
+        track) that would stall or fail a capability check mid-show is
+        rejected before anything moves.  Shared by submit_script() and
+        submit_tracks() so the two validation paths can't drift (mirrors
+        validate_steps() in choreo.c)."""
+        if not steps:
+            return -1
+        for st in steps:
+            if st.goal is None or st.goal.type == GoalType.NONE:
+                return -1
+            if not st.advance_on_achieved and st.max_duration_ms == 0:
+                return -1   # no exit condition — stalls by construction
+            if st.goal.motion == BSEMotion.SPIN and st.max_duration_ms == 0:
+                # A non-terminal motion never "completes" (bse.py §6) —
+                # until=achieved alone is not a sufficient exit, only a
+                # valid early-advance on top of a real duration bound.
+                return -1
+            if not self._caps_satisfied(st.goal.required_caps):
+                return -_errno.EPERM
+            if len(st.on) > CHOREO_MAX_TRANSITIONS:
+                return -1
+            for t in st.on:
+                # goto_step_idx == len(steps) is "end" (ChoreoTransition) —
+                # valid.  Anything past that would index off the list in
+                # _script_advance().
+                if t.goto_step_idx > len(steps):
+                    return -1
+        return 0
+
     def submit_script(self, steps: List[ChoreoStep]) -> int:
         """
         Load and start a goal sequence (mirrors choreo_submit_script).
@@ -259,15 +387,9 @@ class Choreo:
         Returns 0 on success, -1 on invalid arguments or an unadvanceable
         step, -errno.EPERM on capability mismatch.
         """
-        if not steps:
-            return -1
-        for st in steps:
-            if st.goal is None or st.goal.type == GoalType.NONE:
-                return -1
-            if not st.advance_on_achieved and st.max_duration_ms == 0:
-                return -1   # no exit condition — stalls by construction
-            if not self._caps_satisfied(st.goal.required_caps):
-                return -_errno.EPERM
+        rc0 = self._validate_steps(steps)
+        if rc0 != 0:
+            return rc0
 
         if self._state != ChoreoState.IDLE:
             self.terminate()
@@ -327,6 +449,135 @@ class Choreo:
             return self._goal.type
         return GoalType.NONE
 
+    # ── Tracks (choreo.h §7) ─────────────────────────────────────────────────
+
+    def _track_matches(self, filt: ChoreoTrackFilter,
+                       wm_entries: List[dict]) -> bool:
+        """Does `filt` match THIS element's own state?  Never inspects a
+        peer — track membership is always self-evaluated (mirrors
+        track_matches() in choreo.c)."""
+        if not self._caps_satisfied(filt.required_caps):
+            return False
+        if filt.requires_energy_low:
+            low = False
+            for e in wm_entries:
+                if e.get('is_self', False):
+                    low = (e.get('health_flags', 0) & ELEMENT_HEALTH_LOW_BATTERY) != 0
+                    break
+            if not low:
+                return False
+        return True
+
+    def _first_matching_track(self, wm_entries: List[dict]) -> Optional[int]:
+        """First declared track whose filter matches, or None if none do
+        (no catch-all "all" track declared) — mirrors
+        first_matching_track() in choreo.c."""
+        for i, tr in enumerate(self._tracks):
+            if self._track_matches(tr.filter, wm_entries):
+                return i
+        return None
+
+    def _migrate_to_track(self, new_track: int) -> None:
+        """Switch the active track to `new_track`, saving the outgoing
+        track's step index and resuming the incoming one's — then
+        activate its current step FRESH (new snapshot/timers), not a
+        preserved-state resume."""
+        self._track_step_idx[self._active_track_idx] = self._step_idx
+
+        self._active_track_idx = new_track
+        self._steps    = self._tracks[new_track].steps
+        self._step_idx = self._track_step_idx[new_track]
+        self._step_ms  = 0
+
+        self._goal = self._steps[self._step_idx].goal
+        self._bse.submit_intent(self._goal_to_intent(self._goal))
+
+    def _update_track_selection(self, wm_entries: List[dict]) -> None:
+        """Re-evaluate track membership once per RUNNING tick while in
+        multi-track mode.  Debounced exactly like
+        _update_membership_debounce() — a threshold reading (energy_low)
+        can jitter tick-to-tick same as a swarm-size count can."""
+        found = self._first_matching_track(wm_entries)
+        if found is None:
+            # No track currently claims this element — stay on the
+            # active track; there's nowhere well-defined to go.
+            self._track_candidate_idx = None
+            return
+
+        if found == self._active_track_idx:
+            self._track_candidate_idx = None
+            return
+        if self._track_candidate_idx == found:
+            self._track_candidate_ms += self.WM_CYCLE_MS
+        else:
+            self._track_candidate_idx = found
+            self._track_candidate_ms  = 0
+        if self._track_candidate_ms >= self.MEMBERSHIP_HOLD_MS:
+            self._migrate_to_track(found)
+            self._track_candidate_idx = None
+
+    def submit_tracks(self, wm_entries: List[dict],
+                      tracks: List[ChoreoTrack]) -> int:
+        """
+        Load and start a multi-track Choreo (mirrors choreo_submit_tracks).
+
+        Validates every track's every step exactly as submit_script() does,
+        then determines this element's initial track (first matching
+        filter, undebounced, evaluated against wm_entries) and deploys its
+        step 0.
+
+        Returns 0 on success, -1 on invalid arguments, an unadvanceable
+        step, an out-of-range transition target, too many tracks, or if no
+        track's filter matches this element (no catch-all "all" track
+        declared); -errno.EPERM on capability mismatch.
+        """
+        if not tracks or len(tracks) > CHOREO_MAX_TRACKS:
+            return -1
+        for tr in tracks:
+            rc0 = self._validate_steps(tr.steps)
+            if rc0 != 0:
+                return rc0
+
+        if self._state != ChoreoState.IDLE:
+            self.terminate()
+        self._script_done = False
+
+        self._tracks             = list(tracks)
+        self._n_tracks           = len(tracks)
+        self._track_step_idx     = [0] * CHOREO_MAX_TRACKS
+        self._track_candidate_idx = None
+
+        found = self._first_matching_track(wm_entries)
+        if found is None:
+            self._tracks   = None
+            self._n_tracks = 0
+            return -1   # no track's filter matches this element
+        self._active_track_idx = found
+        self._steps             = self._tracks[found].steps
+
+        rc = self.configure(self._steps[0].goal)
+        if rc != 0:
+            self._tracks   = None
+            self._n_tracks = 0
+            return rc
+        rc = self.deploy()
+        if rc != 0:
+            self._tracks   = None
+            self._n_tracks = 0
+            return rc
+
+        self._step_idx = 0
+        self._step_ms  = 0
+        return 0
+
+    def current_track(self) -> int:
+        """This element's active track index (0 if not currently in
+        multi-track mode, or on track 0).  The application must gossip
+        this on element_state_t's current_track before each gossip send —
+        it is what lets OTHER elements' bse._participants() filter to
+        peers on the SAME track; see wire.h's v4 comment."""
+        return self._active_track_idx if self._n_tracks > 0 else 0
+
     # ── Per-cycle ─────────────────────────────────────────────────────────────
 
     def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
@@ -339,8 +590,11 @@ class Choreo:
         on recovery.  Advances the active script per the ChoreoStep rules.
         """
         if self._state == ChoreoState.RUNNING:
+            if self._n_tracks > 0:
+                self._update_track_selection(wm_entries)
+            self._bse.set_track_scope(self.current_track())
             self._bse.tick(wm_entries, scr_state)
-            self._script_advance(wm_entries)
+            self._script_advance(wm_entries, scr_state)
             if (self._state == ChoreoState.RUNNING and
                     scr_state.get('quorum_state', 2) == self.QUORUM_LOST):
                 self._state = ChoreoState.SUSPENDED
@@ -371,31 +625,101 @@ class Choreo:
                 return False
         return True
 
-    def _script_advance(self, wm_entries: List[dict]) -> None:
+    def _swarm_size(self, wm_entries: List[dict]) -> int:
+        """Self + fresh active peer count — Python mirror of
+        scr_get_swarm_size() for the membership events below (no BFT
+        filtering in the Python SDK; matches bse.py's _participants())."""
+        count = 0
+        for e in wm_entries:
+            if e.get('is_self', False):
+                count += 1
+            elif e.get('is_active') and not e.get('is_stale'):
+                count += 1
+        return count
+
+    def _update_membership_debounce(self, wm_entries: List[dict]):
+        """Update the membership debounce timer from this tick's swarm
+        size and report one-tick (joined, lost) pulses.  See the
+        MEMBERSHIP_HOLD_MS comment (__init__) — ELEMENT_JOINED/
+        ELEMENT_LOST fire only on the tick a change is CONFIRMED stable;
+        COUNT_GTE/COUNT_EQ read the raw live count instead (a threshold
+        comparison has no "which direction changed" ambiguity to debounce)."""
+        raw = self._swarm_size(wm_entries)
+        if self._count_locked is None:
+            self._count_locked = raw
+            self._count_candidate_ms = 0
+            return False, False
+        if raw == self._count_locked:
+            self._count_candidate_ms = 0   # stable — no pending change
+            return False, False
+        if raw == self._count_candidate:
+            self._count_candidate_ms += self.WM_CYCLE_MS
+        else:
+            self._count_candidate    = raw
+            self._count_candidate_ms = 0
+        if self._count_candidate_ms >= self.MEMBERSHIP_HOLD_MS:
+            joined = raw > self._count_locked
+            lost   = raw < self._count_locked
+            self._count_locked = raw
+            return joined, lost
+        return False, False
+
+    def _event_fires(self, t: ChoreoTransition, st: ChoreoStep,
+                     wm_entries: List[dict], scr_state: dict,
+                     joined: bool, lost: bool) -> bool:
+        if t.event == ChoreoEvent.ACHIEVED:
+            return (self._collective_achieved(wm_entries)
+                   if st.scope == ChoreoScope.ALL
+                   else self._bse.goal_achieved())
+        if t.event == ChoreoEvent.ELEMENT_JOINED:
+            return joined
+        if t.event == ChoreoEvent.ELEMENT_LOST:
+            return lost
+        if t.event == ChoreoEvent.COUNT_GTE:
+            return self._swarm_size(wm_entries) >= t.threshold
+        if t.event == ChoreoEvent.COUNT_EQ:
+            return self._swarm_size(wm_entries) == t.threshold
+        if t.event == ChoreoEvent.ANCHOR_LOST:
+            return self._bse.anchor_lost()
+        return False
+
+    def _script_advance(self, wm_entries: List[dict], scr_state: dict) -> None:
         if self._steps is None:
             return
         st = self._steps[self._step_idx]
         self._step_ms += self.WM_CYCLE_MS
 
-        if st.advance_on_achieved:
-            achieved = (self._collective_achieved(wm_entries)
-                       if st.scope == ChoreoScope.ALL
-                       else self._bse.goal_achieved())
-        else:
-            achieved = False
-        advance = achieved or \
-                  (st.max_duration_ms > 0 and self._step_ms >= st.max_duration_ms)
-        if not advance:
-            return
+        joined, lost = self._update_membership_debounce(wm_entries)
 
-        self._step_idx += 1
+        target_idx: Optional[int] = None
+        for t in st.on:
+            if self._event_fires(t, st, wm_entries, scr_state, joined, lost):
+                target_idx = t.goto_step_idx
+                break   # first match wins
+
+        if target_idx is None:
+            if st.advance_on_achieved:
+                achieved = (self._collective_achieved(wm_entries)
+                           if st.scope == ChoreoScope.ALL
+                           else self._bse.goal_achieved())
+            else:
+                achieved = False
+            advance = achieved or \
+                      (st.max_duration_ms > 0 and self._step_ms >= st.max_duration_ms)
+            if not advance:
+                return
+            target_idx = self._step_idx + 1
+
         self._step_ms = 0
-        if self._step_idx >= len(self._steps):
+
+        if target_idx >= len(self._steps):
             # Script complete → quiescence: terminate submits the IDLE
             # intent; _script_done survives it.
             self._script_done = True
             self.terminate()
             return
+
+        self._step_idx = target_idx
         self._goal = self._steps[self._step_idx].goal
         self._bse.submit_intent(self._goal_to_intent(self._goal))
 
@@ -442,6 +766,11 @@ class Choreo:
             target = goal.target,
             radius = goal.radius,
             shape  = BSEShape(goal.shape),
+            frame     = goal.frame,
+            anchor    = goal.anchor,
+            anchor_id = goal.anchor_id,
+            motion          = goal.motion,
+            spin_rate_radps = goal.spin_rate_radps,
             slot_shift      = goal.slot_shift,
             direct_path     = goal.direct_path,
             achieve_eps     = goal.achieve_eps,

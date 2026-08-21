@@ -54,8 +54,8 @@ REGEN_RE = re.compile(r"choreoc\.py\s+(\S+)\s+-o\s+(\S+)")
 # requiring installation.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "python"))
 
-from tapestry.script_toml import (ChoreoScript, NormalizedStep, ScriptError,
-                                  parse_file)
+from tapestry.script_toml import (ChoreoScript, NormalizedStep,
+                                  NormalizedTrack, ScriptError, parse_file)
 
 GOAL_ENUM = {
     "hold":     "CHOREO_GOAL_HOLD",
@@ -70,6 +70,33 @@ SHAPE_ENUM = {
     "circle": "TAPESTRY_BSE_SHAPE_CIRCLE",
     "line":   "TAPESTRY_BSE_SHAPE_LINE",
     "grid":   "TAPESTRY_BSE_SHAPE_GRID",
+}
+
+FRAME_ENUM = {
+    "absolute":   "TAPESTRY_BSE_FRAME_ABSOLUTE",
+    "collective": "TAPESTRY_BSE_FRAME_COLLECTIVE",
+    "element":    "TAPESTRY_BSE_FRAME_ELEMENT",
+}
+
+ANCHOR_ENUM = {
+    "leader":        "TAPESTRY_BSE_ANCHOR_LEADER",
+    "id":            "TAPESTRY_BSE_ANCHOR_ID",
+    "self":          "TAPESTRY_BSE_ANCHOR_SELF",
+    "lowest-energy": "TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY",
+}
+
+MOTION_ENUM = {
+    "static": "TAPESTRY_BSE_MOTION_STATIC",
+    "spin":   "TAPESTRY_BSE_MOTION_SPIN",
+}
+
+EVENT_ENUM = {
+    "achieved":       "CHOREO_EVENT_ACHIEVED",
+    "element_joined": "CHOREO_EVENT_ELEMENT_JOINED",
+    "element_lost":   "CHOREO_EVENT_ELEMENT_LOST",
+    "count_gte":      "CHOREO_EVENT_COUNT_GTE",
+    "count_eq":       "CHOREO_EVENT_COUNT_EQ",
+    "anchor_lost":    "CHOREO_EVENT_ANCHOR_LOST",
 }
 
 CAP_FLAGS = [
@@ -101,6 +128,16 @@ def emit_step(s: NormalizedStep) -> str:
         goal_fields.append(f".radius = {c_float(s.radius)}")
     if s.shape is not None:
         goal_fields.append(f".shape = {SHAPE_ENUM[s.shape]}")
+    if s.frame != "absolute":
+        goal_fields.append(f".frame = {FRAME_ENUM[s.frame]}")
+    if s.anchor_select is not None:
+        goal_fields.append(f".anchor = {ANCHOR_ENUM[s.anchor_select]}")
+    if s.anchor_id is not None:
+        goal_fields.append(f".anchor_id = {s.anchor_id}u")
+    if s.motion != "static":
+        goal_fields.append(f".motion = {MOTION_ENUM[s.motion]}")
+    if s.spin_rate_radps is not None:
+        goal_fields.append(f".spin_rate_radps = {c_float(s.spin_rate_radps)}")
     if s.required_caps:
         goal_fields.append(f".required_caps = {caps_expr(s.required_caps)}")
     if s.slot_shift is not None:
@@ -125,11 +162,30 @@ def emit_step(s: NormalizedStep) -> str:
                   f"{'true' if s.advance_on_achieved else 'false'}"]
     if s.scope:
         step_fields.append(".scope = CHOREO_SCOPE_ALL")
+    if s.on:
+        entries = []
+        for t in s.on:
+            fields = [f".event = {EVENT_ENUM[t.event]}",
+                     f".goto_step_idx = {t.goto_step_idx}u"]
+            if t.threshold:
+                fields.append(f".threshold = {t.threshold}u")
+            entries.append("{ " + ", ".join(fields) + " }")
+        step_fields.append(f".on = {{ {', '.join(entries)} }}")
+        step_fields.append(f".n_transitions = {len(s.on)}u")
     lines.append("      " + ", ".join(step_fields) + " },")
     return "\n".join(lines)
 
 
-def emit_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> str:
+def emit_track_filter(t: NormalizedTrack) -> str:
+    fields = []
+    if t.required_caps:
+        fields.append(f".required_caps = {caps_expr(t.required_caps)}")
+    if t.requires_energy_low:
+        fields.append(".requires_energy_low = true")
+    return "{ " + ", ".join(fields) + " }" if fields else "{ 0 }"
+
+
+def _emit_steps_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> str:
     steps = "\n\n".join(emit_step(s) for s in script.steps)
     return f"""\
 /*
@@ -159,6 +215,69 @@ static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {{
 
 #endif /* TAPESTRY_CHOREO_SCRIPT_H */
 """
+
+
+def _emit_tracks_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> str:
+    tracks = script.tracks
+    assert tracks is not None
+
+    step_arrays = []
+    track_entries = []
+    for i, t in enumerate(tracks):
+        arr_name = f"k_choreo_track{i}_steps"
+        steps = "\n\n".join(emit_step(s) for s in t.steps)
+        step_arrays.append(
+            f"static const choreo_step_t {arr_name}[{len(t.steps)}] = {{\n"
+            f"{steps}\n}};")
+        track_entries.append(
+            f"    {{ .filter = {emit_track_filter(t)},\n"
+            f"      .steps = {arr_name}, .n_steps = {len(t.steps)}u }},")
+
+    step_arrays_text  = "\n\n".join(step_arrays)
+    track_table_text  = "\n".join(track_entries)
+    # An element runs exactly one track at a time (choreo.h §7), so this is
+    # a hard upper bound on ANY single element's runtime, same guarantee
+    # CHOREO_SCRIPT_TOTAL_TIMEOUT_MS gives a single-track script.
+    total_timeout_ms = max(t.total_timeout_ms for t in tracks)
+
+    return f"""\
+/*
+ * choreo_script.h — GENERATED from {src_name} — DO NOT EDIT.
+ *
+ * Choreo: "{script.name}" ({len(tracks)} tracks, §7)
+ * Regenerate after editing the script file:
+ *   {regen_cmd}
+ *
+ * Every step is time-bounded by construction (choreoc requires it).  An
+ * element runs exactly one track at a time, chosen by the first filter it
+ * matches (choreo_submit_tracks()); CHOREO_SCRIPT_TOTAL_TIMEOUT_MS is the
+ * worst case across every track — a hard upper bound on any single
+ * element's runtime for mission-backstop math.
+ */
+
+#ifndef TAPESTRY_CHOREO_SCRIPT_H
+#define TAPESTRY_CHOREO_SCRIPT_H
+
+#include <tapestry/choreo.h>
+
+#define CHOREO_NAME                    "{script.name}"
+#define CHOREO_N_TRACKS                {len(tracks)}u
+#define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS {total_timeout_ms}u
+
+{step_arrays_text}
+
+static const choreo_track_t k_choreo_tracks[CHOREO_N_TRACKS] = {{
+{track_table_text}
+}};
+
+#endif /* TAPESTRY_CHOREO_SCRIPT_H */
+"""
+
+
+def emit_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> str:
+    if script.tracks is not None:
+        return _emit_tracks_header(script, src_name, regen_cmd)
+    return _emit_steps_header(script, src_name, regen_cmd)
 
 
 def default_output(script_path: Path) -> Path:
@@ -266,9 +385,16 @@ def main() -> int:
         return 1
 
     out.write_text(text)
-    total_s = script.total_timeout_ms / 1000.0
-    print(f"choreoc: \"{script.name}\" — {len(script.steps)} step(s), "
-          f"total time bound {total_s:g} s → {out}")
+    if script.tracks is not None:
+        total_s = max(t.total_timeout_ms for t in script.tracks) / 1000.0
+        n_steps = sum(len(t.steps) for t in script.tracks)
+        print(f"choreoc: \"{script.name}\" — {len(script.tracks)} track(s), "
+              f"{n_steps} step(s) total, worst-case time bound "
+              f"{total_s:g} s → {out}")
+    else:
+        total_s = script.total_timeout_ms / 1000.0
+        print(f"choreoc: \"{script.name}\" — {len(script.steps)} step(s), "
+              f"total time bound {total_s:g} s → {out}")
     return 0
 
 

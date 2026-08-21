@@ -38,6 +38,51 @@ static uint32_t             s_step_ms;
 static bool                 s_script_active;
 static bool                 s_script_done;
 
+/* ── Membership debounce (CHOREO_EVENT_ELEMENT_JOINED/LOST/COUNT_*) ──────── */
+/*
+ * One debounce timer per Choreo instance, continuous across the whole
+ * script's lifetime (not reset per-step) — a count change is a fact about
+ * the collective, independent of which step is currently active.  Same
+ * "stable before acting on it" lesson as TAPESTRY_BSE_ANCHOR_HOLD_MS
+ * (bse.h): a single lucky/unlucky gossip frame must not fire
+ * element_joined/element_lost fleet-wide.
+ */
+#ifndef CHOREO_MEMBERSHIP_HOLD_MS
+#define CHOREO_MEMBERSHIP_HOLD_MS 2000u
+#endif
+static bool    s_count_locked_valid;
+static uint8_t s_count_locked;
+static uint8_t s_count_candidate;
+static uint32_t s_count_candidate_ms;
+
+/* ── Tracks (choreo.h §7) ──────────────────────────────────────────────────── */
+/*
+ * s_steps/s_n_steps/s_step_idx/s_step_ms/s_goal (already declared above)
+ * are reused AS-IS to mean "the ACTIVE track's step state" — an element
+ * runs one track at a time (choreo.h's comment), so there is nothing to
+ * add there.  What tracks add is: the track table itself, which track is
+ * active, and each INACTIVE track's own remembered step index (so
+ * re-entering a track resumes where it left off, per that same comment).
+ */
+static choreo_track_t s_tracks[CHOREO_MAX_TRACKS];
+static uint8_t         s_n_tracks;           /* 0 = not in multi-track mode */
+static uint8_t         s_active_track_idx;
+static uint8_t         s_track_step_idx[CHOREO_MAX_TRACKS];
+
+/* Debounced track-selection state — same shape as the membership debounce
+ * above, but NOT the same timer: track membership is (mostly) evaluated
+ * from THIS element's own state (capabilities, health_flags), not gossip-
+ * derived peer data, so the very first determination is made synchronously
+ * inside choreo_submit_tracks() itself (undebounced — there is no prior
+ * track to flicker away from on a fresh submission).  Every subsequent
+ * re-evaluation, from update_track_selection() each RUNNING tick, IS
+ * debounced through this candidate/hold-timer pair (a sensor reading near
+ * a threshold, e.g. energy_low, can jitter tick-to-tick same as anything
+ * else). */
+static uint8_t s_track_candidate_idx;
+static bool    s_track_candidate_valid;
+static uint32_t s_track_candidate_ms;
+
 /* ── Preemption stack ─────────────────────────────────────────────────────── */
 /*
  * choreo_preempt_goal() saves the goal + script engine state a normal
@@ -105,6 +150,11 @@ static tapestry_bse_intent_t goal_to_intent(const choreo_goal_t *goal)
     intent.target          = goal->target;
     intent.radius          = goal->radius;
     intent.shape           = goal->shape;
+    intent.frame           = goal->frame;
+    intent.anchor          = goal->anchor;
+    intent.anchor_id       = goal->anchor_id;
+    intent.motion          = goal->motion;
+    intent.spin_rate_radps = goal->spin_rate_radps;
     intent.slot_shift      = goal->slot_shift;
     intent.direct_path     = goal->direct_path;
     intent.achieve_eps     = goal->achieve_eps;
@@ -130,6 +180,8 @@ void choreo_init(element_id_t self_id)
     s_state        = CHOREO_STATE_IDLE;
     s_scr          = NULL;
     s_parked_depth = 0;
+    s_count_locked_valid = false;
+    s_n_tracks = 0;
     script_clear();
     s_script_done = false;
     bse_init(self_id);
@@ -180,6 +232,9 @@ static void terminate_hard(void)
     s_state = CHOREO_STATE_TERMINATED;
     script_clear();
     s_parked_depth = 0;   /* bse_submit_intent() below drops BSE's side too */
+    s_count_locked_valid = false;   /* a fresh submission starts fresh */
+    s_n_tracks = 0;                 /* drop multi-track mode entirely */
+    bse_set_track_scope(0);         /* bse.c's filter must not stay stuck nonzero */
     tapestry_bse_intent_t idle = { .type = TAPESTRY_BSE_INTENT_IDLE };
     bse_submit_intent(&idle);
     s_state = CHOREO_STATE_IDLE;
@@ -265,14 +320,15 @@ int choreo_submit_goal(const choreo_goal_t *goal)
     return choreo_deploy();
 }
 
-int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps)
+/* Validate every step up front — a script (or, per-track, a track) that
+ * would stall or fail a capability check mid-show is rejected before
+ * anything moves.  Shared by choreo_submit_script() and
+ * choreo_submit_tracks() so the two validation paths can't drift. */
+static int validate_steps(const choreo_step_t *steps, uint8_t n_steps)
 {
     if (steps == NULL || n_steps == 0) {
         return -1;
     }
-
-    /* Validate every step up front — a script that would stall or fail a
-     * capability check mid-show is rejected before anything moves. */
     for (uint8_t i = 0; i < n_steps; i++) {
         const choreo_step_t *st = &steps[i];
         if (st->goal.type == CHOREO_GOAL_NONE) {
@@ -281,9 +337,34 @@ int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps)
         if (!st->advance_on_achieved && st->max_duration_ms == 0u) {
             return -1;   /* no exit condition — stalls by construction */
         }
+        if (st->goal.motion == TAPESTRY_BSE_MOTION_SPIN &&
+            st->max_duration_ms == 0u) {
+            /* A non-terminal motion never "completes" (bse.h §6) —
+             * until=achieved alone is not a sufficient exit for a
+             * maintained goal, only a valid early-advance on top of a
+             * real duration bound. */
+            return -1;
+        }
         if (!caps_satisfied(st->goal.required_caps)) {
             return -EPERM;
         }
+        for (uint8_t j = 0; j < st->n_transitions; j++) {
+            /* goto_step_idx == n_steps is "end" (choreo.h) — valid.
+             * Anything past that would index off the array in
+             * script_advance(). */
+            if (st->on[j].goto_step_idx > n_steps) {
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+
+int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps)
+{
+    int rc0 = validate_steps(steps, n_steps);
+    if (rc0 != 0) {
+        return rc0;
     }
 
     if (s_state != CHOREO_STATE_IDLE) {
@@ -359,8 +440,77 @@ choreo_goal_type_t choreo_current_goal_type(void)
     return CHOREO_GOAL_NONE;
 }
 
-/* Advance the script if the current step's exit condition is met. */
-static void script_advance(const world_model_t *wm)
+/*
+ * Update the membership debounce timer from this tick's swarm size and
+ * report one-tick JOINED/LOST pulses (see the state comment above).
+ * ELEMENT_JOINED/ELEMENT_LOST fire only on the tick a change is
+ * CONFIRMED (stable for CHOREO_MEMBERSHIP_HOLD_MS); COUNT_GTE/COUNT_EQ
+ * (checked by the caller) read the raw live count instead — a threshold
+ * comparison doesn't have the same "which direction changed" ambiguity a
+ * flickering count does, so it isn't debounced the same way.
+ */
+static void update_membership_debounce(const scr_state_t *scr,
+                                       bool *joined, bool *lost)
+{
+    *joined = false;
+    *lost   = false;
+    uint8_t raw = scr_get_swarm_size(scr);
+
+    if (!s_count_locked_valid) {
+        s_count_locked_valid = true;
+        s_count_locked       = raw;
+        s_count_candidate_ms = 0;
+        return;
+    }
+    if (raw == s_count_locked) {
+        s_count_candidate_ms = 0;   /* stable — no pending change */
+        return;
+    }
+    if (raw == s_count_candidate) {
+        s_count_candidate_ms += WM_CYCLE_MS;
+    } else {
+        s_count_candidate    = raw;
+        s_count_candidate_ms = 0;
+    }
+    if (s_count_candidate_ms >= CHOREO_MEMBERSHIP_HOLD_MS) {
+        *joined         = raw > s_count_locked;
+        *lost           = raw < s_count_locked;
+        s_count_locked  = raw;
+    }
+}
+
+/* Does `event` fire this tick?  threshold/scope/wm/scr/joined/lost carry
+ * everything the CHOREO_EVENT_* variants need (choreo.h). */
+static bool event_fires(choreo_event_t event, uint8_t threshold,
+                        const choreo_step_t *st, const world_model_t *wm,
+                        const scr_state_t *scr, bool joined, bool lost)
+{
+    switch (event) {
+    case CHOREO_EVENT_ACHIEVED:
+        return (st->scope == CHOREO_SCOPE_ALL)
+               ? choreo_collective_achieved(wm)
+               : bse_goal_achieved();
+    case CHOREO_EVENT_ELEMENT_JOINED:
+        return joined;
+    case CHOREO_EVENT_ELEMENT_LOST:
+        return lost;
+    case CHOREO_EVENT_COUNT_GTE:
+        return scr_get_swarm_size(scr) >= threshold;
+    case CHOREO_EVENT_COUNT_EQ:
+        return scr_get_swarm_size(scr) == threshold;
+    case CHOREO_EVENT_ANCHOR_LOST:
+        return bse_anchor_lost();
+    default:
+        return false;
+    }
+}
+
+/* Advance the script if the current step's exit condition is met —
+ * either an explicit transition (checked first, first match wins) or,
+ * absent any match, the legacy advance_on_achieved/max_duration_ms rule
+ * (implicit next-index advance) every step had before transitions
+ * existed. */
+static void script_advance(const world_model_t *wm, const scr_state_t *scr)
 {
     if (!s_script_active) {
         return;
@@ -369,26 +519,40 @@ static void script_advance(const world_model_t *wm)
     const choreo_step_t *st = &s_steps[s_step_idx];
     s_step_ms += WM_CYCLE_MS;
 
-    bool advance = false;
-    if (st->advance_on_achieved) {
-        bool achieved = (st->scope == CHOREO_SCOPE_ALL)
-                        ? choreo_collective_achieved(wm)
-                        : bse_goal_achieved();
-        if (achieved) {
-            advance = true;
+    bool joined, lost;
+    update_membership_debounce(scr, &joined, &lost);
+
+    int target_idx = -1;
+    for (uint8_t i = 0; i < st->n_transitions; i++) {
+        const choreo_transition_t *t = &st->on[i];
+        if (event_fires(t->event, t->threshold, st, wm, scr, joined, lost)) {
+            target_idx = t->goto_step_idx;
+            break;
         }
     }
-    if (st->max_duration_ms > 0u && s_step_ms >= st->max_duration_ms) {
-        advance = true;
-    }
-    if (!advance) {
-        return;
+
+    if (target_idx < 0) {
+        bool advance = false;
+        if (st->advance_on_achieved) {
+            bool achieved = (st->scope == CHOREO_SCOPE_ALL)
+                            ? choreo_collective_achieved(wm)
+                            : bse_goal_achieved();
+            if (achieved) {
+                advance = true;
+            }
+        }
+        if (st->max_duration_ms > 0u && s_step_ms >= st->max_duration_ms) {
+            advance = true;
+        }
+        if (!advance) {
+            return;
+        }
+        target_idx = (int)s_step_idx + 1;
     }
 
-    s_step_idx++;
     s_step_ms = 0;
 
-    if (s_step_idx >= s_n_steps) {
+    if (target_idx >= (int)s_n_steps) {
         /* Script complete → quiescence: terminate submits the IDLE intent,
          * so the directive goes IDLE and the platform maps it to its own
          * inactive posture.  s_script_done survives the terminate. */
@@ -397,17 +561,167 @@ static void script_advance(const world_model_t *wm)
         return;
     }
 
+    s_step_idx = (uint8_t)target_idx;
     s_goal = s_steps[s_step_idx].goal;
     tapestry_bse_intent_t intent = goal_to_intent(&s_goal);
     bse_submit_intent(&intent);
+}
+
+/* Does `f` match THIS element's own state?  Never inspects a peer — track
+ * membership is always self-evaluated (choreo.h's track-filter comment). */
+static bool track_matches(const choreo_track_filter_t *f, const world_model_t *wm)
+{
+    if (!caps_satisfied(f->required_caps)) {
+        return false;
+    }
+    if (f->requires_energy_low) {
+        bool low = false;
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &wm->entries[i];
+            if (e->is_self) {
+                low = (e->state.health_flags & ELEMENT_HEALTH_LOW_BATTERY) != 0;
+                break;
+            }
+        }
+        if (!low) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* First declared track whose filter matches, or -1 if none do (no
+ * catch-all "all" track declared — choreo_submit_tracks() rejects this at
+ * submission; update_track_selection() below falls back to staying put). */
+static int first_matching_track(const world_model_t *wm)
+{
+    for (uint8_t i = 0; i < s_n_tracks; i++) {
+        if (track_matches(&s_tracks[i].filter, wm)) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/* Switch the active track to `new_track`, saving the outgoing track's step
+ * index and resuming the incoming one's — then activate its current step
+ * FRESH (new snapshot/timers), per choreo.h's "not a preserved-state
+ * resume like preemption" design. */
+static void migrate_to_track(uint8_t new_track)
+{
+    s_track_step_idx[s_active_track_idx] = s_step_idx;
+
+    s_active_track_idx = new_track;
+    s_steps            = s_tracks[new_track].steps;
+    s_n_steps          = s_tracks[new_track].n_steps;
+    s_step_idx         = s_track_step_idx[new_track];
+    s_step_ms          = 0;
+    s_script_active     = true;
+
+
+    s_goal = s_steps[s_step_idx].goal;
+    tapestry_bse_intent_t intent = goal_to_intent(&s_goal);
+    bse_submit_intent(&intent);
+}
+
+/* Re-evaluate track membership once per RUNNING tick (choreo_tick()) while
+ * in multi-track mode.  Debounced exactly like update_membership_debounce()
+ * — a threshold reading (energy_low) can jitter tick-to-tick same as a
+ * swarm-size count can. */
+static void update_track_selection(const world_model_t *wm)
+{
+    int found = first_matching_track(wm);
+    if (found < 0) {
+        /* No track currently claims this element (e.g. energy_low cleared
+         * and no other filter matches) — stay on the active track rather
+         * than migrating anywhere; there's nowhere well-defined to go. */
+        s_track_candidate_valid = false;
+        return;
+    }
+    uint8_t match = (uint8_t)found;
+
+    if (match == s_active_track_idx) {
+        s_track_candidate_valid = false;
+        return;
+    }
+    if (s_track_candidate_valid && match == s_track_candidate_idx) {
+        s_track_candidate_ms += WM_CYCLE_MS;
+    } else {
+        s_track_candidate_valid = true;
+        s_track_candidate_idx   = match;
+        s_track_candidate_ms    = 0;
+    }
+    if (s_track_candidate_ms >= CHOREO_MEMBERSHIP_HOLD_MS) {
+        migrate_to_track(match);
+        s_track_candidate_valid = false;
+    }
+}
+
+int choreo_submit_tracks(const world_model_t *wm, const choreo_track_t *tracks, uint8_t n_tracks)
+{
+    if (wm == NULL || tracks == NULL || n_tracks == 0 || n_tracks > CHOREO_MAX_TRACKS) {
+        return -1;
+    }
+    for (uint8_t i = 0; i < n_tracks; i++) {
+        int rc0 = validate_steps(tracks[i].steps, tracks[i].n_steps);
+        if (rc0 != 0) {
+            return rc0;
+        }
+    }
+
+    if (s_state != CHOREO_STATE_IDLE) {
+        terminate_hard();
+    }
+    s_script_done = false;
+
+    for (uint8_t i = 0; i < n_tracks; i++) {
+        s_tracks[i]          = tracks[i];
+        s_track_step_idx[i]  = 0;
+    }
+    s_n_tracks              = n_tracks;
+    s_track_candidate_valid = false;
+
+    int found = first_matching_track(wm);
+    if (found < 0) {
+        return -1;   /* no track's filter matches this element */
+    }
+    uint8_t initial = (uint8_t)found;
+    s_active_track_idx = initial;
+    s_steps             = s_tracks[initial].steps;
+    s_n_steps           = s_tracks[initial].n_steps;
+
+    int rc = choreo_configure(&s_steps[0].goal);
+    if (rc != 0) {
+        s_n_tracks = 0;
+        return rc;
+    }
+    rc = choreo_deploy();
+    if (rc != 0) {
+        s_n_tracks = 0;
+        return rc;
+    }
+
+    s_step_idx      = 0;
+    s_step_ms       = 0;
+    s_script_active = true;
+    return 0;
+}
+
+uint8_t choreo_current_track(void)
+{
+    return s_n_tracks > 0 ? s_active_track_idx : 0;
 }
 
 void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
 {
     switch (s_state) {
     case CHOREO_STATE_RUNNING:
+        if (s_n_tracks > 0 && s_parked_depth == 0) {
+            update_track_selection(wm);
+        }
+        bse_set_track_scope(choreo_current_track());
         bse_tick(wm, scr);
-        script_advance(wm);
+        script_advance(wm, scr);
         /* script_advance may have terminated → IDLE; quorum check only
          * applies while still RUNNING. */
         if (s_state == CHOREO_STATE_RUNNING &&

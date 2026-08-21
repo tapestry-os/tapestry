@@ -153,6 +153,8 @@ typedef struct {
                                     /* gossiped so peers can aggregate a      */
                                     /* collective ("scope=all") predicate     */
                                     /* (see choreo_collective_achieved()).    */
+    uint8_t       current_track;    /* L7 active track index (wire v4) — see  */
+                                    /* choreo_current_track() and choreo.h §7 */
 } element_state_t;
 
 /* ── Collision event ─────────────────────────────────────────────────────── */
