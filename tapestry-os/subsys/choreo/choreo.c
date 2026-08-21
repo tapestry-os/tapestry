@@ -131,6 +131,35 @@ static int caps_satisfied(choreo_capabilities_t required)
     return 1;
 }
 
+/*
+ * Choreo SDK Design doc §11: capability requirements are a derived floor,
+ * not solely the author's explicit required_caps — an axis value that
+ * demands a capability requires it whether or not the author remembered to
+ * declare it ("a derived floor the author can add to but not subtract
+ * from"). Only axes both implemented in C today and safely enforceable are
+ * covered here:
+ *
+ *   motion == SPIN -> CHOREO_CAP_LOCOMOTION.  Safe to enforce now: it maps
+ *   to the existing SCR_CAP_ACTUATOR bit, and every real SPIN user already
+ *   has it in practice.
+ *
+ * frame == ABSOLUTE's "absolute positioning" floor (§11) is NOT derived
+ * here: it needs a new SCR capability bit that doesn't exist yet, and no
+ * real hardware/sim app declares it — enforcing it would reject every
+ * existing ABSOLUTE-frame goal (tapestry-scr-hw's boot goal, cf21bl's
+ * return-to-home preemption) on first tick.  Stays implied-but-unchecked,
+ * same as before this function existed, until that SCR-layer plumbing
+ * lands as its own change.
+ */
+static choreo_capabilities_t derived_caps(const choreo_goal_t *goal)
+{
+    choreo_capabilities_t caps = goal->required_caps;
+    if (goal->motion == TAPESTRY_BSE_MOTION_SPIN) {
+        caps |= CHOREO_CAP_LOCOMOTION;
+    }
+    return caps;
+}
+
 static tapestry_bse_intent_t goal_to_intent(const choreo_goal_t *goal)
 {
     static const tapestry_bse_intent_type_t type_map[] = {
@@ -200,7 +229,7 @@ int choreo_configure(const choreo_goal_t *goal)
     if (s_state != CHOREO_STATE_IDLE) {
         return -1;
     }
-    if (!caps_satisfied(goal->required_caps)) {
+    if (!caps_satisfied(derived_caps(goal))) {
         return -EPERM;
     }
     s_goal  = *goal;
@@ -269,7 +298,7 @@ int choreo_preempt_goal(const choreo_goal_t *goal)
     if (s_parked_depth >= CHOREO_MAX_PREEMPT_DEPTH) {
         return -EBUSY;
     }
-    if (!caps_satisfied(goal->required_caps)) {
+    if (!caps_satisfied(derived_caps(goal))) {
         return -EPERM;
     }
 
@@ -345,7 +374,7 @@ static int validate_steps(const choreo_step_t *steps, uint8_t n_steps)
              * real duration bound. */
             return -1;
         }
-        if (!caps_satisfied(st->goal.required_caps)) {
+        if (!caps_satisfied(derived_caps(&st->goal))) {
             return -EPERM;
         }
         for (uint8_t j = 0; j < st->n_transitions; j++) {

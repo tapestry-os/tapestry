@@ -844,9 +844,18 @@ int main(void)
             if (battery_low && !was_battery_low && !choreo_is_preempted()) {
                 float home_x, home_y;
                 if (cf21bl_stabilizer_get_pos_home(&home_x, &home_y)) {
+                    /* z: own_pos_m.z (the current commanded cruise
+                     * altitude), not 0 — cf21bl_stabilizer_get_pos_home()
+                     * only returns a lighthouse x/y, and CONVERGE's target
+                     * is read verbatim as the altitude setpoint
+                     * (z_setpoint_m = dir->target.z below). Leaving z at
+                     * its implicit 0 would command an immediate ramp to
+                     * ground level while still translating home — this
+                     * demo's own landing sequence already lands in place
+                     * once quiescent, so RTH only needs to move laterally. */
                     choreo_goal_t rth = {
                         .type   = CHOREO_GOAL_CONVERGE,
-                        .target = { home_x, home_y },
+                        .target = { home_x, home_y, own_pos_m.z },
                     };
                     int rc = choreo_preempt_goal(&rth);
                     LOG_WRN("id=%u battery low — preempting to "

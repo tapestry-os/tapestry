@@ -154,6 +154,25 @@ def test_bonding_has_no_scr_mapping_and_can_never_be_satisfied():
         == -errno.EPERM
 
 
+def test_spin_derives_a_locomotion_floor_even_when_undeclared():
+    """Choreo SDK Design doc §11: capability requirements are a derived
+    floor — motion == SPIN demands LOCOMOTION whether or not required_caps
+    declares it."""
+    c = Choreo(element_id=0, capabilities=CAP_SENSOR | CAP_RELAY)  # no actuator
+    rc = c.configure(Goal(type=GoalType.FORM,
+                          motion=BSEMotion.SPIN, spin_rate_radps=0.5,
+                          required_caps=ChoreoCapabilities.NONE))
+    assert rc == -errno.EPERM
+
+
+def test_spin_derived_floor_is_satisfied_by_actuator_hardware():
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)
+    rc = c.configure(Goal(type=GoalType.FORM,
+                          motion=BSEMotion.SPIN, spin_rate_radps=0.5,
+                          required_caps=ChoreoCapabilities.NONE))
+    assert rc == 0
+
+
 # ── Script validation ────────────────────────────────────────────────────────
 
 def test_submit_script_rejects_an_empty_script():
@@ -431,6 +450,122 @@ def test_a_missing_quorum_state_is_treated_as_healthy():
     c.submit_script([timed(ms=100_000)])
     c.tick(solo(), {"role": 0, "leader_id": 0})
     assert c.goal_status() == ChoreoState.RUNNING
+
+
+# ── Goal queue: preemption + resume ─────────────────────────────────────────
+# preempt_goal() saves the running goal (and, for a script, its exact
+# step/timer position) instead of discarding it; terminate() (and therefore
+# cancel_goal()) resumes it automatically once the preempting goal ends,
+# instead of going to IDLE. Ports choreo_preempt_goal()'s ztest coverage
+# (examples/cf21bl-formation/tests/src/main.c) to prove Python parity.
+
+def test_preempt_resumes_hold_station():
+    c = Choreo(element_id=0)
+    c.submit_goal(Goal(type=GoalType.HOLD))
+    c.tick(wm([(5, 5)], self_id=0), HEALTHY)   # capture the (5,5) station
+    assert not c.is_preempted()
+
+    rth = Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0))
+    assert c.preempt_goal(rth) == 0
+    assert c.is_preempted()
+    assert c.current_goal_type() == GoalType.CONVERGE
+
+    # A second preempt while one is already parked is rejected — depth 1.
+    another = Goal(type=GoalType.CONVERGE, target=(1.0, 1.0, 0.0))
+    assert c.preempt_goal(another) == -errno.EBUSY
+
+    c.tick(wm([(5, 5)], self_id=0), HEALTHY)
+    assert c.get_directive().target == (0.0, 0.0, 0.0)
+
+    # Cancelling the preempting goal resumes HOLD at its ORIGINALLY
+    # captured (5,5) station — not a fresh capture at wherever self is
+    # now — proving the saved activation state, not just the goal type,
+    # survives the round trip.
+    c.cancel_goal()
+    assert not c.is_preempted()
+    assert c.current_goal_type() == GoalType.HOLD
+    c.tick(wm([(5, 5)], self_id=0), HEALTHY)
+    assert c.get_directive().target == (5.0, 5.0, 0.0)
+
+
+def test_preempt_mid_script_resumes_at_same_step():
+    c = Choreo(element_id=0)
+    assert c.submit_script([timed(GoalType.HOLD, ms=100_000)]) == 0
+    assert c.script_step() == 0
+
+    for _ in range(5):
+        c.tick(solo(), HEALTHY)   # 500 ms of the 100000 ms step elapsed
+
+    rth = Goal(type=GoalType.CONVERGE, target=(9.0, 9.0, 0.0))
+    assert c.preempt_goal(rth) == 0
+    assert c.current_goal_type() == GoalType.CONVERGE
+
+    # Run the preempting goal for far longer than the parked step's
+    # remaining budget would tolerate if its timer kept accumulating.
+    for _ in range(200):
+        c.tick(solo(), HEALTHY)
+
+    c.cancel_goal()   # resume the parked script
+    assert c.current_goal_type() == GoalType.HOLD
+    assert c.script_step() == 0, "must resume at the SAME step, not advance"
+
+    # If step_ms had kept accumulating during the 200 preempting ticks
+    # (20000 ms), 500+20000 = 20500 ms would already be well past this
+    # check point; confirm the step is still short of its 100000 ms bound
+    # after only ~99000 ms more (99500 ms since the step started, counting
+    # only pre- and post-preemption HOLD ticks).
+    for _ in range(990):
+        c.tick(solo(), HEALTHY)
+    assert c.script_step() == 0
+    assert not c.script_complete()
+
+    for _ in range(10):
+        c.tick(solo(), HEALTHY)   # push past 100000 ms total HOLD time
+    assert c.script_complete(), \
+        "script must complete once its OWN accumulated time is due"
+
+
+def test_preempt_from_idle_rejected():
+    c = Choreo(element_id=0)
+    g = Goal(type=GoalType.CONVERGE, target=(1.0, 1.0, 0.0))
+    assert c.preempt_goal(g) == -1
+
+
+def test_ordinary_submit_while_preempted_drops_parked_goal():
+    c = Choreo(element_id=0)
+    c.submit_goal(Goal(type=GoalType.HOLD))
+    c.tick(solo(), HEALTHY)
+
+    rth = Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0))
+    c.preempt_goal(rth)
+    assert c.is_preempted()
+
+    # An ORDINARY submit — not preempt_goal() — always fully replaces
+    # everything, including anything parked.
+    fresh = Goal(type=GoalType.CONVERGE, target=(3.0, 3.0, 0.0))
+    assert c.submit_goal(fresh) == 0
+    assert not c.is_preempted(), \
+        "ordinary submit must drop the parked goal, not stack on it"
+
+    # A subsequent preempt must succeed — the stack must genuinely be
+    # empty, not just reporting empty while still logically full.
+    another = Goal(type=GoalType.CONVERGE, target=(1.0, 1.0, 0.0))
+    assert c.preempt_goal(another) == 0
+
+    # Cancelling now resumes `fresh`, not the long-gone HOLD.
+    c.cancel_goal()
+    assert c.current_goal_type() == GoalType.CONVERGE
+
+
+def test_parked_goal_id_names_the_displaced_goal():
+    c = Choreo(element_id=0)
+    assert c.parked_goal_id() == 0   # nothing parked
+    c.submit_goal(Goal(type=GoalType.HOLD, id=42))
+    c.tick(solo(), HEALTHY)
+    c.preempt_goal(Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0)))
+    assert c.parked_goal_id() == 42
+    c.cancel_goal()
+    assert c.parked_goal_id() == 0   # nothing parked again after resume
 
 
 # ── Goal → intent translation ────────────────────────────────────────────────

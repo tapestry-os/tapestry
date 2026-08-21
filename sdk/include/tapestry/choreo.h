@@ -104,6 +104,15 @@ typedef enum {
  *   CHOREO_CAP_SIGNALING   → SCR_CAP_RELAY     (message-forwarding, best-fit)
  *   CHOREO_CAP_BONDING     → (no SCR equivalent; always unsatisfied by SCR)
  *
+ * required_caps is a floor the author can raise but not lower: choreo.c's
+ * derived_caps() unions it with capabilities implied by the goal's own axis
+ * values before checking (Choreo SDK Design doc §11) — today, motion ==
+ * SPIN also demands CHOREO_CAP_LOCOMOTION even if the author forgot to
+ * declare it. frame == ABSOLUTE's implied "absolute positioning" floor
+ * (§11) is not derived yet — see derived_caps()'s comment in choreo.c for
+ * why (no SCR capability bit for it exists, and no real hardware/sim app
+ * declares one).
+ *
  * uint16_t, not uint8_t: this is an open, application-level vocabulary (§11
  * of the Choreo SDK Design doc derives capability requirements from
  * every axis value and effect a goal declares), and uint8_t's 4 spare bits
@@ -351,7 +360,9 @@ void choreo_register_scr(const scr_state_t *scr);
  * Returns -1 if called from a non-IDLE state, or if goal is NULL / type is
  * CHOREO_GOAL_NONE.
  * Returns -EPERM if the element's registered SCR capabilities do not satisfy
- * goal->required_caps.
+ * goal->required_caps (see that field's doc for the derived-floor caveat —
+ * some axis values demand a capability whether or not required_caps
+ * declares it).
  *
  * Does not submit an intent to the BSE or start BSE ticking.
  * Call choreo_deploy() to begin execution.
