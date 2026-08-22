@@ -98,7 +98,7 @@ scripts that shouldn't care where the collective happens to be:
 
 | `frame` | Target is... | Needs |
 |---|---|---|
-| `"absolute"` (default) | `target = [x, y, z]` literally | `target` |
+| `"absolute"` (default) | `target = [x, y, z]` literally | `target`, and (implicitly) `abs_position` — see [Common parameters](#common-parameters-every-goal) |
 | `"collective"` | the live participant centroid | nothing — `target` is rejected |
 | `"element"` | a resolved anchor element's position | `anchor = { select = ... }` — `target` is rejected |
 
@@ -149,6 +149,10 @@ duration = "60s"
 `spin` only applies to `form` — `converge`'s target *is* the frame
 origin, so "rotating the offset" would be a no-op; the parser rejects it
 there rather than silently accept a goal that visibly does nothing.
+
+`spin` implicitly requires `locomotion` — see [Common
+parameters](#common-parameters-every-goal) for what "implicitly" means
+here and why the example above compiles clean without a `requires` line.
 
 **`spin` never completes** — it's a maintained behavior, not an achieved-
 and-done one, so `duration`/`timeout` is doing real work here, not just
@@ -321,12 +325,43 @@ choreo.submit_tracks(wm_entries, tracks)
 | `eps` | achievement radius (default: BSE default if omitted). |
 | `settle` | how long the error must stay within `eps` before achievement fires (default: BSE default). |
 | `scope = "self"` \| `"all"` | whose achievement `until = "achieved"` waits for (default `"self"`). `"all"` advances only once this element **and** every fresh peer have achieved — aggregated from an `achieved` bit each element gossips every cycle ("achieved-bit" item). Eventually consistent, bounded by gossip latency — not a synchronization barrier (that's the doc's separate `barrier = true`, not implemented). A lone element with no fresh peers is vacuously "all achieved", so it can't deadlock alone. Only valid alongside `until = "achieved"`; not allowed on `hold`. |
-| `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
+| `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling", "abs_position"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
 
 **Duration syntax**: `"30s"`, `"500ms"`, `"45min"`, `"2h"`, or a bare
 number (seconds).
 **Length syntax**: `"25cm"`, `"250mm"`, `"500um"`, `"0.25m"`, or a bare
 number (meters).
+
+**The derived floor** (Choreo SDK Design doc §11): some `requires`
+capabilities are implied by a goal's *other* fields, whether or not you
+write them yourself — the runtime unions them into what's actually
+checked at deploy time regardless:
+
+| If a step has... | it also requires... |
+|---|---|
+| `motion`/`spin` (i.e. `form` + `spin = ...`) | `locomotion` |
+| `frame = "absolute"` (the default, `form`/`converge` only) | `abs_position` |
+
+This is not optional and there is no way to opt out of it — it reflects
+what the goal mechanically needs, independent of whether `requires` says
+so. `choreoc` and `choreo_sim`'s `--simulate` **warn** (not reject) when
+a step's `requires` doesn't already cover its derived floor, e.g.:
+
+```
+choreoc: warning: steps[0]: frame = "absolute" (the default) requires
+abs_position at runtime (Choreo SDK Design doc §11) even though
+'requires' doesn't list it — add requires = ["abs_position", ...] to
+make it explicit, or opt into frame = "collective"/"element" if that's
+what was intended
+```
+
+The script still compiles and the warning doesn't fail CI — the point is
+authoring-time visibility, not another gate. Without it, a script author
+who forgets `requires = ["abs_position"]` (or leaves `frame` at its
+`"absolute"` default without meaning to) only finds out at flight time,
+when `choreo_configure()`/`choreo_submit_script()` rejects the goal with
+`-EPERM` on an element that doesn't have that hardware capability
+granted at `scr_init()`.
 
 > **Unit footgun (TOML vs. C):** bare numbers mean different things on
 > the two authoring surfaces. In TOML, `duration = 2` is **2 seconds**;

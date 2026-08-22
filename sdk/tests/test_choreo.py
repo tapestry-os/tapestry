@@ -26,6 +26,7 @@ LOST     = scr(QUORUM_LOST)
 
 # SCR_CAP_* hardware bits (scr.h), mirrored privately by choreo.py.
 CAP_RELAY, CAP_SENSOR, CAP_ACTUATOR = 0x01, 0x02, 0x04
+CAP_BONDING, CAP_ABS_POSITION       = 0x08, 0x10
 
 
 def timed(goal_type=GoalType.CONVERGE, ms=300, **kw):
@@ -126,20 +127,26 @@ def test_unregistered_capabilities_skip_the_check_entirely():
 
 
 def test_capability_requirements_map_onto_scr_hardware_flags():
-    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR | CAP_SENSOR | CAP_RELAY)
+    # FORM defaults to frame=ABSOLUTE, which derives its own ABS_POSITION
+    # requirement (see _derived_caps() tests below) — granted here
+    # alongside the three under test so this test stays about LOCOMOTION/
+    # SENSING/SIGNALING specifically.
+    hw = CAP_ACTUATOR | CAP_SENSOR | CAP_RELAY | CAP_ABS_POSITION
+    c = Choreo(element_id=0, capabilities=hw)
     for cap in (ChoreoCapabilities.LOCOMOTION, ChoreoCapabilities.SENSING,
                 ChoreoCapabilities.SIGNALING):
-        fresh = Choreo(element_id=0,
-                       capabilities=CAP_ACTUATOR | CAP_SENSOR | CAP_RELAY)
+        fresh = Choreo(element_id=0, capabilities=hw)
         assert fresh.configure(Goal(type=GoalType.FORM, required_caps=cap)) == 0
     assert c.configure(Goal(type=GoalType.FORM,
                             required_caps=ChoreoCapabilities.NONE)) == 0
 
 
 @pytest.mark.parametrize("cap,hw", [
-    (ChoreoCapabilities.LOCOMOTION, CAP_SENSOR | CAP_RELAY),
-    (ChoreoCapabilities.SENSING,    CAP_ACTUATOR | CAP_RELAY),
-    (ChoreoCapabilities.SIGNALING,  CAP_ACTUATOR | CAP_SENSOR),
+    (ChoreoCapabilities.LOCOMOTION,   CAP_SENSOR | CAP_RELAY | CAP_ABS_POSITION),
+    (ChoreoCapabilities.SENSING,      CAP_ACTUATOR | CAP_RELAY | CAP_ABS_POSITION),
+    (ChoreoCapabilities.SIGNALING,    CAP_ACTUATOR | CAP_SENSOR | CAP_ABS_POSITION),
+    (ChoreoCapabilities.BONDING,      CAP_ACTUATOR | CAP_ABS_POSITION),
+    (ChoreoCapabilities.ABS_POSITION, CAP_ACTUATOR),
 ])
 def test_a_missing_hardware_flag_is_eperm(cap, hw):
     c = Choreo(element_id=0, capabilities=hw)
@@ -147,18 +154,18 @@ def test_a_missing_hardware_flag_is_eperm(cap, hw):
     assert c.goal_status() == ChoreoState.IDLE
 
 
-def test_bonding_has_no_scr_mapping_and_can_never_be_satisfied():
-    c = Choreo(element_id=0, capabilities=0xFF)
+def test_bonding_maps_onto_scr_cap_bonding():
+    c = Choreo(element_id=0, capabilities=CAP_BONDING | CAP_ABS_POSITION)
     assert c.configure(Goal(type=GoalType.FORM,
-                            required_caps=ChoreoCapabilities.BONDING)) \
-        == -errno.EPERM
+                            required_caps=ChoreoCapabilities.BONDING)) == 0
 
 
 def test_spin_derives_a_locomotion_floor_even_when_undeclared():
     """Choreo SDK Design doc §11: capability requirements are a derived
     floor — motion == SPIN demands LOCOMOTION whether or not required_caps
     declares it."""
-    c = Choreo(element_id=0, capabilities=CAP_SENSOR | CAP_RELAY)  # no actuator
+    c = Choreo(element_id=0,
+              capabilities=CAP_SENSOR | CAP_RELAY | CAP_ABS_POSITION)  # no actuator
     rc = c.configure(Goal(type=GoalType.FORM,
                           motion=BSEMotion.SPIN, spin_rate_radps=0.5,
                           required_caps=ChoreoCapabilities.NONE))
@@ -166,11 +173,33 @@ def test_spin_derives_a_locomotion_floor_even_when_undeclared():
 
 
 def test_spin_derived_floor_is_satisfied_by_actuator_hardware():
-    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR | CAP_ABS_POSITION)
     rc = c.configure(Goal(type=GoalType.FORM,
                           motion=BSEMotion.SPIN, spin_rate_radps=0.5,
                           required_caps=ChoreoCapabilities.NONE))
     assert rc == 0
+
+
+def test_absolute_frame_derives_an_abs_position_floor_even_when_undeclared():
+    """A FORM/CONVERGE goal with frame == ABSOLUTE (the default) demands
+    ABS_POSITION whether or not required_caps declares it."""
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)   # no ABS_POSITION
+    rc = c.configure(Goal(type=GoalType.CONVERGE, target=(1.0, 1.0, 0.0)))
+    assert rc == -errno.EPERM
+
+
+def test_collective_frame_does_not_derive_an_abs_position_floor():
+    """Opting into frame == COLLECTIVE avoids the ABSOLUTE-only floor."""
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)   # no ABS_POSITION
+    rc = c.configure(Goal(type=GoalType.CONVERGE, target=(1.0, 1.0, 0.0),
+                          frame=BSEFrame.COLLECTIVE))
+    assert rc == 0
+
+
+def test_hold_does_not_derive_an_abs_position_floor():
+    """HOLD never reads frame at all (bse.py §5) — no floor to derive."""
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)   # no ABS_POSITION
+    assert c.configure(Goal(type=GoalType.HOLD)) == 0
 
 
 # ── Script validation ────────────────────────────────────────────────────────
@@ -681,7 +710,10 @@ def test_goto_end_completes_the_script_early():
 # ── Tracks (choreo.h §7) ─────────────────────────────────────────────────────
 
 def test_track_capability_filter_falls_through_to_catchall():
-    c = Choreo(element_id=0, capabilities=0)   # no SENSOR cap
+    # no SENSOR cap, but ABS_POSITION so the catchall track's implicit-
+    # ABSOLUTE CONVERGE below satisfies its derived floor — this test is
+    # about capability-filtered track SELECTION, not the frame axis.
+    c = Choreo(element_id=0, capabilities=CAP_ABS_POSITION)
     sensing = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
     catchall = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(9.0, 9.0, 0.0)),
                             max_duration_ms=60_000)]
@@ -695,7 +727,7 @@ def test_track_capability_filter_falls_through_to_catchall():
 
 
 def test_track_capability_filter_matches_first_track():
-    c = Choreo(element_id=0, capabilities=CAP_SENSOR)
+    c = Choreo(element_id=0, capabilities=CAP_SENSOR | CAP_ABS_POSITION)
     sensing = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
     catchall = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(9.0, 9.0, 0.0)),
                             max_duration_ms=60_000)]

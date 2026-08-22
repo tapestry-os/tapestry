@@ -101,6 +101,22 @@ def test_simulate_reports_a_missing_script_instead_of_raising(tmp_path):
         == (1, {})
 
 
+def test_simulate_warns_about_an_undeclared_derived_capability(tmp_path, capsys):
+    """§11's derived-floor warning (script_toml.py) reaches --simulate's
+    stderr too, same as choreoc — the authoring-time feedback loop this
+    mode exists for should surface it, not just the C build."""
+    script = tmp_path / "warn.choreo.toml"
+    script.write_text(
+        'choreo = "warn"\n\n'
+        '[[steps]]\n'
+        'converge = { target = [1, 2, 3], duration = "10s" }\n')
+    rc, _ = choreo_sim.simulate(script, 1, 2.0, False)
+    assert rc == 0
+    err = capsys.readouterr().err
+    assert "warning" in err
+    assert "abs_position" in err
+
+
 def test_a_slower_platform_still_completes_the_script():
     """The step bounds, not the integrator, decide when a step ends."""
     rc, records = choreo_sim.simulate(SCRIPT_TOML, 2, speed_mps=0.2,

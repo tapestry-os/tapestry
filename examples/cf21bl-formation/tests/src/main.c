@@ -1444,7 +1444,11 @@ ZTEST(choreo_script, test_track_capability_filter_falls_through_to_catchall)
 {
     choreo_init(0);
     scr_state_t scr;
-    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);   /* no sensor */
+    /* no sensor, but ABS_POSITION so the catchall track's implicit-
+     * ABSOLUTE CONVERGE below satisfies its derived floor (choreo.c's
+     * derived_caps()) — this test is about capability-filtered track
+     * SELECTION, not about the frame/positioning axis. */
+    scr_init(&scr, 0, 0, 0, SCR_CAP_ABS_POSITION);
     choreo_register_scr(&scr);
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);
@@ -1471,7 +1475,7 @@ ZTEST(choreo_script, test_track_capability_filter_matches_first_track)
 {
     choreo_init(0);
     scr_state_t scr;
-    scr_init(&scr, 0, 0, 0, SCR_CAP_SENSOR);
+    scr_init(&scr, 0, 0, 0, SCR_CAP_SENSOR | SCR_CAP_ABS_POSITION);
     choreo_register_scr(&scr);
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);
@@ -1518,7 +1522,10 @@ ZTEST(choreo_script, test_track_energy_low_migration_is_debounced)
 {
     choreo_init(0);
     scr_state_t scr;
-    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    /* ABS_POSITION for the low-battery track's implicit-ABSOLUTE CONVERGE
+     * below (derived_caps()) — this test is about track migration
+     * debouncing, not the frame/positioning axis. */
+    scr_init(&scr, 0, 0, 0, SCR_CAP_ABS_POSITION);
     choreo_register_scr(&scr);
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);

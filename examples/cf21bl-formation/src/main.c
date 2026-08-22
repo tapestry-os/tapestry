@@ -430,12 +430,16 @@ int main(void)
      * options tapestry-scr-hw's reference element feeds to scr_init().
      * SCR_CAP_ACTUATOR satisfies the script's CHOREO_CAP_LOCOMOTION
      * requirement, enforced below by choreo_submit_script() now that a
-     * real scr is registered. */
+     * real scr is registered.  SCR_CAP_ABS_POSITION satisfies the
+     * battery-low RTH preemption's derived CHOREO_CAP_ABS_POSITION
+     * requirement (choreo.c's derived_caps(): CONVERGE + frame ==
+     * ABSOLUTE, which the RTH goal is) — this drone genuinely has it, via
+     * the lighthouse fix cf21bl_stabilizer_get_pos_home() reads from. */
     scr_state_t scr;
     scr_init(&scr, element_id,
         (uint8_t)CONFIG_TAPESTRY_QUORUM_MIN,
         (uint8_t)CONFIG_TAPESTRY_QUORUM_TARGET,
-        SCR_CAP_ACTUATOR);
+        SCR_CAP_ACTUATOR | SCR_CAP_ABS_POSITION);
 
     choreo_init(element_id);
     choreo_register_scr(&scr);

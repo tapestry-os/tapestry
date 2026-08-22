@@ -60,6 +60,8 @@ def test_capability_masks_become_or_ed_enum_names():
     assert choreoc.caps_expr(0x01) == "CHOREO_CAP_LOCOMOTION"
     assert choreoc.caps_expr(0x05) == "CHOREO_CAP_LOCOMOTION | CHOREO_CAP_SENSING"
     assert choreoc.caps_expr(0x0F).count("|") == 3
+    assert choreoc.caps_expr(0x10) == "CHOREO_CAP_ABS_POSITION"
+    assert choreoc.caps_expr(0x1F).count("|") == 4
 
 
 def test_only_authored_fields_are_emitted():
@@ -206,6 +208,31 @@ def test_compiling_writes_the_header_and_reports_the_time_bound(tmp_path):
     assert r.returncode == 0, r.stderr
     assert out.is_file()
     assert "2 step(s)" in r.stdout and "40 s" in r.stdout
+
+
+def test_a_derived_floor_prints_a_nonfatal_warning(tmp_path):
+    """§11's derived-floor satisfiability warning (script_toml.py's
+    ChoreoScript.warnings) reaches the CLI's stderr but doesn't fail the
+    build — the script isn't wrong, the runtime enforces the floor
+    regardless of what `requires` says."""
+    script = write_script(tmp_path, '''
+        [[steps]]
+        converge = { target = [1, 2, 3], duration = "10s" }
+        ''')
+    out = tmp_path / "choreo_script.h"
+    r = run_cli(script, "-o", out)
+    assert r.returncode == 0, r.stderr
+    assert out.is_file()
+    assert "choreoc: warning:" in r.stderr
+    assert "abs_position" in r.stderr
+
+
+def test_no_warning_when_nothing_derived(tmp_path):
+    script = write_script(tmp_path, MINIMAL)
+    out = tmp_path / "choreo_script.h"
+    r = run_cli(script, "-o", out)
+    assert r.returncode == 0
+    assert "warning" not in r.stderr
 
 
 def test_a_script_error_exits_nonzero_without_writing(tmp_path):
