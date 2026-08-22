@@ -132,10 +132,11 @@ GOAL_TYPES = {
 COORDINATE_FREE = ("hold", "exchange")
 
 CAPABILITIES = {
-    "locomotion": ChoreoCapabilities.LOCOMOTION,
-    "bonding":    ChoreoCapabilities.BONDING,
-    "sensing":    ChoreoCapabilities.SENSING,
-    "signaling":  ChoreoCapabilities.SIGNALING,
+    "locomotion":   ChoreoCapabilities.LOCOMOTION,
+    "bonding":      ChoreoCapabilities.BONDING,
+    "sensing":      ChoreoCapabilities.SENSING,
+    "signaling":    ChoreoCapabilities.SIGNALING,
+    "abs_position": ChoreoCapabilities.ABS_POSITION,
 }
 
 SHAPES = {
@@ -298,6 +299,16 @@ class ChoreoScript:
     # an acyclic script (the sum is authoritative, as always).  [[steps]]
     # only — see NormalizedTrack.max_runtime_ms for the [[tracks]] case.
     max_runtime_ms: Optional[int] = None
+    # §11/§8.4 satisfiability warnings (see _derived_capability_warnings())
+    # — non-fatal, unlike everything else in this module: the runtime
+    # derives and enforces these requirements automatically
+    # (derived_caps() in choreo.c) whether or not `requires` lists them,
+    # so an unlisted one isn't a script error. It IS worth surfacing to
+    # the author, though — deploying to an element that lacks the derived
+    # capability still gets a runtime -EPERM, and a `requires` list that
+    # doesn't mention it gives no advance warning of that at authoring
+    # time. Empty for a script with nothing to flag.
+    warnings: List[str] = field(default_factory=list)
 
     @property
     def total_timeout_ms(self) -> int:
@@ -796,6 +807,34 @@ def _parse_track(index: int, table: dict) -> NormalizedTrack:
                            steps=steps, max_runtime_ms=max_runtime_ms)
 
 
+def _derived_capability_warnings(where: str, step: NormalizedStep) -> List[str]:
+    """Choreo SDK Design doc §11's derived floor, as an authoring-time
+    warning rather than an error — mirrors derived_caps() in choreo.c
+    (see that function's comment for exactly which axes derive which
+    capability). Non-fatal: the script is not wrong, and the runtime
+    enforces the floor regardless of what `requires` says. This exists so
+    an author sees it here rather than discovering it as a surprise
+    -EPERM on an element that turns out not to have the capability."""
+    out = []
+    if step.motion == "spin" and \
+            not (step.required_caps & ChoreoCapabilities.LOCOMOTION):
+        out.append(
+            f"{where}: motion = \"spin\" requires locomotion at runtime "
+            f"(Choreo SDK Design doc §11) even though 'requires' doesn't "
+            f"list it — add requires = [\"locomotion\", ...] to make it "
+            f"explicit")
+    if step.goal in ("form", "converge") and step.frame == "absolute" and \
+            not (step.required_caps & ChoreoCapabilities.ABS_POSITION):
+        out.append(
+            f"{where}: frame = \"absolute\" (the default) requires "
+            f"abs_position at runtime (Choreo SDK Design doc §11) even "
+            f"though 'requires' doesn't list it — add "
+            f"requires = [\"abs_position\", ...] to make it explicit, or "
+            f"opt into frame = \"collective\"/\"element\" if that's what "
+            f"was intended")
+    return out
+
+
 def parse_file(path) -> ChoreoScript:
     """Parse and validate a Choreo script file.  Raises ScriptError."""
     with open(path, "rb") as f:
@@ -834,7 +873,11 @@ def parse_file(path) -> ChoreoScript:
             raise ScriptError(f"{path}: {len(raw_tracks)} tracks — the "
                               f"runtime only holds {CHOREO_MAX_TRACKS}")
         tracks = [_parse_track(i, t) for i, t in enumerate(raw_tracks)]
-        return ChoreoScript(name=name, tracks=tracks)
+        warnings = [w for j, t in enumerate(tracks)
+                   for i, s in enumerate(t.steps)
+                   for w in _derived_capability_warnings(
+                       f"tracks[{j}].steps[{i}]", s)]
+        return ChoreoScript(name=name, tracks=tracks, warnings=warnings)
 
     raw_steps = doc.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
@@ -855,7 +898,10 @@ def parse_file(path) -> ChoreoScript:
             f"— a cyclic script can run indefinitely, so it must declare "
             f"a top-level max_runtime = \"...\" bound")
 
-    return ChoreoScript(name=name, steps=steps, max_runtime_ms=max_runtime_ms)
+    warnings = [w for i, s in enumerate(steps)
+               for w in _derived_capability_warnings(f"steps[{i}]", s)]
+    return ChoreoScript(name=name, steps=steps, max_runtime_ms=max_runtime_ms,
+                        warnings=warnings)
 
 
 def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]:

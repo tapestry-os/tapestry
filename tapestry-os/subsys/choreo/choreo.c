@@ -113,10 +113,11 @@ static int                  s_parked_depth;
  * Check whether the registered element hardware satisfies required_caps.
  *
  * Mapping (paper §3.9 / CHOREO_CAP_* documentation in choreo.h):
- *   CHOREO_CAP_LOCOMOTION → SCR_CAP_ACTUATOR
- *   CHOREO_CAP_SENSING    → SCR_CAP_SENSOR
- *   CHOREO_CAP_SIGNALING  → SCR_CAP_RELAY
- *   CHOREO_CAP_BONDING    → no SCR equivalent; always unsatisfied
+ *   CHOREO_CAP_LOCOMOTION    → SCR_CAP_ACTUATOR
+ *   CHOREO_CAP_SENSING       → SCR_CAP_SENSOR
+ *   CHOREO_CAP_SIGNALING     → SCR_CAP_RELAY
+ *   CHOREO_CAP_BONDING       → SCR_CAP_BONDING
+ *   CHOREO_CAP_ABS_POSITION  → SCR_CAP_ABS_POSITION
  */
 static int caps_satisfied(choreo_capabilities_t required)
 {
@@ -124,10 +125,11 @@ static int caps_satisfied(choreo_capabilities_t required)
         return 1;
     }
     scr_capability_t hw = s_scr->capabilities;
-    if ((required & CHOREO_CAP_LOCOMOTION) && !(hw & SCR_CAP_ACTUATOR)) return 0;
-    if ((required & CHOREO_CAP_SENSING)    && !(hw & SCR_CAP_SENSOR))   return 0;
-    if ((required & CHOREO_CAP_SIGNALING)  && !(hw & SCR_CAP_RELAY))    return 0;
-    if  (required & CHOREO_CAP_BONDING)                                 return 0;
+    if ((required & CHOREO_CAP_LOCOMOTION)   && !(hw & SCR_CAP_ACTUATOR))      return 0;
+    if ((required & CHOREO_CAP_SENSING)      && !(hw & SCR_CAP_SENSOR))       return 0;
+    if ((required & CHOREO_CAP_SIGNALING)    && !(hw & SCR_CAP_RELAY))        return 0;
+    if ((required & CHOREO_CAP_BONDING)      && !(hw & SCR_CAP_BONDING))      return 0;
+    if ((required & CHOREO_CAP_ABS_POSITION) && !(hw & SCR_CAP_ABS_POSITION)) return 0;
     return 1;
 }
 
@@ -136,26 +138,32 @@ static int caps_satisfied(choreo_capabilities_t required)
  * not solely the author's explicit required_caps — an axis value that
  * demands a capability requires it whether or not the author remembered to
  * declare it ("a derived floor the author can add to but not subtract
- * from"). Only axes both implemented in C today and safely enforceable are
- * covered here:
+ * from"):
  *
- *   motion == SPIN -> CHOREO_CAP_LOCOMOTION.  Safe to enforce now: it maps
- *   to the existing SCR_CAP_ACTUATOR bit, and every real SPIN user already
- *   has it in practice.
+ *   motion == SPIN -> CHOREO_CAP_LOCOMOTION.  Maps to SCR_CAP_ACTUATOR;
+ *   every real SPIN user already has it in practice.
  *
- * frame == ABSOLUTE's "absolute positioning" floor (§11) is NOT derived
- * here: it needs a new SCR capability bit that doesn't exist yet, and no
- * real hardware/sim app declares it — enforcing it would reject every
- * existing ABSOLUTE-frame goal (tapestry-scr-hw's boot goal, cf21bl's
- * return-to-home preemption) on first tick.  Stays implied-but-unchecked,
- * same as before this function existed, until that SCR-layer plumbing
- * lands as its own change.
+ *   (type == FORM || type == CONVERGE) && frame == ABSOLUTE ->
+ *   CHOREO_CAP_ABS_POSITION.  Only these two goal types read frame at all
+ *   (bse.h §5) — HOLD/EXCHANGE are inherently coordinate-free and
+ *   MOVE/DISPERSE don't read it either.  Maps to SCR_CAP_ABS_POSITION,
+ *   which real lighthouse-based apps (examples/cf21bl-formation,
+ *   examples/webots-formation) now declare at scr_init() precisely because
+ *   ABSOLUTE is the default frame (§6 of the L6/L7 audit list) — every
+ *   FORM/CONVERGE goal in those apps needs it unless it opts into
+ *   COLLECTIVE/ELEMENT explicitly.  tapestry-scr-hw and tapestry-scr-sim
+ *   never call choreo_register_scr(), so this floor is a no-op for them
+ *   regardless (caps_satisfied() short-circuits on s_scr == NULL).
  */
 static choreo_capabilities_t derived_caps(const choreo_goal_t *goal)
 {
     choreo_capabilities_t caps = goal->required_caps;
     if (goal->motion == TAPESTRY_BSE_MOTION_SPIN) {
         caps |= CHOREO_CAP_LOCOMOTION;
+    }
+    if ((goal->type == CHOREO_GOAL_FORM || goal->type == CHOREO_GOAL_CONVERGE) &&
+        goal->frame == TAPESTRY_BSE_FRAME_ABSOLUTE) {
+        caps |= CHOREO_CAP_ABS_POSITION;
     }
     return caps;
 }

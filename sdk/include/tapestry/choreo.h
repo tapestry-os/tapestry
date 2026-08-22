@@ -99,19 +99,18 @@ typedef enum {
  * choreo_configure() maps these flags to L5 SCR_CAP_* hardware bits and
  * rejects the goal with -EPERM if the registered element cannot satisfy them:
  *
- *   CHOREO_CAP_LOCOMOTION  → SCR_CAP_ACTUATOR  (physical actuation node)
- *   CHOREO_CAP_SENSING     → SCR_CAP_SENSOR    (observation / sensing node)
- *   CHOREO_CAP_SIGNALING   → SCR_CAP_RELAY     (message-forwarding, best-fit)
- *   CHOREO_CAP_BONDING     → (no SCR equivalent; always unsatisfied by SCR)
+ *   CHOREO_CAP_LOCOMOTION    → SCR_CAP_ACTUATOR       (physical actuation node)
+ *   CHOREO_CAP_SENSING       → SCR_CAP_SENSOR         (observation / sensing node)
+ *   CHOREO_CAP_SIGNALING     → SCR_CAP_RELAY          (message-forwarding, best-fit)
+ *   CHOREO_CAP_BONDING       → SCR_CAP_BONDING        (physical bonding/docking)
+ *   CHOREO_CAP_ABS_POSITION  → SCR_CAP_ABS_POSITION   (lighthouse/GPS/mocap etc)
  *
  * required_caps is a floor the author can raise but not lower: choreo.c's
  * derived_caps() unions it with capabilities implied by the goal's own axis
- * values before checking (Choreo SDK Design doc §11) — today, motion ==
- * SPIN also demands CHOREO_CAP_LOCOMOTION even if the author forgot to
- * declare it. frame == ABSOLUTE's implied "absolute positioning" floor
- * (§11) is not derived yet — see derived_caps()'s comment in choreo.c for
- * why (no SCR capability bit for it exists, and no real hardware/sim app
- * declares one).
+ * values before checking (Choreo SDK Design doc §11) — motion == SPIN
+ * demands CHOREO_CAP_LOCOMOTION, and a FORM/CONVERGE goal with frame ==
+ * ABSOLUTE demands CHOREO_CAP_ABS_POSITION, even if the author forgot to
+ * declare either.
  *
  * uint16_t, not uint8_t: this is an open, application-level vocabulary (§11
  * of the Choreo SDK Design doc derives capability requirements from
@@ -122,11 +121,12 @@ typedef enum {
  */
 typedef uint16_t choreo_capabilities_t;
 
-#define CHOREO_CAP_NONE       ((choreo_capabilities_t)0x00)
-#define CHOREO_CAP_LOCOMOTION ((choreo_capabilities_t)0x01)
-#define CHOREO_CAP_BONDING    ((choreo_capabilities_t)0x02)
-#define CHOREO_CAP_SENSING    ((choreo_capabilities_t)0x04)
-#define CHOREO_CAP_SIGNALING  ((choreo_capabilities_t)0x08)
+#define CHOREO_CAP_NONE          ((choreo_capabilities_t)0x00)
+#define CHOREO_CAP_LOCOMOTION    ((choreo_capabilities_t)0x01)
+#define CHOREO_CAP_BONDING       ((choreo_capabilities_t)0x02)
+#define CHOREO_CAP_SENSING       ((choreo_capabilities_t)0x04)
+#define CHOREO_CAP_SIGNALING     ((choreo_capabilities_t)0x08)
+#define CHOREO_CAP_ABS_POSITION  ((choreo_capabilities_t)0x10)
 
 /* ── Goal ─────────────────────────────────────────────────────────────────── */
 /*

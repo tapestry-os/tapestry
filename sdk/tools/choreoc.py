@@ -104,6 +104,7 @@ CAP_FLAGS = [
     (0x02, "CHOREO_CAP_BONDING"),
     (0x04, "CHOREO_CAP_SENSING"),
     (0x08, "CHOREO_CAP_SIGNALING"),
+    (0x10, "CHOREO_CAP_ABS_POSITION"),
 ]
 
 
@@ -386,6 +387,8 @@ def main() -> int:
         return 1
 
     out.write_text(text)
+    for w in script.warnings:
+        print(f"choreoc: warning: {w}", file=sys.stderr)
     if script.tracks is not None:
         total_s = max(t.total_timeout_ms for t in script.tracks) / 1000.0
         n_steps = sum(len(t.steps) for t in script.tracks)

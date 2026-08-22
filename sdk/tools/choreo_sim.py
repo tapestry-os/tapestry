@@ -303,6 +303,8 @@ def simulate(script_path: Path, n_elements: int, speed_mps: float,
     except (ScriptError, OSError) as e:
         print(f"choreo_sim: {e}", file=sys.stderr)
         return 1, {}
+    for w in script.warnings:
+        print(f"choreo_sim: warning: {w}", file=sys.stderr)
 
     if n_elements < 1:
         print("choreo_sim: --elements must be >= 1", file=sys.stderr)

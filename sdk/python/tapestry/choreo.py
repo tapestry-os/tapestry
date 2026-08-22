@@ -15,9 +15,11 @@ from typing import Optional, List
 
 
 # ── SCR capability constants (mirrors scr.h SCR_CAP_*) ───────────────────────
-_SCR_CAP_RELAY    = 0x01
-_SCR_CAP_SENSOR   = 0x02
-_SCR_CAP_ACTUATOR = 0x04
+_SCR_CAP_RELAY        = 0x01
+_SCR_CAP_SENSOR       = 0x02
+_SCR_CAP_ACTUATOR     = 0x04
+_SCR_CAP_BONDING      = 0x08
+_SCR_CAP_ABS_POSITION = 0x10
 
 
 # ── Public enumerations ───────────────────────────────────────────────────────
@@ -46,16 +48,23 @@ class ChoreoCapabilities(IntEnum):
     Application-level capability bitmask (paper §3.9).
 
     Mapped to L5 SCR_CAP_* hardware flags at configure() time:
-      LOCOMOTION → SCR_CAP_ACTUATOR
-      SENSING    → SCR_CAP_SENSOR
-      SIGNALING  → SCR_CAP_RELAY (best approximation)
-      BONDING    → (no SCR equivalent; always unsatisfied)
+      LOCOMOTION    → SCR_CAP_ACTUATOR
+      SENSING       → SCR_CAP_SENSOR
+      SIGNALING     → SCR_CAP_RELAY (best approximation)
+      BONDING       → SCR_CAP_BONDING
+      ABS_POSITION  → SCR_CAP_ABS_POSITION
+
+    required_caps is a floor the author can raise but not lower — see
+    Choreo._derived_caps(): a FORM/CONVERGE goal with frame == ABSOLUTE
+    also demands ABS_POSITION, and motion == SPIN also demands LOCOMOTION,
+    whether or not the author declared either.
     """
-    NONE       = 0x00
-    LOCOMOTION = 0x01
-    BONDING    = 0x02
-    SENSING    = 0x04
-    SIGNALING  = 0x08
+    NONE          = 0x00
+    LOCOMOTION    = 0x01
+    BONDING       = 0x02
+    SENSING       = 0x04
+    SIGNALING     = 0x08
+    ABS_POSITION  = 0x10
 
 
 class GoalType(IntEnum):
@@ -829,7 +838,6 @@ class Choreo:
         Mirrors caps_satisfied() in choreo.c:
           - capabilities is None → no SCR registered → always passes.
           - required == NONE (0)  → no requirements  → always passes.
-          - BONDING has no SCR mapping → always fails if required.
         """
         if self._capabilities is None or not required:
             return True
@@ -840,7 +848,9 @@ class Choreo:
             return False
         if (required & ChoreoCapabilities.SIGNALING)  and not (hw & _SCR_CAP_RELAY):
             return False
-        if required & ChoreoCapabilities.BONDING:
+        if (required & ChoreoCapabilities.BONDING)    and not (hw & _SCR_CAP_BONDING):
+            return False
+        if (required & ChoreoCapabilities.ABS_POSITION) and not (hw & _SCR_CAP_ABS_POSITION):
             return False
         return True
 
@@ -850,15 +860,17 @@ class Choreo:
         Choreo SDK Design doc §11: capability requirements are a derived
         floor, not solely the author's explicit required_caps — an axis
         value that demands a capability requires it whether or not the
-        author declared it.  Mirrors derived_caps() in choreo.c: only
-        motion == SPIN -> LOCOMOTION is derived today (safe to enforce —
-        it maps to the existing _SCR_CAP_ACTUATOR bit).  frame == ABSOLUTE's
-        implied "absolute positioning" floor is NOT derived here — see
-        choreo.c's comment for why (no capability bit for it exists yet).
+        author declared it.  Mirrors derived_caps() in choreo.c:
+          - motion == SPIN -> LOCOMOTION.
+          - (type in (FORM, CONVERGE)) and frame == ABSOLUTE -> ABS_POSITION
+            — only these two goal types read frame at all (bse.py §5).
         """
         caps = goal.required_caps
         if goal.motion == BSEMotion.SPIN:
             caps |= ChoreoCapabilities.LOCOMOTION
+        if goal.type in (GoalType.FORM, GoalType.CONVERGE) and \
+                goal.frame == BSEFrame.ABSOLUTE:
+            caps |= ChoreoCapabilities.ABS_POSITION
         return caps
 
     @staticmethod

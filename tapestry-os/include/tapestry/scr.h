@@ -83,6 +83,16 @@ typedef uint8_t scr_capability_t;
 #define SCR_CAP_RELAY    ((scr_capability_t)0x01)  /* message-forwarding node   */
 #define SCR_CAP_SENSOR   ((scr_capability_t)0x02)  /* sensing / observation node */
 #define SCR_CAP_ACTUATOR ((scr_capability_t)0x04)  /* physical actuation node   */
+/*
+ * BONDING and ABS_POSITION (below) are physical/positioning capabilities,
+ * not follower roles — scr_tick()'s role assignment (§ "Role assignment"
+ * in scr.c) only ever inspects RELAY/SENSOR/ACTUATOR by name, so these two
+ * bits are invisible to role election by construction, not by omission.
+ * Never gossiped (same as the three above) — set once locally at
+ * scr_init() from firmware/hardware configuration.
+ */
+#define SCR_CAP_BONDING      ((scr_capability_t)0x08)  /* physical bonding/docking */
+#define SCR_CAP_ABS_POSITION ((scr_capability_t)0x10)  /* lighthouse/GPS/mocap etc */
 
 /* ── Swarm roles ──────────────────────────────────────────────────────────── */
 /*

@@ -270,6 +270,102 @@ def test_requires_rejects_a_bare_string_and_unknown_names(tmp_path):
                             tmp_path))
 
 
+def test_abs_position_is_a_known_capability_name(tmp_path):
+    s = parse_file(one_step('duration = "5s", target = [1, 2, 3], '
+                            'requires = ["abs_position"]', tmp_path,
+                            goal="converge"))
+    assert s.steps[0].required_caps == ChoreoCapabilities.ABS_POSITION
+
+
+# ── Derived capability floor / satisfiability warnings (§11) ────────────────
+# Non-fatal: the runtime derives and enforces these (derived_caps() in
+# choreo.c) whether or not `requires` declares them, so an unlisted one is
+# not a script error — but it's worth flagging so an author isn't
+# surprised by a runtime -EPERM on an element that lacks the capability.
+
+def test_absolute_frame_warns_when_abs_position_not_declared(tmp_path):
+    s = parse_file(one_step('duration = "5s", target = [1, 2, 3]', tmp_path,
+                            goal="converge"))
+    assert len(s.warnings) == 1
+    assert "steps[0]" in s.warnings[0]
+    assert "abs_position" in s.warnings[0]
+
+
+def test_absolute_frame_no_warning_when_abs_position_declared(tmp_path):
+    s = parse_file(one_step('duration = "5s", target = [1, 2, 3], '
+                            'requires = ["abs_position"]', tmp_path,
+                            goal="converge"))
+    assert s.warnings == []
+
+
+@pytest.mark.parametrize("frame_params", [
+    'frame = "collective"',
+    'frame = "element", anchor = { select = "leader" }',
+])
+def test_non_absolute_frame_has_no_abs_position_warning(frame_params, tmp_path):
+    s = parse_file(one_step(f'duration = "5s", {frame_params}', tmp_path,
+                            goal="converge"))
+    assert s.warnings == []
+
+
+@pytest.mark.parametrize("goal", ["hold", "exchange"])
+def test_coordinate_free_goals_never_warn(goal, tmp_path):
+    """HOLD/EXCHANGE never read frame at all (bse.py §5) — no floor to
+    derive, regardless of the (unreachable, default) frame value."""
+    s = parse_file(one_step('duration = "5s"', tmp_path, goal=goal))
+    assert s.warnings == []
+
+
+def test_spin_warns_when_locomotion_not_declared(tmp_path):
+    s = parse_file(one_step(
+        'duration = "60s", target = [0, 0, 0], radius = 3, '
+        'spin = "0.15rad/s", requires = ["abs_position"]',
+        tmp_path, goal="form"))
+    assert len(s.warnings) == 1
+    assert "locomotion" in s.warnings[0]
+
+
+def test_spin_no_warning_when_locomotion_declared(tmp_path):
+    s = parse_file(one_step(
+        'duration = "60s", target = [0, 0, 0], radius = 3, '
+        'spin = "0.15rad/s", requires = ["locomotion", "abs_position"]',
+        tmp_path, goal="form"))
+    assert s.warnings == []
+
+
+def test_static_form_has_no_locomotion_warning(tmp_path):
+    s = parse_file(one_step(
+        'duration = "5s", target = [0, 0, 0], radius = 3, '
+        'requires = ["abs_position"]', tmp_path, goal="form"))
+    assert s.warnings == []
+
+
+def test_orbit_preset_warns_about_the_locomotion_it_desugars_to(tmp_path):
+    """§6.1 sugar goes through the same form+spin parsing as hand-written
+    steps — the warning must apply to the desugared result, not be
+    bypassed by the preset."""
+    s = parse_file(one_step(
+        'around = "leader", radius = "1m", rate = "0.15rad/s", '
+        'duration = "60s"', tmp_path, goal="orbit"))
+    assert len(s.warnings) == 1
+    assert "locomotion" in s.warnings[0]
+
+
+def test_tracks_warnings_use_track_and_step_index(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        converge = { target = [0, 0, 0], duration = "60s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "60s" }
+        """, tmp_path)
+    s = parse_file(p)
+    assert len(s.warnings) == 1
+    assert "tracks[0].steps[0]" in s.warnings[0]
+
+
 # ── Coordinate-free vs. coordinate goals ─────────────────────────────────────
 
 @pytest.mark.parametrize("goal", ["hold", "exchange"])
