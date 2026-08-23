@@ -415,6 +415,19 @@ typedef struct {
      *   be speculative.  Must outlive the step array, same requirement
      *   choreo_submit_script() already places on `steps` itself — a TOML-
      *   authored string literal or a static const char* satisfies this.
+     *
+     *   ABI note: this is the ONE non-plain-old-data field anywhere in
+     *   choreo_goal_t/choreo_transition_t/choreo_step_t — everything else
+     *   in this struct tree is scalars, enums, and fixed-size arrays, so
+     *   it round-trips through a byte-for-byte copy with no pointer
+     *   fixup. A raw C pointer has no stable meaning across a wire
+     *   transfer (e.g. a future non-choreoc script delivery path — see
+     *   choreo_submit_script()'s doc), so a decoder populating a
+     *   choreo_step_t from bytes that did not originate at compile time
+     *   on THIS device must special-case this field: leave it NULL, or
+     *   replace it with a small fixed-size inline buffer / tag-ID lookup
+     *   if the capability is wanted over that path. Do not add a second
+     *   pointer field to this struct tree without the same consideration.
      */
     substrate_signal_t indicator;
     const char         *telemetry_tag;
@@ -503,7 +516,17 @@ int choreo_submit_goal(const choreo_goal_t *goal);
  * validates every step up front (goal validity, capability requirements,
  * and that each step can advance), then deploys step 0.  The steps array
  * must remain valid while the script runs (typically a static const array
- * in the application).
+ * in the application) — this API takes a pointer and a count, and neither
+ * this function nor anything it calls cares how that memory was
+ * populated. Every consumer today points it at a `choreoc`-generated
+ * `static const` array, but that is a self-imposed convention of today's
+ * callers, not a constraint choreo.c enforces — a caller could equally
+ * decode a wire-delivered blob into its own persistent buffer first. See
+ * choreo_step_t's doc for the one field (`telemetry_tag`) that isn't
+ * plain-old-data and would need special handling by any such decoder,
+ * and validate_steps()'s doc in choreo.c for what re-validation already
+ * happens on-device regardless of where `steps` came from (and the one
+ * check — cycle/max_runtime — that does not).
  *
  * Returns 0 on success, -1 on invalid arguments or an unadvanceable step,
  * -EPERM if any step's required_caps are unsatisfied.

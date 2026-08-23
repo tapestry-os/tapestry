@@ -60,6 +60,45 @@
                                      * 50 units → equilibrium ≈ 43 units = 341 mm in 800 mm arena */
 #endif
 
+/* ── Choreo target-tracking tuning ───────────────────────────────────────
+ * demo_track_target() drives toward a single L6/L7-commanded point instead
+ * of the spring field's peer-summed force — see that function's doc. */
+
+/* Attraction "force" magnitude commanded at full range (saturates
+ * demo_force_to_twist's speed clamp — see FORCE_TO_SPEED in formation.c:
+ * need force * FORCE_TO_SPEED >= 22 to reach the same forward-speed cap
+ * demo_compute_drive uses, so 40 clears it with margin). */
+#define DEMO_TRACK_MAX_FORCE   40.0f
+
+/* Inside this range of the target, attraction force ramps down linearly
+ * to 0 instead of holding DEMO_TRACK_MAX_FORCE — a trapezoidal approach
+ * profile so the commanded speed decelerates on final approach instead of
+ * commanding full force right up to DEMO_TRACK_ARRIVE_EPS and relying on
+ * the arrival snap alone. */
+#define DEMO_TRACK_SLOW_RADIUS 15.0f
+
+/* Inside this distance of the target, command zero motion outright.
+ * Without an arrival snap, the residual attraction force there is too
+ * small to clear demo_force_to_twist's MIN_STICTION floor on its own, so
+ * the floor would keep forcing a nonzero speed command and the robot
+ * would creep/oscillate around the target indefinitely instead of
+ * settling — the same problem demo_compute_drive's FORCE_STOP/FORCE_START
+ * hysteresis solves for the spring field, expressed here as a distance
+ * gate since attraction force is monotonic in distance (no sign to
+ * hystrese around). Kept smaller than the .choreo.toml script's own
+ * achieve_eps (5.0 units) so the controller settles before L6/L7
+ * achievement is even evaluated, rather than fighting it. */
+#define DEMO_TRACK_ARRIVE_EPS  2.0f
+
+/* Emergency repulsion backstop, mirroring cf21bl-formation's
+ * demo_choreo_track(): FORM's own grid spacing (25 units, see
+ * form-grid.choreo.toml) is the primary deconfliction; this only guards
+ * the transient approach if two robots' paths cross closer than intended.
+ * DEMO_TRACK_MIN_SEP is below the grid's own spacing (never triggers at
+ * equilibrium) but above collision. */
+#define DEMO_TRACK_MIN_SEP     20.0f
+#define DEMO_TRACK_EMERGENCY_K 3.0f
+
 /* ── Dead-reckoning state ───────────────────────────────────────────────── */
 
 typedef struct {
@@ -102,15 +141,52 @@ void demo_compute_drive(const world_model_t *wm,
                          float *speed_out,
                          float *rate_out);
 
+/*
+ * Choreo tracking (L6/L7): drive toward a single commanded world point
+ * (target_x, target_y) — e.g. a FORM step's grid vertex or a HOLD step's
+ * captured station (tapestry/choreo.h's TAPESTRY_BSE_DIRECTIVE_MOVE_TO_
+ * POINT target) — instead of demo_compute_drive's peer-summed spring
+ * force. Turn-then-drive differential-drive law: attraction force points
+ * straight at the target (ramping down inside DEMO_TRACK_SLOW_RADIUS,
+ * zeroed inside DEMO_TRACK_ARRIVE_EPS), summed with an emergency-repulsion
+ * backstop against any fresh peer closer than DEMO_TRACK_MIN_SEP, then
+ * projected onto the robot frame the same way demo_compute_drive already
+ * does (shared via demo_force_to_twist in formation.c) — turning force
+ * dominates until the robot is roughly facing the target, same as the
+ * spring field's own behavior, because both share the same projection.
+ * Unlike demo_compute_drive there is no moving/stopped hysteresis state
+ * (odo is read-only here): the arrival snap alone prevents dither at the
+ * target, and there is no separate persisted setpoint to leash/glide —
+ * every call recomputes fresh from odo's current dead-reckoning estimate
+ * and whatever wm currently holds, since the differential-drive command
+ * is instantaneous (no PID state to protect, unlike cf21bl-formation's
+ * demo_choreo_track counterpart).
+ */
+void demo_track_target(const world_model_t *wm,
+                        const demo_odometry_t *odo,
+                        float target_x,
+                        float target_y,
+                        float *speed_out,
+                        float *rate_out);
+
 /* ── Signal feedback ────────────────────────────────────────────────────── */
 
 /*
- * Set substrate signal to reflect L4 world model peer visibility.
+ * Set substrate signal to reflect L4 world model peer visibility, unless
+ * overridden by the active Choreo step's declared indicator effect.
+ *   step_indicator   — choreo_current_indicator() (§12 Stage 5).
+ *                       SUBSTRATE_SIGNAL_NONE means no override (the
+ *                       default, and the behavior of every call site
+ *                       written before this feature existed); non-NONE
+ *                       takes priority over the heuristic below. Same
+ *                       pattern as cf21bl-formation's/webots-formation's
+ *                       demo_set_leds().
+ * Heuristic (no override):
  *   >=2 fresh peers → SUBSTRATE_SIGNAL_ACTIVE   (formation viable)
  *    1 fresh peer   → SUBSTRATE_SIGNAL_DEGRADED (partial)
  *    0 fresh peers  → SUBSTRATE_SIGNAL_FAILED   (isolated / starting up)
  */
-void demo_set_leds(const world_model_t *wm);
+void demo_set_leds(const world_model_t *wm, substrate_signal_t step_indicator);
 
 /*
  * Display dead-reckoning position on the micro:bit 5×5 LED matrix.

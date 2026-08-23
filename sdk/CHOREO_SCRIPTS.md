@@ -377,6 +377,20 @@ doc's P4). At most `CHOREO_MAX_TRACKS` (4) tracks; a script that declares
 more is rejected at parse time, and `choreo_submit_tracks()` itself
 rejects a script where no track matches this element.
 
+Because selection is first-match-wins, declaration order matters: a
+track whose filter only matches elements an **earlier** track's filter
+also matches can never be selected — its steps are dead weight (§8.4).
+The classic case is the catch-all declared first instead of last, which
+silently claims every element. The parser **warns** (not rejects, same
+contract as the derived-capability warnings below) when it detects this:
+
+```
+choreoc: warning: tracks[1]: unreachable — every element this track's
+filter matches is already claimed by tracks[0]'s filter (§8.4: selection
+is first-match-wins, ...) — reorder the tracks or tighten tracks[0]'s
+filter
+```
+
 Each track's `[[tracks.steps]]` is a full, independent step list with the
 same schema as `[[steps]]` above — including `name =` / `on = [...]`
 transitions and its own `max_runtime` for a cyclic track (§8.4 applies

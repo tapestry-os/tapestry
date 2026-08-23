@@ -1,0 +1,67 @@
+# form-grid.choreo.toml — the "form-grid" show, and the ONLY file to edit
+# to change it.  Regenerate the committed header afterwards:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/form-grid.choreo.toml
+#
+# Coordinate-free start: hold references each robot's own current station
+# (wherever compute_start_pos() placed it — see main.c), not a fixed point.
+# FORM's target/radius are in this app's abstract [0, WORLD_SIZE] world
+# (WORLD_SIZE=100, csm.h) — NOT meters, unlike cf21bl-formation's script.
+# parse_length_m() passes bare numbers through unitless (see
+# sdk/python/tapestry/script_toml.py), so plain floats are correct here.
+# Script completion means quiescence; this platform maps it to holding the
+# finished grid position — there is no "land" for a ground rover (see
+# main.c).
+
+choreo = "form-grid"
+
+# Settle at the boot-time station before moving — same opening beat
+# cf21bl-formation's change-partners script uses.
+[[steps]]
+hold = { duration = "5s", requires = ["locomotion"] }
+
+# Arrange the collective into a near-square grid centered on the arena.
+# FORM reads task_slot/swarm_size from scr_tick() each cycle, not a fixed
+# element count, so the layout adapts to however many elements are
+# actually fresh right now (see bse.c's TAPESTRY_BSE_SHAPE_GRID case) —
+# 4 elements gives a clean 2x2; a dropped element reflows the rest into a
+# smaller near-square rather than leaving a gap.  25-unit cell spacing
+# matches formation.c's old spring-demo DEMO_TARGET_SPACING, so grid
+# density is visually consistent with the L4-only demo this replaces.
+# Advances once every fresh element has settled within eps of its own
+# grid vertex for the settle time (scope="all" — gossiped/aggregated, see
+# choreo_collective_achieved()); the timeout is the robustness net if
+# achievement never fires for a peer.
+#
+# frame="absolute" (the default) derives an abs_position requirement —
+# made explicit below rather than left implicit.  cutebot's "absolute
+# position" is dead-reckoning from each robot's compute_start_pos() seed
+# (main.c), NOT a real absolute sensor (lighthouse/GPS/mocap, the
+# capability's usual meaning — see SCR_CAP_ABS_POSITION's doc in scr.h).
+# It is exactly the same shared-frame assumption the old L4-only spring
+# demo already made (every robot's dead reckoning agrees only because
+# they seed from a shared, id-derived formula) — FORM's fixed (50,50)
+# target now also rides on that assumption, and dead-reckoning drift over
+# a long mission will pull the actual grid off-center in a way a real
+# abs-position sensor would not.  See main.c's scr_init() call and the
+# README's "Known limitations" for the same caveat.
+[[steps]]
+[steps.form]
+target   = [50.0, 50.0, 0.0]
+shape    = "grid"
+radius   = 25.0
+until    = "achieved"
+scope    = "all"
+timeout  = "45s"
+eps      = 5.0
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Hold the finished grid.  Script completion (quiescence) below maps to
+# "keep station-keeping" — the ground-rover equivalent of cf21bl's "land
+# in place": there is no powered-down rest state worth modeling for a
+# differential-drive rover that is already sitting at zero commanded
+# force.
+[[steps]]
+hold = { duration = "15s", requires = ["locomotion"] }

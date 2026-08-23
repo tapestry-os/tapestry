@@ -1,28 +1,76 @@
 # Demo — Cutebot Collective Formation
 
-BBC micro:bit V2 + Cutebot Mini robots self-organize into a regular formation
-using the Tapestry L4 world model and BLE gossip. No central controller.
-No L5 SCR — formation is a pure L4 emergent behavior.
+BBC micro:bit V2 + Cutebot Mini robots self-organize using the Tapestry
+world model and BLE gossip. No central controller. This is the L1-L7
+Choreo reference example on a differential-drive ground rover — a
+different substrate class from `cf21bl-formation`'s lighthouse-tracked
+quadrotor, and (as of this session) the first real-hardware-targeted
+consumer of Choreo's FORM goal anywhere in this repo.
 
-## How it works
+Two build modes (Kconfig choice `DEMO_MODE`, see `Kconfig`):
+
+- **`DEMO_MODE_CHOREO` (default)** — a real L5 SCR + a declarative L7
+  Choreo script (`form-grid.choreo.toml`) driven through the L6 BSE: hold
+  the boot-time station, arrange into a near-square grid, hold the
+  finished grid. **Unvalidated on real Cutebot hardware** — see "Known
+  limitations" below.
+- **`DEMO_MODE_SHOWCASE`** — the original, flight-validated L4-only
+  emergent spring field (no SCR/L6/L7). Kept as a fallback.
+
+## How it works (both modes)
 
 1. Each robot advertises its dead-reckoning position over BLE.
 2. Peer positions are received into the local L4 world model.
-3. A spring-field algorithm computes a differential drive command:
-   - repulsion when a peer is closer than `TARGET_SPACING`
-   - attraction when farther
-4. Hysteresis thresholds (`FORCE_START` / `FORCE_STOP`) prevent oscillation
-   near equilibrium and absorb gossip-propagated micro-corrections.
-5. The micro:bit 5×5 LED matrix displays the robot's dead-reckoning position
+3. The micro:bit 5×5 LED matrix displays the robot's dead-reckoning position
    in real time (one lit pixel = estimated location in the 100×100 logical world).
-6. Cutebot LEDs reflect **formation completeness** — whether all currently-known
-   active peers are fresh:
-   - **Red** — no known peers (isolated or booting)
-   - **Yellow** — some peers stale; movement halted until all active peers are fresh
-   - **Green** — all known peers fresh (stable formation at any size)
 
-   This means the LEDs return to green after a removal and redistribution,
-   regardless of how many robots remain.
+### `DEMO_MODE_SHOWCASE` — spring field
+
+A spring-field algorithm computes a differential drive command:
+- repulsion when a peer is closer than `DEMO_TARGET_SPACING`
+- attraction when farther
+
+Hysteresis thresholds (`FORCE_START` / `FORCE_STOP`) prevent oscillation
+near equilibrium and absorb gossip-propagated micro-corrections.
+
+Cutebot LEDs reflect **formation completeness** — whether all currently-known
+active peers are fresh:
+- **Red** — no known peers (isolated or booting)
+- **Yellow** — some peers stale; movement halted until all active peers are fresh
+- **Green** — all known peers fresh (stable formation at any size)
+
+This means the LEDs return to green after a removal and redistribution,
+regardless of how many robots remain.
+
+### `DEMO_MODE_CHOREO` — L5/L6/L7 script
+
+A real L5 SCR (`scr_init()`/`scr_tick()`) tracks quorum from the actual
+world model, and a declarative L7 Choreo script
+(`form-grid.choreo.toml`, compiled to `src/choreo_script.h` by
+`sdk/tools/choreoc.py`) drives the robots through the L6 BSE:
+
+1. **hold** — station-keep at the boot-time position (coordinate-free).
+2. **form** (shape=grid) — arrange into a near-square grid centered on
+   the arena, via `demo_track_target()`'s differential-drive go-to-point
+   controller (`formation.c`) — a proportional turn-then-drive law (turn
+   toward the commanded point, drive forward, decelerate on approach,
+   with an emergency-repulsion backstop against too-close peers), the
+   *first* real-hardware-targeted consumer of Choreo's FORM goal in this
+   repo.
+3. **hold** — settle on the finished grid.
+
+Script completion (quiescence) maps to simply holding still — there is no
+takeoff/landing concept for a ground rover.
+
+LEDs follow the active step's declared indicator effect
+(`choreo_current_indicator()`) when one is set, falling back to the same
+peer-freshness heuristic as showcase mode otherwise.
+
+To change the script: edit `form-grid.choreo.toml`, then regenerate:
+
+```sh
+python3 sdk/tools/choreoc.py tapestry/examples/cutebot-formation/form-grid.choreo.toml
+```
 
 ## Hardware
 
@@ -40,6 +88,14 @@ Run from the workspace root (`tapestry-workspace/`):
 
 ```sh
 west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation
+```
+
+Builds `DEMO_MODE_CHOREO` by default. For the original, flight-validated
+spring field instead:
+
+```sh
+west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation \
+  -- -DCONFIG_DEMO_MODE_SHOWCASE=y
 ```
 
 The hex is written to `build/zephyr/zephyr.hex`.
@@ -64,6 +120,12 @@ stagger the reboots, unplug and replug all robots simultaneously after flashing
 to align their boot times.
 
 ## Demo procedure
+
+This section describes `DEMO_MODE_SHOWCASE`'s spring-field behavior
+(cold start → scatter → stable equilibrium). `DEMO_MODE_CHOREO`'s boot,
+auto-ID, and placement steps are identical; its runtime behavior is the
+hold → form(grid) → hold sequence described above instead of continuous
+emergent spacing.
 
 **Physical placement before power-on**
 IDs are assigned by FICR nonce rank at boot — you won't know which physical
@@ -125,9 +187,8 @@ and listens for peers. After the window:
 2. **Claimed IDs** from already-running robots (live gossip) are avoided.
 3. **element_id** = rank-th unclaimed ID.
 
-The window duration is set in `CMakeLists.txt` via
-`CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS` (overrides the 4 s default in `transport.c`
-without requiring Kconfig plumbing).
+The window duration is set in `prj.conf` via
+`CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS` (overrides the 4 s default in `transport.c`).
 
 ## Starting positions
 
@@ -149,7 +210,11 @@ Defined in [src/formation.h](src/formation.h). Override at build time with
 |---|---|---|
 | `DEMO_MAX_SPEED` | 135.0 | Odometry linearisation constant (see below) |
 | `DEMO_WHEEL_TRACK` | 10.6 | Wheel-center to wheel-center, logical units (800 mm arena) |
-| `DEMO_TARGET_SPACING` | 50.0 | Desired peer spacing → equilibrium ≈ 43 units = 341 mm |
+| `DEMO_TARGET_SPACING` | 50.0 | Showcase mode: desired peer spacing → equilibrium ≈ 43 units = 341 mm |
+| `DEMO_TRACK_MAX_FORCE` | 40.0 | Choreo mode: full-range attraction toward the commanded FORM/HOLD point |
+| `DEMO_TRACK_SLOW_RADIUS` | 15.0 | Choreo mode: attraction ramps down inside this range of the target |
+| `DEMO_TRACK_ARRIVE_EPS` | 2.0 | Choreo mode: command zero motion inside this range (arrival snap) |
+| `DEMO_TRACK_MIN_SEP` / `DEMO_TRACK_EMERGENCY_K` | 20.0 / 3.0 | Choreo mode: emergency repulsion backstop against too-close peers |
 
 **Recalibrating for a different arena:**
 
@@ -183,6 +248,29 @@ per robot before running the formation demo.
   above the force produced by a one-cycle positional overshoot.
 - **Formation too tight / too spread** — adjust `DEMO_TARGET_SPACING`.
 
+## Testing
+
+`tests/` is a host-buildable ztest suite (no BLE, no hardware) covering
+`demo_track_target()`'s go-to-point law (arrival snap, trapezoidal
+approach, the exact-180°-behind reverse case, the emergency repulsion
+backstop) and the form-grid script end-to-end, driven through real
+`demo_odometry_t` + `demo_track_target` + `demo_odometry_update`
+integration (not a teleporting perfect tracker) — matches
+`cf21bl-formation/tests`'s pattern.
+
+```sh
+west build -p always -b native_sim tapestry/examples/cutebot-formation/tests
+./build/zephyr/zephyr.exe
+```
+
+Not run against real Zephyr/native_sim as part of writing this suite (no
+`west`/`ZEPHYR_BASE` toolchain available in that session) — the same
+scenarios were instead verified with a standalone host build (plain
+`clang`, no Zephyr, linking `formation.c` directly against the real
+`scr.c`/`bse.c`/`choreo.c`/`world_model.c` sources) and passed, including
+the 4-element form-grid end-to-end run. Run this suite for real the first
+time `native_sim` is available, before trusting it as a regression gate.
+
 ## Known limitations
 
 Dead-reckoning drifts. World-model positions are computed entirely from motor
@@ -191,3 +279,24 @@ physically has no effect on its self-reported position until it moves under
 motor power again. The planned fix is to replace dead-reckoning distance with
 RSSI-based proximity from the BLE scan callbacks (`transceiver_ble.c` already
 receives `rssi` per peer).
+
+**`DEMO_MODE_CHOREO` is unvalidated on real Cutebot hardware.** Unlike
+`DEMO_MODE_SHOWCASE` (the original, flight-validated behavior), the L5/L6/L7
+wiring, the `form-grid.choreo.toml` script, and `demo_track_target()`'s
+control law were written and verified this session only via host-side
+compilation and standalone numeric/behavioral checks (see "Testing" above)
+— never flashed to or run on a physical robot. Constants borrowed from the
+flight-tested `cf21bl-formation`/`webots-formation` examples (e.g.
+`QUORUM_UP_MS`) are a reasonable starting point, not independently tuned
+for BLE gossip timing or Cutebot motor dynamics.
+
+**FORM's `abs_position` capability claim is weaker than its usual meaning.**
+`SCR_CAP_ABS_POSITION` (declared in `main.c`'s `scr_init()` call, and
+implicitly required by FORM's default `frame = "absolute"`) normally means
+a real absolute-position sensor (lighthouse, GPS, mocap). Cutebot has none
+— it satisfies the capability with dead reckoning from each robot's shared
+`compute_start_pos()` seed, the same assumption the original spring-field
+demo already made implicitly. This is honest (every robot's frame agrees by
+construction, same as before), but the grid's absolute placement will drift
+off-center over a long mission in a way a real abs-position sensor would
+not. See `form-grid.choreo.toml`'s own comment for the full rationale.

@@ -168,6 +168,28 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: ./tapestry/examples/cf21bl-formation/build/test-formation/zephyr/zephyr.exe
 
+      # ── cutebot-formation formation field + choreo script ───────────────
+      # Same shape as cf21bl-formation's suite above: demo_track_target()'s
+      # go-to-point law (arrival snap, trapezoidal approach, the exact-180-
+      # degree-behind reverse case, emergency repulsion) plus the
+      # hold->form(grid)->hold script end-to-end, driven through real
+      # demo_odometry_t integration rather than a teleporting perfect
+      # tracker. Pure C — runs on native_sim. Written and standalone-host-
+      # verified (plain clang against the real scr.c/bse.c/choreo.c/
+      # world_model.c, no Zephyr) but never previously run through an
+      # actual west/native_sim build — this is that first real run.
+
+      - name: Build cutebot-formation formation-field + choreo unit tests
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b native_sim/native/64 \
+            --build-dir tapestry/examples/cutebot-formation/build/test-formation \
+            tapestry/examples/cutebot-formation/tests
+
+      - name: Run cutebot-formation formation-field + choreo unit tests
+        working-directory: ${{ github.workspace }}
+        run: ./tapestry/examples/cutebot-formation/build/test-formation/zephyr/zephyr.exe
+
       # ── cf21bl motor mixing ─────────────────────────────────────────────
       # Existing ztest suite (uniform-reduction saturation, yaw signs);
       # previously only ever run on hardware — also pure C.
@@ -396,13 +418,27 @@ jobs:
             tapestry/tapestry-scr-hw
 
       # ── cutebot-formation example ─────────────────────────────────────
-      # L4-only formation demo; compile-only (flashing requires physical hardware).
+      # Compile-only (flashing requires physical hardware). Two Kconfig
+      # modes (DEMO_MODE choice, see examples/cutebot-formation/Kconfig):
+      # DEMO_MODE_CHOREO (default, L5/L6/L7 — unvalidated on real hardware,
+      # see that example's README) and DEMO_MODE_SHOWCASE (the original,
+      # flight-validated L4-only spring field). Both built here so a
+      # regression in either mode is caught, not just whichever is default.
 
-      - name: Build cutebot-formation — bbc_microbit_v2
+      - name: Build cutebot-formation (DEMO_MODE_CHOREO, default) — bbc_microbit_v2
         working-directory: ${{ github.workspace }}
         run: |
           west build -b bbc_microbit_v2 \
             --build-dir tapestry/examples/cutebot-formation/build/hw-mb \
+            tapestry/examples/cutebot-formation
+
+      - name: Build cutebot-formation (DEMO_MODE_SHOWCASE) — bbc_microbit_v2
+        working-directory: ${{ github.workspace }}
+        run: |
+          printf 'CONFIG_DEMO_MODE_SHOWCASE=y\n' > /tmp/ci_showcase.conf
+          west build -b bbc_microbit_v2 \
+            --build-dir tapestry/examples/cutebot-formation/build/hw-mb-showcase \
+            --extra-conf /tmp/ci_showcase.conf \
             tapestry/examples/cutebot-formation
 
       # ── Crazyflie 2.1 Brushless (STM32F405 / Cortex-M4F) ────────────────
