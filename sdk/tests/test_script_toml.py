@@ -845,6 +845,38 @@ def test_on_converts_to_choreo_transitions(tmp_path):
     assert t.goto_step_idx == 1
 
 
+def test_quorum_lost_event_is_recognised(tmp_path):
+    s = parse_file(script('''
+        [[steps]]
+        name = "a"
+        [steps.converge]
+        target   = [1, 2, 3]
+        duration = "60s"
+        on = [ { event = "quorum_lost", goto = "b" } ]
+
+        [[steps]]
+        name = "b"
+        [steps.hold]
+        duration = "60s"
+        ''', tmp_path))
+    assert s.steps[0].on == [
+        NormalizedTransition(event="quorum_lost", goto_step_idx=1, threshold=0)
+    ]
+    t = to_choreo_steps(s)[0].on[0]
+    assert t.event == ChoreoEvent.QUORUM_LOST
+    assert t.threshold == 0
+
+
+def test_quorum_lost_needs_no_threshold(tmp_path):
+    """Rejected on every event except count_gte/count_eq — quorum_lost
+    must not be treated as one of those two."""
+    with pytest.raises(ScriptError, match="only applies to count_gte/count_eq"):
+        parse_file(one_step(
+            'duration = "60s", '
+            'on = [ { event = "quorum_lost", goto = "end", threshold = 2 } ]',
+            tmp_path))
+
+
 # ── The committed script ─────────────────────────────────────────────────────
 
 def test_the_shipped_change_partners_script_still_parses():

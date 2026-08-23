@@ -102,17 +102,22 @@ class SubstrateSignal(IntEnum):
 class ChoreoEvent(IntEnum):
     """Choreo SDK Design doc §8.2's event vocabulary, this subset only
     (the "welcome dance" demo, §8.3's flagship for this feature, uses
-    only ELEMENT_JOINED/ELEMENT_LOST).  Mirrors choreo_event_t (choreo.h)
-    — see that header for why quorum_degraded/quorum_lost/
-    quorum_recovered aren't here yet (they'd need to suppress the
-    engine's existing automatic RUNNING -> SUSPENDED transition, which
-    needs its own careful design)."""
+    only ELEMENT_JOINED/ELEMENT_LOST).  Mirrors choreo_event_t (choreo.h).
+
+    QUORUM_LOST fires when scr_state's quorum_state == LOST, checked
+    before (and composing naturally with, not suppressing) the engine's
+    own automatic RUNNING -> SUSPENDED transition — see choreo.h's
+    comment for why that no longer needed its own careful design once a
+    HOLD step's own timeout stopped freezing while suspended
+    (_suspended_hold_timeout()). quorum_degraded/quorum_recovered remain
+    absent — no concrete use case identified for either."""
     ACHIEVED       = 0
     ELEMENT_JOINED = 1
     ELEMENT_LOST   = 2
     COUNT_GTE      = 3   # threshold
     COUNT_EQ       = 4   # threshold
     ANCHOR_LOST    = 5
+    QUORUM_LOST    = 6
 
 
 # Bounded to match choreo.h's CHOREO_MAX_TRANSITIONS — enforced in
@@ -727,10 +732,18 @@ class Choreo:
             # the BSE while suspended — station capture and station-keeping
             # need no peers, and deferring the capture to quorum recovery
             # would capture a drifted position.  Peer-referential goals
-            # (EXCHANGE) stay frozen.  Script timers stay frozen either way.
+            # (EXCHANGE) stay frozen.  Script timers stay frozen too,
+            # except a HOLD step's own max_duration_ms
+            # (_suspended_hold_timeout()) — permanent isolation needs a
+            # way out even for a step that never freezes unsafely.
             if self._goal is not None and self._goal.type == GoalType.HOLD:
                 self._bse.tick(wm_entries, scr_state)
-            if scr_state.get('quorum_state', 2) != self.QUORUM_LOST:
+                self._suspended_hold_timeout()
+            # _suspended_hold_timeout() may have terminated -> IDLE, or
+            # advanced to a new step (still SUSPENDED); the recovery
+            # check only applies if still actually SUSPENDED.
+            if self._state == ChoreoState.SUSPENDED and \
+                    scr_state.get('quorum_state', 2) != self.QUORUM_LOST:
                 self._state = ChoreoState.RUNNING
 
     def _collective_achieved(self, wm_entries: List[dict]) -> bool:
@@ -805,7 +818,42 @@ class Choreo:
             return self._swarm_size(wm_entries) == t.threshold
         if t.event == ChoreoEvent.ANCHOR_LOST:
             return self._bse.anchor_lost()
+        if t.event == ChoreoEvent.QUORUM_LOST:
+            return scr_state.get('quorum_state', 2) == self.QUORUM_LOST
         return False
+
+    def _advance_to(self, target_idx: int) -> None:
+        """Shared tail of an advance: activate step target_idx, or
+        complete the script if target_idx has run off the end.  Mirrors
+        advance_to() in choreo.c — factored out so
+        _suspended_hold_timeout() below can reach it too."""
+        self._step_ms = 0
+
+        if target_idx >= len(self._steps):
+            self._script_done = True
+            self.terminate()
+            return
+
+        self._step_idx = target_idx
+        self._goal = self._steps[self._step_idx].goal
+        self._bse.submit_intent(self._goal_to_intent(self._goal))
+
+    def _suspended_hold_timeout(self) -> None:
+        """Isolated (SUSPENDED) timeout carve-out — HOLD only.  Mirrors
+        suspended_hold_timeout() in choreo.c: a HOLD step's own
+        max_duration_ms keeps counting down while suspended, so a script
+        can give up on permanent isolation instead of station-keeping
+        forever.  Deliberately narrow — no on[] transitions, no
+        advance_on_achieved (HOLD's achievement is unconditionally true,
+        so combining it with SUSPENDED would fire on the first isolated
+        tick)."""
+        if self._steps is None or self._goal is None or \
+                self._goal.type != GoalType.HOLD:
+            return
+        st = self._steps[self._step_idx]
+        self._step_ms += self.WM_CYCLE_MS
+        if st.max_duration_ms > 0 and self._step_ms >= st.max_duration_ms:
+            self._advance_to(self._step_idx + 1)
 
     def _script_advance(self, wm_entries: List[dict], scr_state: dict) -> None:
         if self._steps is None:
@@ -834,18 +882,7 @@ class Choreo:
                 return
             target_idx = self._step_idx + 1
 
-        self._step_ms = 0
-
-        if target_idx >= len(self._steps):
-            # Script complete → quiescence: terminate submits the IDLE
-            # intent; _script_done survives it.
-            self._script_done = True
-            self.terminate()
-            return
-
-        self._step_idx = target_idx
-        self._goal = self._steps[self._step_idx].goal
-        self._bse.submit_intent(self._goal_to_intent(self._goal))
+        self._advance_to(target_idx)
 
     def get_directive(self) -> BSEDirective:
         """Return the directive computed by the last tick."""

@@ -201,8 +201,9 @@ _KNOWN_PARAMS = {
 _ORBIT_PARAMS = {"duration", "timeout", "until", "eps", "settle", "requires",
                  "scope", "around", "radius", "rate", "on"} | _EFFECT_PARAMS
 
-# §8.2 event vocabulary, this subset only — see choreo.h's ChoreoEvent for
-# why quorum_degraded/quorum_lost/quorum_recovered aren't here yet.
+# §8.2 event vocabulary — see choreo.h's ChoreoEvent for why
+# quorum_degraded/quorum_recovered aren't here yet (no concrete use case
+# identified for either).
 EVENTS = {
     "achieved":       "achieved",
     "element_joined": "element_joined",
@@ -210,6 +211,7 @@ EVENTS = {
     "count_gte":      "count_gte",
     "count_eq":       "count_eq",
     "anchor_lost":    "anchor_lost",
+    "quorum_lost":    "quorum_lost",
 }
 _EVENTS_NEEDING_THRESHOLD = {"count_gte", "count_eq"}
 
@@ -246,6 +248,7 @@ _EVENT_ENUM = {
     "count_gte":      ChoreoEvent.COUNT_GTE,
     "count_eq":       ChoreoEvent.COUNT_EQ,
     "anchor_lost":    ChoreoEvent.ANCHOR_LOST,
+    "quorum_lost":    ChoreoEvent.QUORUM_LOST,
 }
 
 

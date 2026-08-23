@@ -194,6 +194,10 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
  * actual coverage; 2.0 m is conservative relative to CF21BL_POS_MAX_M=3. */
 #define GEOFENCE_RADIUS_M    2.0f
 
+/* Quorum-recovery hold, fed to scr_set_quorum_hold_ms() below — see that
+ * call site's comment. Flight-tested value (2026-07-19 flight 2). */
+#define QUORUM_UP_MS 2000
+
 /* Every drone lands independently after this long from its own arm time —
  * a pure safety backstop in choreo mode (the script normally ends the
  * flight well before it), and the "coordinated" land in showcase mode.
@@ -440,6 +444,18 @@ int main(void)
         (uint8_t)CONFIG_TAPESTRY_QUORUM_MIN,
         (uint8_t)CONFIG_TAPESTRY_QUORUM_TARGET,
         SCR_CAP_ACTUATOR | SCR_CAP_ABS_POSITION);
+    /* Requiring >= QUORUM_UP_MS of SUSTAINED recovery before scr_tick()
+     * reports quorum up — a single lucky gossip frame keeps a peer
+     * "fresh" for WM_STALE_THRESHOLD_MS (1500 ms), so gating on
+     * instantaneous freshness let lone packets flicker the Choreo awake
+     * for a second at a time in flight (2026-07-19 flight 2). This used
+     * to be a filter applied to a local COPY of scr here in main.c
+     * (never written back), duplicated identically in webots-formation's
+     * main.c; scr_set_quorum_hold_ms() moved it into L5 itself, where
+     * every consumer of `scr` (not just choreo_tick() below) sees the
+     * same held view — see that function's doc for the full semantics,
+     * including why SCR_ABORT_CLEARED is now delayed by this same amount. */
+    scr_set_quorum_hold_ms(&scr, QUORUM_UP_MS);
 
     choreo_init(element_id);
     choreo_register_scr(&scr);
@@ -752,40 +768,18 @@ int main(void)
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
             /* Real L5: recompute quorum/role/task_slot/abort from the
-             * actual world model. */
+             * actual world model. scr_set_quorum_hold_ms() above means
+             * scr.quorum_state (and everything scr_tick() derives from
+             * it — abort_state, leader, role, task_slot) is already the
+             * held view: a LOST -> >=DEGRADED recovery must be SUSTAINED
+             * for QUORUM_UP_MS before it's reported, filtering out the
+             * single-lucky-gossip-frame flicker that used to run the
+             * tracker briefly and ratchet the target toward a (possibly
+             * corrupt) position estimate (2026-07-19 flight 2). Quorum
+             * LOSS remains immediate regardless — see scr_set_quorum_
+             * hold_ms()'s doc. */
             scr_tick(&scr, &wm);
 
-            /* Debounced VIEW of quorum for L6/L7, layered on top of the
-             * real scr_tick() output: a single lucky gossip frame keeps a
-             * peer "fresh" for WM_STALE_THRESHOLD_MS (1500 ms), so gating
-             * on instantaneous freshness let lone packets flicker the
-             * Choreo awake for a second at a time — each flicker ran the
-             * tracker briefly and its leash ratcheted the target toward a
-             * (possibly corrupt) position estimate (2026-07-19 flight 2).
-             * Requiring ≥ QUORUM_UP_MS of SUSTAINED freshness means at
-             * least two consecutive gossip frames: real contact, not a
-             * lucky packet.  Loss is immediate.  At this example's
-             * thresholds (quorum_min = quorum_target = 1) that is the same
-             * verdict scr_tick() computes, plus a confirmation delay on the
-             * up-transition that peer counts cannot express.
-             *
-             * The debounce is applied to a COPY handed to choreo_tick(),
-             * never written back into scr: quorum_state is the only field
-             * L6/L7 reads, and mutating the live struct would leave
-             * scr_get_quorum() reporting the debounced view while
-             * _prev_quorum_state and scr_get_abort_state() tracked the real
-             * history — a state the L5 contract says cannot happen, and a
-             * trap for whoever wires in the abort protocol.
-             *
-             * This debounce belongs inside L5, not here: deciding whether
-             * the collective has quorum is L5's job, and an obligation
-             * every element main loop has to remember is one a new element
-             * main loop will forget.  It lives here only because moving it
-             * makes scr_tick() time-dependent (today it is a pure function
-             * of the world model) and delays SCR_ABORT_CLEARED by
-             * QUORUM_UP_MS — a change to the L5→L6 contract that wants
-             * flight validation, not a refactor.  Deferred past 0.9.0. */
-#define QUORUM_UP_MS 2000
             float nearest_m = -1.0f;
             for (int i = 0; i < MAX_ELEMENTS; i++) {
                 const wm_entry_t *e = &wm.entries[i];
@@ -798,19 +792,8 @@ int main(void)
                     }
                 }
             }
-            static uint32_t fresh_streak_ms;
-            if (scr.fresh_count >= 1) {
-                if (fresh_streak_ms < QUORUM_UP_MS) {
-                    fresh_streak_ms += WM_CYCLE_MS;
-                }
-            } else {
-                fresh_streak_ms = 0;
-            }
-            bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
+            bool quorum_up = scr.quorum_state != SCR_QUORUM_LOST;
             log_quorum_up = quorum_up;
-            scr_state_t scr_view = scr;
-            scr_view.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY
-                                              : SCR_QUORUM_LOST;
 
             /* Station-compatibility check, once per contact: stations
              * closer than ~2× the separation floor mean station-keeping
@@ -871,18 +854,21 @@ int main(void)
             was_battery_low = battery_low;
 #endif
 
-            choreo_tick(&wm, &scr_view);
+            choreo_tick(&wm, &scr);
             own_state.goal_achieved = choreo_goal_achieved();
             own_state.current_track = choreo_current_track();
 
-            /* HARD_RT gossip on the REAL (undebounced) quorum-loss edge —
-             * scr_view's QUORUM_UP_MS softening above is for L6/L7 only;
-             * the wire signal that this element's quorum just failed
-             * should not wait on that confirmation delay. Fires once per
-             * outage, not every tick it persists — scr_get_abort_state()
-             * is a level held for the whole LOST period (see scr.h), so
-             * this checks the NONE/CLEARED -> TRIGGERED edge specifically.
-             * Mirrors tapestry-os/subsys/runtime/runtime.c's step 4b. */
+            /* HARD_RT gossip on the quorum-loss edge. Not delayed by
+             * QUORUM_UP_MS despite scr's held view above: loss is always
+             * reported immediately (scr_set_quorum_hold_ms() only ever
+             * holds the RECOVERY edge) — the wire signal that this
+             * element's quorum just failed goes out the same tick it
+             * happens, same as before this was moved into L5. Fires once
+             * per outage, not every tick it persists — scr_get_abort_
+             * state() is a level held for the whole LOST period (see
+             * scr.h), so this checks the NONE/CLEARED -> TRIGGERED edge
+             * specifically. Mirrors tapestry-os/subsys/runtime/
+             * runtime.c's step 4b. */
             static scr_abort_state_t last_abort_state;
             scr_abort_state_t abort_state = scr_get_abort_state(&scr);
 

@@ -220,8 +220,8 @@ another step's `name`, or the literal string `"end"` to complete the
 script from anywhere.
 
 Event vocabulary (a subset of the design doc's §8.2 — see that section
-for why `quorum_degraded`/`quorum_lost`/`quorum_recovered` aren't here
-yet):
+for why `quorum_degraded`/`quorum_recovered` aren't here: no concrete use
+case has been identified for either):
 
 | Event | Fires when |
 |---|---|
@@ -229,6 +229,7 @@ yet):
 | `element_joined` / `element_lost` | a debounced rise/fall in the fresh participant count (2 s stable, the same lesson [anchor debounce](#frames-and-anchors) encodes — one lucky/unlucky gossip frame must not fire this fleet-wide). |
 | `count_gte` / `count_eq` | the live participant count crosses a `threshold` (required on these two events, rejected on every other). |
 | `anchor_lost` | a `frame = "element"` goal (see above) couldn't resolve any anchor this tick. |
+| `quorum_lost` | this element's quorum just dropped to `LOST` (isolated — no fresh peers). See [Isolation and quorum loss](#isolation-and-quorum-loss) below — this is the one event that composes with, rather than replaces, the runtime's own automatic suspend behavior. |
 
 At most 4 transitions per step (the runtime's fixed-size limit) — the
 parser rejects a 5th rather than silently truncating.
@@ -246,6 +247,55 @@ max_runtime = "10min"
 `max_runtime` replaces the summed-step-durations bound
 (`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS`) for a cyclic script; an acyclic script
 keeps the sum as before and doesn't need it.
+
+## Isolation and quorum loss
+
+Losing quorum (no fresh peers) automatically suspends whatever step is
+running — the runtime freezes it and resumes it unchanged once quorum
+recovers, so a partition pauses the show rather than timing it out. This
+is a blanket, non-negotiable policy: it isn't something a script opts
+into or out of.
+
+That blanket freeze has one built-in exception: a `hold` step's own
+`duration`/`timeout` keeps counting down even while suspended (every
+other goal's timer stays frozen). Everything else about `hold` while
+isolated is unchanged — it still station-keeps on its own position, no
+peers required — but it's no longer possible for a script to get stuck
+station-keeping forever with no peer left to ever revive it. This
+matters because nothing else in the platform can rescue an element in
+that state: there's no OTA/remote-push mechanism to intervene, so a
+`hold` step is the one place a script can always be authored to time out
+on its own and reach quiescence.
+
+The `quorum_lost` event (above) is how a script actively *chooses* a
+safe fallback instead of passively freezing wherever isolation happened
+to strike — e.g. an `exchange` step frozen mid-arc is a worse place to
+sit than a `hold` at the element's actual current position:
+
+```toml
+[[steps]]
+name = "swap"
+[steps.exchange]
+until    = "achieved"
+timeout  = "30s"
+requires = ["locomotion"]
+on = [ { event = "quorum_lost", goto = "isolated" } ]
+
+[[steps]]
+name = "isolated"
+hold = { duration = "60s", requires = ["locomotion"] }
+```
+
+`quorum_lost` is checked like any other `on[]` entry — first, before the
+step's normal exit condition — so it runs *before* the automatic suspend
+for that tick, redirecting to `isolated` immediately. It is then correct
+for the runtime to suspend the newly-active `hold` step right away on
+that same tick, since `hold` already knows how to run safely (and, per
+above, time out) while isolated — the event's job is choosing *which*
+goal freezes, not preventing the freeze. If `swap` doesn't declare
+`quorum_lost`, isolation mid-arc still just freezes it in place exactly
+as before this feature existed — `quorum_lost` is opt-in per step, same
+as every other event.
 
 ## Effects
 

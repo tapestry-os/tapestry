@@ -97,6 +97,7 @@ EVENT_ENUM = {
     "count_gte":      "CHOREO_EVENT_COUNT_GTE",
     "count_eq":       "CHOREO_EVENT_COUNT_EQ",
     "anchor_lost":    "CHOREO_EVENT_ANCHOR_LOST",
+    "quorum_lost":    "CHOREO_EVENT_QUORUM_LOST",
 }
 
 INDICATOR_ENUM = {

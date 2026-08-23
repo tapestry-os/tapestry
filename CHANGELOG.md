@@ -200,6 +200,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   external monitoring consumer — deliberately NOT built: no such
   consumer exists anywhere in this repo, and `telemetry_tag` is local
   capture only (see `choreo.h`)
+- **A `hold` step can now give up on permanent isolation, and a script can
+  choose a safe fallback instead of freezing wherever quorum loss struck**
+  — closes a real gap: `choreo_tick()`'s `SUSPENDED` case never advanced a
+  step's own timer for ANY goal type, so an element that lost quorum and
+  never regained it (all peers gone, a permanent partition, out-of-mesh-
+  range — and, since OTA install is out of v1.0 scope, with no remote
+  recovery path either) would station-keep forever with nothing left to
+  ever revive it. A `hold` step's own `max_duration_ms` now keeps counting
+  down while suspended (every other goal type's timer stays frozen, as
+  before). New `on = [{ event = "quorum_lost", goto = ... }]` transition
+  lets a script actively redirect to a safe `hold` instead of passively
+  freezing at a transient position (e.g. mid-`exchange`-arc) — checked
+  like any other `on[]` entry, before the automatic suspend, so the
+  target step is simply the one that ends up suspended that same tick.
+  `quorum_degraded`/`quorum_recovered` remain deliberately absent — no
+  concrete use case identified for either. The `hold`-timeout-while-
+  suspended change applies with no author opt-in required (it's a runtime
+  behavior change, not a new field); `cf21bl-formation`'s shipped script
+  declares no `quorum_lost` transition and isn't meaningfully affected —
+  its `hold` steps' bounds (10s/8s) are far below anything a real
+  partition would need to trigger this
+- **Quorum-recovery hold moved into L5** (`scr_set_quorum_hold_ms()`) —
+  `scr_tick()` can now require a `LOST` -> `>=DEGRADED` recovery to be
+  SUSTAINED for a configurable duration before reporting it, instead of
+  reporting the very first tick a peer looks fresh again. This generalizes
+  a flight-tested (2026-07-19 flight 2) app-level filter that was
+  duplicated identically in `cf21bl-formation`'s and `webots-formation`'s
+  `main.c`: gating quorum recovery on instantaneous freshness let a
+  single lucky gossip packet flicker Choreo awake for a tick, ratcheting
+  the tracker's target toward a possibly-corrupt position estimate. Both
+  apps now call `scr_set_quorum_hold_ms(&scr, QUORUM_UP_MS)` once at init
+  and pass the real `scr` straight to `choreo_tick()`/`choreo_telemetry_
+  write()` — no more local filter, no more debounced copy. Quorum LOSS
+  remains immediate and unaffected (`SCR_ABORT_TRIGGERED` still fires the
+  same tick quorum drops); only the recovery edge is held, and only when
+  it follows a real prior LOST period — live fluctuation between
+  `DEGRADED` and `HEALTHY` is reported as before. `SCR_ABORT_CLEARED` is
+  now delayed by the same hold duration as a direct, intended consequence
+  — this is a change to L5's exported abort-signal timing, not just an
+  SDK addition, so treat it as flight-validation-pending like every other
+  quorum-adjacent change in this release: verified here via a scripted
+  40-tick equivalence test asserting the new L5 mechanism reproduces the
+  old app-level filter's output tick-for-tick under `quorum_min=
+  quorum_target=1` (both apps' real config), plus new `scr_suite` ztests
+  covering the hold/no-hold/reset/no-effect-on-in-zone-fluctuation cases,
+  but not yet run through `native_sim` or real hardware
 
 ### Changed
 - **`tapestry_gossip_frame_t`'s `hop_count` byte repacked into `relay_qos`**

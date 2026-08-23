@@ -73,6 +73,18 @@
  *               peers); PEER-referential goals (EXCHANGE) are frozen.
  *               Resumes automatically to RUNNING when quorum recovers.
  *
+ *               A HOLD step's OWN max_duration_ms is the one exception to
+ *               "step timers are frozen": it keeps counting down while
+ *               suspended too (choreo.c's suspended_hold_timeout()), so a
+ *               script can give up on permanent isolation instead of
+ *               station-keeping forever with no peer ever left to revive
+ *               it — every other goal type's timer stays frozen exactly
+ *               as before.  Combine with a CHOREO_EVENT_QUORUM_LOST
+ *               transition (choreo_event_t below) on the step that
+ *               precedes the HOLD to actively choose a safe fallback
+ *               station instead of freezing wherever isolation happened
+ *               to strike (e.g. mid-EXCHANGE-arc).
+ *
  *               SUSPENDED is deliberately defined as "paused, preserved,
  *               resumes automatically" rather than as "quorum lost".  An
  *               implementation with a prioritised goal queue reports a
@@ -286,19 +298,46 @@ typedef enum {
  *   CHOREO_EVENT_COUNT_EQ        — scr_get_swarm_size() == threshold.
  *   CHOREO_EVENT_ANCHOR_LOST     — bse_anchor_lost() (FORM/CONVERGE
  *                                  frame == ELEMENT only).
+ *   CHOREO_EVENT_QUORUM_LOST     — scr->quorum_state == SCR_QUORUM_LOST,
+ *                                  checked on the same tick as (and
+ *                                  before) choreo_tick()'s own automatic
+ *                                  RUNNING -> SUSPENDED transition — see
+ *                                  below.
  *
- * quorum_degraded/quorum_lost/quorum_recovered (§8.2's other collective
- * events) are deliberately NOT here yet — declaring one would need to
- * suppress choreo_tick()'s existing automatic RUNNING -> SUSPENDED
- * transition for that step (today's blanket behavior), and that
- * interaction needs its own careful design rather than a guess; the
- * stage-3 flagship demo doesn't need them.
+ * quorum_degraded/quorum_recovered (§8.2's other two collective events)
+ * remain deliberately absent — no concrete use case has been identified
+ * for either (recovery already has its own automatic SUSPENDED ->
+ * RUNNING resume, which continues the step that was running rather than
+ * needing an explicit target). QUORUM_LOST *is* now here, and it turned
+ * out NOT to need what the previous version of this comment worried
+ * about — suppressing the automatic RUNNING -> SUSPENDED transition for
+ * that tick. It doesn't need to: a step's QUORUM_LOST transition runs
+ * exactly like any other `on[]` entry, jumping to its target BEFORE the
+ * automatic transition is evaluated (choreo.c's script_advance() is
+ * called first). If the target step is a HOLD, choreo_tick()'s
+ * SUSPENDED case (see choreo_state_t above) already knows how to run a
+ * HOLD safely while isolated — including timing it out via its own
+ * max_duration_ms — so it's simply correct for the state machine to
+ * suspend it immediately afterward on the same tick it activated; the
+ * escape hatch's whole job is choosing WHICH goal freezes, not avoiding
+ * the freeze. The design question this comment used to flag turned out
+ * to dissolve once "SUSPENDED + HOLD" itself stopped meaning "frozen
+ * forever."
  *
  * ELEMENT_JOINED/ELEMENT_LOST and the two COUNT_* variants share ONE
  * debounce timer per Choreo instance (continuous across the whole
  * script's lifetime, matching TAPESTRY_BSE_ANCHOR_HOLD_MS's "a selector/
  * count result must be stable before acting on it" lesson) — see
- * choreo.c's membership-debounce comment.
+ * choreo.c's membership-debounce comment. QUORUM_LOST has no debounce of
+ * its own in choreo.c — it reads scr->quorum_state verbatim, same as the
+ * automatic RUNNING -> SUSPENDED transition next to it always has. On
+ * cf21bl-formation/webots-formation, scr->quorum_state already carries
+ * the flight-tested 2-second upward debounce applied at the app level
+ * before choreo_tick() ever sees it; a caller that skips that (e.g. the
+ * Python SDK driven directly, without an equivalent filter) gets exactly
+ * as much debounce on this event as it gets on the automatic suspend —
+ * none — which is a pre-existing property of this state machine, not
+ * something new QUORUM_LOST introduces.
  */
 typedef enum {
     CHOREO_EVENT_ACHIEVED       = 0,
@@ -307,6 +346,7 @@ typedef enum {
     CHOREO_EVENT_COUNT_GTE      = 3,   /* threshold */
     CHOREO_EVENT_COUNT_EQ       = 4,   /* threshold */
     CHOREO_EVENT_ANCHOR_LOST    = 5,
+    CHOREO_EVENT_QUORUM_LOST    = 6,
 } choreo_event_t;
 
 /* Bounded, no dynamic allocation — matches every other bounded-array

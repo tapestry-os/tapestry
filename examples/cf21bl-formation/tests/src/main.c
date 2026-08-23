@@ -513,8 +513,12 @@ ZTEST(choreo_script, test_exchange_direct_path_beelines)
 
 ZTEST(choreo_script, test_suspension_freezes_step_timer)
 {
+    /* CONVERGE (peer-referential-shaped target, not self-referential) —
+     * HOLD is the one goal type this no longer holds for; see
+     * test_suspended_hold_times_out_while_still_isolated below. */
     static const choreo_step_t script[] = {
-        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 1000 },
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 1.0f, 1.0f } },
+          .max_duration_ms = 1000 },
     };
 
     choreo_init(0);
@@ -542,6 +546,148 @@ ZTEST(choreo_script, test_suspension_freezes_step_timer)
     }
     zassert_true(choreo_script_complete(),
                  "script must resume and complete after quorum recovery");
+}
+
+/* ── Isolation give-up: HOLD's timer keeps running while SUSPENDED ───────── */
+
+ZTEST(choreo_script, test_suspended_hold_times_out_while_still_isolated)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 1000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    /* 1.1 s of quorum LOST — just past the step's own bound.  Unlike
+     * non-HOLD goals (see test_suspension_freezes_step_timer above), a
+     * HOLD step's own max_duration_ms is not frozen by SUSPENDED — this
+     * is the isolation give-up mechanism (choreo_state_t's doc). */
+    for (int i = 0; i < 11; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "an isolated HOLD must time itself out without waiting "
+                 "for quorum recovery");
+}
+
+ZTEST(choreo_script, test_suspended_hold_advances_to_next_step_while_isolated)
+{
+    /* Two HOLD steps back to back: the first's timeout must fire while
+     * still SUSPENDED, activate the second fresh (its own timer starting
+     * from 0), and the second must ALSO keep counting down while still
+     * isolated — not just the first step specially. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 500 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 500 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    for (int i = 0; i < 6; i++) {   /* 600 ms — past step 0's 500 ms bound */
+        choreo_tick(&wm, &scr);
+    }
+    zassert_equal(choreo_script_step(), 1,
+                  "step 0's isolated timeout must advance to step 1");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "still isolated — advancing must not fake a recovery");
+    zassert_false(choreo_script_complete(), "step 1 hasn't timed out yet");
+
+    for (int i = 0; i < 6; i++) {   /* another 600 ms, still isolated */
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "step 1's own isolated timeout must also fire");
+}
+
+/* ── Isolation escape hatch: on = quorum_lost ────────────────────────────── */
+
+ZTEST(choreo_script, test_quorum_lost_transition_redirects_before_suspending)
+{
+    /* Step 0 is peer-referential (EXCHANGE-shaped via CONVERGE target, so
+     * the test doesn't need a real peer snapshot); on quorum loss it
+     * must jump to step 1 (a HOLD) rather than freezing at step 0's
+     * directive, and step 1 must then run under the normal SUSPENDED
+     * HOLD carve-out (still ticking BSE) on that SAME tick. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 5.0f, 5.0f } },
+          .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_QUORUM_LOST, .goto_step_idx = 1 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 3.0f, 4.0f);   /* current station, away from target */
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 0, "starts on step 0");
+
+    scr.quorum_state = SCR_QUORUM_LOST;
+    choreo_tick(&wm, &scr);
+
+    zassert_equal(choreo_script_step(), 1,
+                  "quorum_lost must redirect to step 1 immediately");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "the redirected HOLD step correctly suspends right "
+                  "after activating — it knows how to run safely there");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "must have actually switched goals, not just index");
+
+    /* The redirect itself only submits the new HOLD intent — station
+     * capture happens on the SUSPENDED branch's own bse_tick(), which
+     * runs starting the NEXT cycle (per-goal quorum carve-out, same as
+     * always for HOLD). */
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 1, "still on the redirected step");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED, "still isolated");
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 3.0f, EPS,
+                   "redirected HOLD must station-keep at the CURRENT "
+                   "position, not freeze at the old CONVERGE target");
+    zassert_within(d->target.y, 4.0f, EPS, "same, y");
+}
+
+ZTEST(choreo_script, test_no_quorum_lost_transition_freezes_as_before)
+{
+    /* A step with no quorum_lost transition must behave exactly as
+     * before this feature existed: freeze at its own directive. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 5.0f, 5.0f } },
+          .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 3.0f, 4.0f);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_LOST;
+    choreo_tick(&wm, &scr);
+
+    zassert_equal(choreo_script_step(), 0, "no transition declared — stays put");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED, "still suspends");
 }
 
 ZTEST(choreo_script, test_unadvanceable_step_rejected)
