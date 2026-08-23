@@ -298,8 +298,7 @@ int main(int argc, char **argv)
                 if (abort_state == SCR_ABORT_TRIGGERED &&
                     last_abort_state != SCR_ABORT_TRIGGERED) {
                     own_state.update_seq++;
-                    own_state.goal_achieved = choreo_goal_achieved();
-                    own_state.current_track = choreo_current_track();
+                    choreo_publish_state(&own_state);
                     printf("id=%u quorum LOST — sending HARD_RT gossip now\n",
                            (unsigned)element_id);
                     gossip_send(&own_state, TAPESTRY_QOS_HARD_RT);
@@ -413,10 +412,11 @@ int main(int argc, char **argv)
              * after landing (see above), and a landed element must report
              * the achievement state it actually finished on, not the one it
              * held on its last airborne tick. Every element main loop that
-             * gossips has to do this — without it the bit is permanently 0
-             * and a scope="all" step can never advance on achievement. */
-            own_state.goal_achieved = choreo_goal_achieved();
-            own_state.current_track = choreo_current_track();
+             * gossips has to call choreo_publish_state() — without it the
+             * bit is permanently 0 and a scope="all" step can never advance
+             * on achievement (this exact obligation was silently missed
+             * twice before choreo_publish_state() existed — see its doc). */
+            choreo_publish_state(&own_state);
             gossip_send(&own_state, TAPESTRY_QOS_SOFT_RT);
         }
     }

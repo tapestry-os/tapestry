@@ -720,12 +720,37 @@ int choreo_submit_tracks(const world_model_t *wm, const choreo_track_t *tracks, 
 
 /*
  * choreo_current_track — This element's active track index (0 if not
- * currently in multi-track mode, or on track 0).  The application must
- * gossip this on element_state_t::current_track before each gossip_send
- * (mirrors how choreo_goal_achieved() feeds element_state_t::
- * goal_achieved) — it is what lets OTHER elements' collect_participants()
- * (bse.c) filter to peers on the SAME track; see wire.h's v4 comment.
+ * currently in multi-track mode, or on track 0) — it is what lets OTHER
+ * elements' collect_participants() (bse.c) filter to peers on the SAME
+ * track; see wire.h's v4 comment. Prefer choreo_publish_state() below
+ * over calling this directly; it exists for a caller that genuinely
+ * wants only the track index and not the rest.
  */
 uint8_t choreo_current_track(void);
+
+/*
+ * choreo_publish_state — Copy this tick's gossip-relevant L6/L7 output
+ * (goal_achieved, current_track) into own_state, ready for gossip_send().
+ *
+ * Every application that gossips must call this once per cycle, after
+ * choreo_tick() and before gossip_send() — element_state_t::goal_achieved
+ * and ::current_track are gossiped fields (so peers can aggregate a
+ * scope="all" achievement predicate and filter to same-track peers), but
+ * Choreo has no handle on element_state_t itself (an L3/L4 wire struct,
+ * not something L7 touches) to keep them current on its own. This one
+ * call replaces what used to be two separate manual assignments
+ * (own_state.goal_achieved = choreo_goal_achieved(); own_state.
+ * current_track = choreo_current_track();), duplicated identically
+ * across every app that gossips — an obligation that was silently
+ * forgotten twice in this repo's history before either mistake was
+ * caught (see tapestry-os/tests/transport's suite header comment).
+ * Consolidating to one well-named call doesn't make forgetting it
+ * impossible, but it cuts the surface from two fields to remember to
+ * one, and gives it a name a reviewer or a grep can actually find.
+ *
+ * Safe to call in any lifecycle state; choreo_goal_achieved()/
+ * choreo_current_track() are themselves state-safe (see their own docs).
+ */
+void choreo_publish_state(element_state_t *own_state);
 
 #endif /* TAPESTRY_CHOREO_H */

@@ -855,8 +855,7 @@ int main(void)
 #endif
 
             choreo_tick(&wm, &scr);
-            own_state.goal_achieved = choreo_goal_achieved();
-            own_state.current_track = choreo_current_track();
+            choreo_publish_state(&own_state);
 
             /* HARD_RT gossip on the quorum-loss edge. Not delayed by
              * QUORUM_UP_MS despite scr's held view above: loss is always

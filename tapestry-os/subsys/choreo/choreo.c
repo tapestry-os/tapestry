@@ -792,6 +792,12 @@ uint8_t choreo_current_track(void)
     return s_n_tracks > 0 ? s_active_track_idx : 0;
 }
 
+void choreo_publish_state(element_state_t *own_state)
+{
+    own_state->goal_achieved = choreo_goal_achieved();
+    own_state->current_track = choreo_current_track();
+}
+
 void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
 {
     switch (s_state) {
