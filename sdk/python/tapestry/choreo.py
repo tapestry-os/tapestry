@@ -83,6 +83,22 @@ class GoalShape(IntEnum):
     GRID   = 3
 
 
+class SubstrateSignal(IntEnum):
+    """Mirrors substrate_signal_t (substrate.h) — a semantic signal state,
+    NOT a physical LED/tone/marker value (that mapping is
+    implementation-defined per substrate). Reused directly for
+    ChoreoStep.indicator, same as GoalShape/BSEFrame/etc. are reused
+    rather than duplicated with a parallel enum. The Python SDK has no
+    substrate layer of its own — current_indicator() only returns this
+    value for a caller (or a telemetry capture) to act on; it never
+    drives real hardware."""
+    NONE     = 0
+    IDLE     = 1
+    ACTIVE   = 2
+    DEGRADED = 3
+    FAILED   = 4
+
+
 class ChoreoEvent(IntEnum):
     """Choreo SDK Design doc §8.2's event vocabulary, this subset only
     (the "welcome dance" demo, §8.3's flagship for this feature, uses
@@ -184,6 +200,12 @@ class ChoreoStep:
     advance_on_achieved: bool = False
     scope:               int = ChoreoScope.SELF   # whose achievement counts
     on: List[ChoreoTransition] = field(default_factory=list)
+
+    # §12 Stage 5 effect annotations — mirrors choreo_step_t's indicator/
+    # telemetry_tag (choreo.h). Both default to "no effect", byte-identical
+    # to every ChoreoStep written before this feature existed.
+    indicator:     SubstrateSignal = SubstrateSignal.NONE
+    telemetry_tag: Optional[str]   = None
 
 
 @dataclass
@@ -828,6 +850,22 @@ class Choreo:
     def get_directive(self) -> BSEDirective:
         """Return the directive computed by the last tick."""
         return self._bse.get_directive()
+
+    def current_indicator(self) -> SubstrateSignal:
+        """The active step's declared indicator effect (§12 Stage 5), or
+        SubstrateSignal.NONE if the current step declared none, or if no
+        script is active. Mirrors choreo_current_indicator()."""
+        if self._steps is None:
+            return SubstrateSignal.NONE
+        return self._steps[self._step_idx].indicator
+
+    def current_telemetry_tag(self) -> Optional[str]:
+        """The active step's declared telemetry tag (§12 Stage 5), or None
+        under the same conditions current_indicator() returns NONE.
+        Mirrors choreo_current_telemetry_tag()."""
+        if self._steps is None:
+            return None
+        return self._steps[self._step_idx].telemetry_tag
 
     # ── Internal ──────────────────────────────────────────────────────────────
 

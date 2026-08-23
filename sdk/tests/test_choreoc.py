@@ -73,7 +73,7 @@ def test_only_authored_fields_are_emitted():
     assert ".advance_on_achieved = false" in c
     for absent in (".target", ".radius", ".shape", ".slot_shift",
                    ".direct_path", ".achieve_eps", ".achieve_hold_ms",
-                   ".required_caps", ".scope"):
+                   ".required_caps", ".scope", ".indicator", ".telemetry_tag"):
         assert absent not in c
 
 
@@ -81,7 +81,8 @@ def test_a_fully_specified_step_emits_every_field():
     c = choreoc.emit_step(NormalizedStep(
         goal="form", max_duration_ms=12000, advance_on_achieved=True, scope=1,
         slot_shift=2, direct_path=True, achieve_eps=0.25, achieve_hold_ms=3000,
-        target=(4.0, 5.0, 6.0), radius=2.0, shape="grid", required_caps=0x01))
+        target=(4.0, 5.0, 6.0), radius=2.0, shape="grid", required_caps=0x01,
+        indicator="active", telemetry_tag="spraying"))
     for fragment in (".type = CHOREO_GOAL_FORM",
                      ".target = { 4.0f, 5.0f, 6.0f }",
                      ".radius = 2.0f",
@@ -93,8 +94,50 @@ def test_a_fully_specified_step_emits_every_field():
                      ".achieve_hold_ms = 3000u",
                      ".max_duration_ms = 12000u",
                      ".advance_on_achieved = true",
-                     ".scope = CHOREO_SCOPE_ALL"):
+                     ".scope = CHOREO_SCOPE_ALL",
+                     ".indicator = SUBSTRATE_SIGNAL_ACTIVE",
+                     '.telemetry_tag = "spraying"'):
         assert fragment in c, fragment
+
+
+# ── Effects (§12 Stage 5) ─────────────────────────────────────────────────────
+
+def test_indicator_enum_names_match_substrate_h():
+    assert choreoc.INDICATOR_ENUM["idle"]     == "SUBSTRATE_SIGNAL_IDLE"
+    assert choreoc.INDICATOR_ENUM["active"]   == "SUBSTRATE_SIGNAL_ACTIVE"
+    assert choreoc.INDICATOR_ENUM["degraded"] == "SUBSTRATE_SIGNAL_DEGRADED"
+    assert choreoc.INDICATOR_ENUM["failed"]   == "SUBSTRATE_SIGNAL_FAILED"
+
+
+def test_c_string_escapes_quotes_and_backslashes():
+    assert choreoc.c_string("plain") == '"plain"'
+    assert choreoc.c_string('has "quotes"') == '"has \\"quotes\\""'
+    assert choreoc.c_string("back\\slash") == '"back\\\\slash"'
+
+
+def test_a_script_with_effects_compiles(tmp_path):
+    script = write_script(tmp_path, '''
+        [[steps]]
+        name = "spraying"
+        [steps.form]
+        target        = [10.0, 10.0, 3.0]
+        radius        = 5
+        duration      = "120s"
+        indicator     = "active"
+        telemetry_tag = "spraying_infected_zone"
+
+        [[steps]]
+        hold = { duration = "10s" }
+        ''')
+    result = run_cli(script)
+    assert result.returncode == 0, result.stderr
+    header = (tmp_path / "choreo_script.h").read_text()
+    assert ".indicator = SUBSTRATE_SIGNAL_ACTIVE" in header
+    assert '.telemetry_tag = "spraying_infected_zone"' in header
+    # the second step declared neither — must stay absent, not zero-emitted
+    steps_text = header.split("k_choreo_script")[1]
+    assert steps_text.count(".indicator") == 1
+    assert steps_text.count(".telemetry_tag") == 1
 
 
 def test_frame_absolute_default_is_left_implicit():

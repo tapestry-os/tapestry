@@ -184,6 +184,11 @@ float demo_choreo_track(const world_model_t *wm,
 
 /* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 
-void demo_set_leds(const world_model_t *wm);
+/* step_indicator: the active script step's declared indicator effect
+ * (choreo_current_indicator(), §12 Stage 5) — SUBSTRATE_SIGNAL_NONE means
+ * no override, the default and the behavior of every script written
+ * before this feature existed.  Non-NONE takes priority over this
+ * function's own quorum/freshness heuristic below. */
+void demo_set_leds(const world_model_t *wm, substrate_signal_t step_indicator);
 
 #endif /* TAPESTRY_CF21BL_FORMATION_H */

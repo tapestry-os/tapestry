@@ -381,7 +381,7 @@ int main(int argc, char **argv)
         }
 
         substrate_move(&sp);
-        demo_set_leds(&wm);
+        demo_set_leds(&wm, choreo_current_indicator());
 
         log_accum_ms += WM_CYCLE_MS;
         if (log_accum_ms >= 1000u) {

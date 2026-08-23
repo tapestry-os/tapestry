@@ -99,6 +99,13 @@ EVENT_ENUM = {
     "anchor_lost":    "CHOREO_EVENT_ANCHOR_LOST",
 }
 
+INDICATOR_ENUM = {
+    "idle":     "SUBSTRATE_SIGNAL_IDLE",
+    "active":   "SUBSTRATE_SIGNAL_ACTIVE",
+    "degraded": "SUBSTRATE_SIGNAL_DEGRADED",
+    "failed":   "SUBSTRATE_SIGNAL_FAILED",
+}
+
 CAP_FLAGS = [
     (0x01, "CHOREO_CAP_LOCOMOTION"),
     (0x02, "CHOREO_CAP_BONDING"),
@@ -118,6 +125,15 @@ def c_float(v: float) -> str:
 def caps_expr(mask: int) -> str:
     names = [name for bit, name in CAP_FLAGS if mask & bit]
     return " | ".join(names) if names else "CHOREO_CAP_NONE"
+
+
+def c_string(s: str) -> str:
+    """A TOML telemetry_tag as a C string literal — escape backslash and
+    double-quote, the two characters that would otherwise break out of the
+    literal (TOML itself already forbids raw control characters in a
+    basic string, so there is nothing else to guard against here)."""
+    escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 def emit_step(s: NormalizedStep) -> str:
@@ -174,6 +190,10 @@ def emit_step(s: NormalizedStep) -> str:
             entries.append("{ " + ", ".join(fields) + " }")
         step_fields.append(f".on = {{ {', '.join(entries)} }}")
         step_fields.append(f".n_transitions = {len(s.on)}u")
+    if s.indicator is not None:
+        step_fields.append(f".indicator = {INDICATOR_ENUM[s.indicator]}")
+    if s.telemetry_tag is not None:
+        step_fields.append(f".telemetry_tag = {c_string(s.telemetry_tag)}")
     lines.append("      " + ", ".join(step_fields) + " },")
     return "\n".join(lines)
 

@@ -174,6 +174,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stale) and kept horizontal-only. Telemetry (`choreo_telemetry.c`,
   `helpers.py`, `choreo_sim.py`) gains `pos_z`/`directive_target_z`
   columns. 
+- **Effects: per-step `indicator`/`telemetry_tag` annotations (Choreo SDK
+  Design doc §12 Stage 5)** — `choreo_step_t` gains `indicator`
+  (`substrate_signal_t`, reused directly rather than a parallel enum) and
+  `telemetry_tag` (`const char *`), both defaulting to "no effect"
+  (`SUBSTRATE_SIGNAL_NONE`/`NULL`) so every pre-existing step is
+  unaffected. New accessors `choreo_current_indicator()`/
+  `choreo_current_telemetry_tag()` (`current_indicator()`/
+  `current_telemetry_tag()` in the Python mirror) report the active
+  step's declared effect; Choreo itself never calls into L1 — the
+  application reads these once per tick and acts on them, the same
+  pattern `choreo_get_directive()` → `substrate_move()` already uses.
+  TOML authoring: `indicator = "idle"|"active"|"degraded"|"failed"` and
+  `telemetry_tag = "..."` are now valid on any goal key (see
+  `sdk/CHOREO_SCRIPTS.md`'s new "Effects" section); `choreoc.py` emits
+  both as C designated initializers, only when authored. `examples/
+  cf21bl-formation/src/formation.c`'s `demo_set_leds()` and the
+  previously independently-duplicated identical copy in `examples/
+  webots-formation/controllers/common/tracker.c` now take the step's
+  declared indicator as an override, falling back to their existing
+  quorum/freshness heuristic when unset — byte-identical behavior for
+  every script that doesn't opt in. `choreo_telemetry.c`'s CSV capture
+  gains `indicator`/`telemetry_tag` columns. `report_telemetry` in the
+  architecture paper's Factory Spill scenario implies wire delivery to an
+  external monitoring consumer — deliberately NOT built: no such
+  consumer exists anywhere in this repo, and `telemetry_tag` is local
+  capture only (see `choreo.h`)
 
 ### Changed
 - **`tapestry_gossip_frame_t`'s `hop_count` byte repacked into `relay_qos`**

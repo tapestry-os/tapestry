@@ -52,6 +52,14 @@ Common parameters:
                          on hold (which never carries until either).
     requires             list of capability names:
                          ["locomotion", "bonding", "sensing", "signaling"]
+    indicator            §12 Stage 5 effect: "idle"|"active"|"degraded"|
+                         "failed" — while this step is active,
+                         current_indicator() returns it instead of NONE.
+                         Omit for "no override" (the default).
+    telemetry_tag        §12 Stage 5 effect: an opaque label surfaced by
+                         current_telemetry_tag() for a telemetry capture
+                         to record alongside the step — not a wire
+                         delivery mechanism (see choreo.h).
 
 Goal-specific parameters:
     exchange:  shift = N          ring rotation (default 1)
@@ -116,7 +124,8 @@ from typing import List, Optional, Tuple
 
 from .choreo import (ChoreoStep, ChoreoTrack, ChoreoTrackFilter, Goal,
                      GoalType, GoalShape, ChoreoCapabilities, ChoreoEvent,
-                     ChoreoTransition, CHOREO_MAX_TRANSITIONS, CHOREO_MAX_TRACKS)
+                     ChoreoTransition, SubstrateSignal, CHOREO_MAX_TRANSITIONS,
+                     CHOREO_MAX_TRACKS)
 from .bse import BSEFrame, BSEAnchorSelector, BSEMotion
 
 
@@ -156,19 +165,33 @@ FRAMES = {"absolute": 0, "collective": 1, "element": 2}
 ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3}
 _ANCHOR_SELECTORS_DEFERRED = {"newest", "oldest"}
 
+# §12 Stage 5 effect: indicator = "<name>" mirrors substrate_signal_t
+# (substrate.h) by name, minus "none" — a step that wants no override
+# simply omits the key (the runtime default already means "no override").
+INDICATORS = {
+    "idle":     SubstrateSignal.IDLE,
+    "active":   SubstrateSignal.ACTIVE,
+    "degraded": SubstrateSignal.DEGRADED,
+    "failed":   SubstrateSignal.FAILED,
+}
+
+# Common to every goal key — allowed on any step regardless of which goal
+# it wraps, same as "requires"/"on" above.
+_EFFECT_PARAMS = {"indicator", "telemetry_tag"}
+
 _KNOWN_PARAMS = {
-    "hold":     {"duration", "timeout", "until", "eps", "settle", "requires", "on"},
+    "hold":     {"duration", "timeout", "until", "eps", "settle", "requires", "on"} | _EFFECT_PARAMS,
     "exchange": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "shift", "path", "on"},
+                 "scope", "shift", "path", "on"} | _EFFECT_PARAMS,
     "form":     {"duration", "timeout", "until", "eps", "settle", "requires",
                  "scope", "target", "radius", "shape", "frame", "anchor",
-                 "spin", "on"},
+                 "spin", "on"} | _EFFECT_PARAMS,
     "move":     {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "target", "on"},
+                 "scope", "target", "on"} | _EFFECT_PARAMS,
     "converge": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "target", "frame", "anchor", "on"},
+                 "scope", "target", "frame", "anchor", "on"} | _EFFECT_PARAMS,
     "disperse": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "radius", "on"},
+                 "scope", "radius", "on"} | _EFFECT_PARAMS,
 }
 
 # §6.1: orbit = { around, radius, rate, ... } is pure TOML-layer sugar,
@@ -176,7 +199,7 @@ _KNOWN_PARAMS = {
 # logic ever sees it — not a distinct goal type, so not in GOAL_TYPES.
 # Listed here only for its own validation/error messages.
 _ORBIT_PARAMS = {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "around", "radius", "rate", "on"}
+                 "scope", "around", "radius", "rate", "on"} | _EFFECT_PARAMS
 
 # §8.2 event vocabulary, this subset only — see choreo.h's ChoreoEvent for
 # why quorum_degraded/quorum_lost/quorum_recovered aren't here yet.
@@ -264,6 +287,8 @@ class NormalizedStep:
     spin_rate_radps:     Optional[float] = None      # motion == "spin" only
     name:                Optional[str] = None       # §8.3 goto target name
     on:                  List[NormalizedTransition] = field(default_factory=list)
+    indicator:           Optional[str] = None       # §12 Stage 5 effect
+    telemetry_tag:       Optional[str] = None       # §12 Stage 5 effect
 
 
 @dataclass
@@ -572,6 +597,19 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
                 raise ScriptError(f"{where}: unknown capability {r!r} "
                                   f"(known: {sorted(CAPABILITIES)})")
             step.required_caps |= CAPABILITIES[r]
+
+    if "indicator" in params:
+        indicator = params["indicator"]
+        if indicator not in INDICATORS:
+            raise ScriptError(f"{where}: unknown indicator {indicator!r} "
+                              f"(known: {sorted(INDICATORS)})")
+        step.indicator = indicator
+    if "telemetry_tag" in params:
+        tag = params["telemetry_tag"]
+        if not isinstance(tag, str) or not tag:
+            raise ScriptError(f"{where}: telemetry_tag must be a "
+                              f"non-empty string")
+        step.telemetry_tag = tag
 
     if goal in COORDINATE_FREE:
         # target/radius/shape are already rejected via _KNOWN_PARAMS —
@@ -938,7 +976,11 @@ def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]
                               max_duration_ms=s.max_duration_ms,
                               advance_on_achieved=s.advance_on_achieved,
                               scope=s.scope,
-                              on=on))
+                              on=on,
+                              indicator=INDICATORS[s.indicator]
+                                        if s.indicator is not None
+                                        else SubstrateSignal.NONE,
+                              telemetry_tag=s.telemetry_tag))
     return out
 
 

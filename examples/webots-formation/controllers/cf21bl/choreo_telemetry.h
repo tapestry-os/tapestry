@@ -46,7 +46,13 @@ choreo_telemetry_t *choreo_telemetry_open(element_id_t element_id);
  * nicety), scr's role/quorum/fresh_count, dir (the directive computed by
  * this tick's choreo_tick()), and the current choreo_script_step() /
  * choreo_script_complete() / choreo_current_goal_type() /
- * choreo_goal_achieved() globals. No-op if telemetry is NULL. */
+ * choreo_goal_achieved() / choreo_current_indicator() /
+ * choreo_current_telemetry_tag() globals. No-op if telemetry is NULL.
+ *
+ * indicator/telemetry_tag are captured outputs for inspection (which
+ * effect, if any, the active step declared) -- not replay inputs;
+ * sdk/tools/choreo_sim.py --replay doesn't feed them into the replayed
+ * engine, the same way it doesn't feed back directive_type. */
 void choreo_telemetry_write(choreo_telemetry_t *telemetry,
                             uint32_t tick,
                             double wall_time_s,

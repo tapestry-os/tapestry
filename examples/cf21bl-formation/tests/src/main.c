@@ -1837,4 +1837,79 @@ ZTEST(choreo_script, test_frame_collective_centroid_averages_z_too)
     zassert_within(d->target.z, 2.0f, EPS, "collective centroid averages z too");
 }
 
+/* ── Effects (§12 Stage 5) ────────────────────────────────────────────────── */
+
+ZTEST(choreo_script, test_current_indicator_and_tag_are_none_before_any_script)
+{
+    choreo_init(0);
+    zassert_equal(choreo_current_indicator(), SUBSTRATE_SIGNAL_NONE,
+                  "no script active — must be NONE");
+    zassert_is_null(choreo_current_telemetry_tag(),
+                    "no script active — must be NULL");
+}
+
+ZTEST(choreo_script, test_current_indicator_and_tag_reflect_the_active_step)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .indicator = SUBSTRATE_SIGNAL_ACTIVE, .telemetry_tag = "watching" },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    zassert_equal(choreo_current_indicator(), SUBSTRATE_SIGNAL_ACTIVE,
+                  "step 0 declared ACTIVE");
+    zassert_true(strcmp(choreo_current_telemetry_tag(), "watching") == 0,
+                "step 0 declared \"watching\"");
+}
+
+ZTEST(choreo_script, test_effects_default_to_none_when_not_declared)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    zassert_equal(choreo_current_indicator(), SUBSTRATE_SIGNAL_NONE,
+                  "step declared no indicator");
+    zassert_is_null(choreo_current_telemetry_tag(),
+                    "step declared no telemetry_tag");
+}
+
+ZTEST(choreo_script, test_current_indicator_is_none_for_a_bare_goal_not_a_script)
+{
+    /* A single choreo_submit_goal() has no choreo_step_t wrapper to
+     * annotate — only a script's steps carry effects. */
+    choreo_init(0);
+    choreo_goal_t g = { .type = CHOREO_GOAL_HOLD };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    zassert_equal(choreo_current_indicator(), SUBSTRATE_SIGNAL_NONE,
+                  "a bare goal has no step to annotate");
+    zassert_is_null(choreo_current_telemetry_tag(),
+                    "a bare goal has no step to annotate");
+}
+
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);
