@@ -876,6 +876,50 @@ def _derived_capability_warnings(where: str, step: NormalizedStep) -> List[str]:
     return out
 
 
+def _track_shadowing_warnings(tracks: List[NormalizedTrack]) -> List[str]:
+    """Choreo SDK Design doc §8.4's declaration-order shadowing check, as
+    an authoring-time warning.  Track selection is first-match-wins
+    (choreo.c's first_matching_track() / choreo.py's
+    _first_matching_track()), so a track whose filter only ever matches
+    elements an EARLIER track's filter also matches can never be selected
+    by any element — its steps are dead weight the author almost
+    certainly didn't intend (classic case: the catch-all declared first
+    instead of last).
+
+    Filter semantics (track_matches(), both runtimes): element matches
+    (required_caps R, requires_energy_low L) iff its caps ⊇ R and
+    (¬L or the element is energy-low).  Track j is subsumed by an earlier
+    track i iff every (caps, energy) state matching j's filter also
+    matches i's:
+      - R_i ⊆ R_j   (i demands no capability j doesn't also demand), and
+      - L_i ⟹ L_j  (i's energy constraint is no stricter than j's).
+
+    Non-fatal, matching _derived_capability_warnings() above: the script
+    still loads and runs — every element just resolves to the earlier
+    track — and a warning (not an error) leaves room for a deliberately
+    staged file where a later duplicate is kept for a planned filter
+    edit.  Each shadowed track reports only its FIRST shadower, mirroring
+    which track the runtime would actually pick."""
+    out = []
+    for j in range(1, len(tracks)):
+        for i in range(j):
+            subset_caps = (tracks[j].required_caps
+                           & tracks[i].required_caps) == tracks[i].required_caps
+            energy_ok = tracks[j].requires_energy_low \
+                or not tracks[i].requires_energy_low
+            if subset_caps and energy_ok:
+                out.append(
+                    f"tracks[{j}]: unreachable — every element this "
+                    f"track's filter matches is already claimed by "
+                    f"tracks[{i}]'s filter (§8.4: selection is "
+                    f"first-match-wins, and tracks[{i}] requires no "
+                    f"capability or energy state tracks[{j}] doesn't "
+                    f"also require) — reorder the tracks or tighten "
+                    f"tracks[{i}]'s filter")
+                break
+    return out
+
+
 def parse_file(path) -> ChoreoScript:
     """Parse and validate a Choreo script file.  Raises ScriptError."""
     with open(path, "rb") as f:
@@ -918,6 +962,7 @@ def parse_file(path) -> ChoreoScript:
                    for i, s in enumerate(t.steps)
                    for w in _derived_capability_warnings(
                        f"tracks[{j}].steps[{i}]", s)]
+        warnings += _track_shadowing_warnings(tracks)
         return ChoreoScript(name=name, tracks=tracks, warnings=warnings)
 
     raw_steps = doc.get("steps")

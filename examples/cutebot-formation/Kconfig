@@ -1,0 +1,55 @@
+mainmenu "Tapestry cutebot-formation"
+
+source "Kconfig.zephyr"
+rsource "../../tapestry-os/subsys/transport/Kconfig"
+
+choice DEMO_MODE
+	prompt "Demo mode"
+	default DEMO_MODE_CHOREO
+
+config DEMO_MODE_CHOREO
+	bool "Choreo script (L5/L6/L7): hold, form a grid, hold"
+	help
+	  The robots execute a declarative L7 Choreo script through a real L5
+	  SCR and the L6 BSE: hold the boot-time station, arrange into a
+	  near-square grid (FORM, shape=grid — see ../form-grid.choreo.toml),
+	  then hold the finished grid.  The script is authored in
+	  form-grid.choreo.toml (this directory) and compiled to
+	  src/choreo_script.h by sdk/tools/choreoc.py — edit the TOML, re-run
+	  the tool, rebuild.
+
+	  ONE BINARY for all robots — element IDs are negotiated at boot over
+	  BLE (transport_negotiate_id), same auto-ID protocol as the legacy
+	  showcase mode below.
+
+	  UNVALIDATED ON REAL CUTEBOT HARDWARE as of this option's introduction
+	  — see the README's "Known limitations". If problems arise, fall back
+	  to DEMO_MODE_SHOWCASE, which IS flight-validated.
+
+config DEMO_MODE_SHOWCASE
+	bool "Legacy showcase (L4 spring field only, no SCR/L6/L7)"
+	help
+	  The original emergent formation behavior: a spring-field force
+	  computed directly from L4 world-model peer positions (repulsion when
+	  closer than DEMO_TARGET_SPACING, attraction when farther), no SCR,
+	  no Choreo. This is the flight-validated behavior every prior
+	  revision of this example shipped — kept as a fallback and as a
+	  smaller reference for the L1-L4 stack in isolation.
+
+endchoice
+
+config TAPESTRY_QUORUM_MIN
+	int "Minimum fresh peers for DEGRADED state"
+	depends on DEMO_MODE_CHOREO
+	range 0 4
+	default 1
+	help
+	  Fed to scr_init() (main.c). 1: this script only ever needs one fresh
+	  peer to leave SCR_QUORUM_LOST — same default cf21bl-formation and
+	  webots-formation use for the same reason.
+
+config TAPESTRY_QUORUM_TARGET
+	int "Minimum fresh peers for HEALTHY state"
+	depends on DEMO_MODE_CHOREO
+	range 0 4
+	default 1

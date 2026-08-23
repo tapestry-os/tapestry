@@ -19,8 +19,7 @@ from tapestry.bse import BSEAnchorSelector, BSEFrame, BSEMotion
 from tapestry.choreo import ChoreoCapabilities, ChoreoEvent, GoalShape, GoalType
 from tapestry.script_toml import (NormalizedTransition, ScriptError,
                                   load_steps, load_tracks, parse_duration_ms,
-                                  parse_file, parse_length_m, to_choreo_steps,
-                                  to_choreo_tracks)
+                                  parse_file, parse_length_m, to_choreo_steps)
 
 
 def script(body: str, tmp_path, name: str = "unit-test") -> Path:
@@ -417,8 +416,13 @@ def test_orbit_preset_warns_about_the_locomotion_it_desugars_to(tmp_path):
 
 
 def test_tracks_warnings_use_track_and_step_index(tmp_path):
+    # tracks[0] carries a filter so the later catch-all isn't shadowed —
+    # this test is about the derived-cap warning's label, and a filterless
+    # FIRST track would (correctly) add a §8.4 unreachable-track warning
+    # for tracks[1] on top of the one being asserted here.
     p = tracks_script("""\
         [[tracks]]
+        filter = { requires = ["sensing"] }
         [[tracks.steps]]
         converge = { target = [0, 0, 0], duration = "60s" }
 
@@ -937,6 +941,155 @@ def test_energy_low_filter_parses(tmp_path):
     s = parse_file(p)
     assert s.tracks[0].requires_energy_low is True
     assert s.tracks[1].requires_energy_low is False
+
+
+# ── Track shadowing (§8.4 declaration-order warnings) ────────────────────────
+# Selection is first-match-wins, so a track subsumed by an EARLIER track's
+# filter can never be selected.  Non-fatal (warning, not error) — matches
+# the derived-capability warnings' contract.  "unreachable" is the marker
+# distinguishing these from the derived-cap warnings in the same list.
+
+def shadowing_warnings(script):
+    return [w for w in script.warnings if "unreachable" in w]
+
+
+def test_catch_all_first_shadows_every_later_track(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    w = shadowing_warnings(parse_file(p))
+    assert len(w) == 1
+    assert "tracks[1]" in w[0] and "tracks[0]" in w[0]
+
+
+def test_identical_filters_shadow_the_later_track(tmp_path):
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    w = shadowing_warnings(parse_file(p))
+    assert len(w) == 1
+    assert "tracks[1]" in w[0]
+
+
+def test_subset_requires_shadows_superset_later_track(tmp_path):
+    """An element with sensing AND locomotion already matches the
+    sensing-only track, so the stricter track after it is dead."""
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { requires = ["sensing", "locomotion"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    w = shadowing_warnings(parse_file(p))
+    assert len(w) == 1
+    assert "tracks[1]" in w[0]
+
+
+def test_specific_filters_then_catch_all_last_is_clean(tmp_path):
+    """The intended §7 pattern — no shadowing warning."""
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { energy_low = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    assert shadowing_warnings(parse_file(p)) == []
+
+
+def test_energy_low_track_does_not_shadow_catch_all(tmp_path):
+    """A healthy-battery element skips an energy_low track, so a later
+    catch-all is still reachable — the energy constraint must be compared
+    directionally, not just the caps mask."""
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { energy_low = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    assert shadowing_warnings(parse_file(p)) == []
+
+
+def test_catch_all_does_shadow_later_energy_low_track(tmp_path):
+    """The reverse direction: every energy-low element also matches the
+    earlier catch-all, so the energy_low track after it is dead."""
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { energy_low = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    w = shadowing_warnings(parse_file(p))
+    assert len(w) == 1
+    assert "tracks[1]" in w[0]
+
+
+def test_shadowed_track_reports_first_shadower_only(tmp_path):
+    """Two catch-alls before a filtered track: one warning for each dead
+    track, each naming tracks[0] (the track the runtime would pick), not
+    one warning per (shadower, shadowed) pair."""
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { requires = ["sensing"] }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    w = shadowing_warnings(parse_file(p))
+    assert len(w) == 2
+    assert "tracks[1]" in w[0] and "tracks[0]" in w[0]
+    assert "tracks[2]" in w[1] and "tracks[0]" in w[1]
 
 
 def test_steps_and_tracks_together_is_rejected(tmp_path):

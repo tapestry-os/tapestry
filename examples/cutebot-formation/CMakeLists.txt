@@ -22,6 +22,18 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_TRANSPORT}/gossip.c
 )
 
+# L5 SCR + L6 BSE + L7 Choreographer — the choreo demo mode's target source.
+if(CONFIG_DEMO_MODE_CHOREO)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_ROOT}/subsys/scr/scr.c
+        ${TAPESTRY_OS_ROOT}/subsys/bse/bse.c
+        ${TAPESTRY_OS_ROOT}/subsys/choreo/choreo.c
+    )
+    target_include_directories(app PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../sdk/include   # <tapestry/choreo.h>
+    )
+endif()
+
 # BLE transceiver — micro:bit only (CONFIG_BT=y in board overlay).
 if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)
@@ -46,6 +58,3 @@ target_include_directories(app PRIVATE
 )
 
 target_link_libraries(app PRIVATE m)
-
-# Demo tuning — override transport.c #ifndef defaults without touching Kconfig.
-target_compile_definitions(app PRIVATE CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS=8000)

@@ -360,7 +360,20 @@ int choreo_submit_goal(const choreo_goal_t *goal)
 /* Validate every step up front — a script (or, per-track, a track) that
  * would stall or fail a capability check mid-show is rejected before
  * anything moves.  Shared by choreo_submit_script() and
- * choreo_submit_tracks() so the two validation paths can't drift. */
+ * choreo_submit_tracks() so the two validation paths can't drift.
+ *
+ * KNOWN GAP: unlike choreoc.py's compile-time _has_cycle()/max_runtime
+ * check (sdk/python/tapestry/script_toml.py), this does NOT detect a
+ * step graph that loops back on itself with no overall runtime bound —
+ * choreoc refuses to emit such a script, so every steps array compiled
+ * by the only delivery path that exists today is already guaranteed
+ * acyclic-or-bounded before it ever reaches here. If a second delivery
+ * path is ever added (choreo_submit_script() takes any pointer+count —
+ * see its doc), a maliciously or accidentally cyclic, unbounded script
+ * submitted that way would run forever undetected. Add the same check
+ * here (or require the wire format to carry a precomputed total-timeout
+ * value this function can enforce) before trusting scripts from any
+ * source other than choreoc. */
 static int validate_steps(const choreo_step_t *steps, uint8_t n_steps)
 {
     if (steps == NULL || n_steps == 0) {

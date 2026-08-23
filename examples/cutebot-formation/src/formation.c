@@ -23,10 +23,6 @@ LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
 /* Steering gain: scales lateral force to differential turn. */
 #define TURN_GAIN       12.0f
 
-/* Motor speed when wandering with no peers visible.
- * Must be above stiction threshold (~20% measured). */
-#define BASE_WANDER     22
-
 /* Minimum motor % that overcomes stiction (measured). Any non-zero
  * speed command is snapped up to this so the motors actually turn. */
 #define MIN_STICTION    22
@@ -81,6 +77,55 @@ void demo_odometry_update(demo_odometry_t *odo,
     if (odo->x > WORLD_SIZE) { odo->x = WORLD_SIZE; }
     if (odo->y < 0.0f)      { odo->y = 0.0f; }
     if (odo->y > WORLD_SIZE) { odo->y = WORLD_SIZE; }
+}
+
+/* ── Force → twist projection (shared by demo_compute_drive and
+ * demo_track_target) ─────────────────────────────────────────────────────
+ *
+ * Projects a world-frame force/velocity vector (fx, fy) onto the robot
+ * frame and converts it to a normalized [-1,1] speed/rate twist, applying
+ * the same stiction floor both callers need — this is the part of the
+ * old demo_compute_drive that has nothing to do with WHERE the force came
+ * from (peer springs vs. a single tracked target), so it is written once.
+ *
+ *   Robot forward axis in world frame: (cos h, sin h)
+ *   Robot left    axis in world frame: (-sin h, cos h)
+ *   f_fwd > 0 → move forward
+ *   f_lat > 0 → force is to the robot's left → turn left
+ *
+ * Both wheels must clear stiction independently. Substrate computes:
+ * left = speed - turn, right = speed + turn. The inner wheel
+ * (speed - |turn|) stalls if speed <= |turn| + MIN_STICTION, causing an
+ * uncontrolled pivot and rapid heading error in dead-reckoning. Fix: boost
+ * forward speed so the inner wheel always reaches MIN_STICTION. For
+ * in-place turns (speed==0), snap the turn command itself to MIN_STICTION
+ * so both wheels overcome stiction.
+ */
+static void demo_force_to_twist(const demo_odometry_t *odo, float fx, float fy,
+                                 float max_speed, float max_turn,
+                                 float *speed_out, float *rate_out)
+{
+    float cos_h = cosf(odo->heading);
+    float sin_h = sinf(odo->heading);
+    float f_fwd = fx *  cos_h + fy * sin_h;
+    float f_lat = fx * -sin_h + fy * cos_h;
+
+    float speed = clampf(f_fwd * FORCE_TO_SPEED, -max_speed, max_speed);
+    float turn  = clampf(f_lat * TURN_GAIN / DEMO_TARGET_SPACING,
+                         -max_turn, max_turn);
+
+    float abs_turn = fabsf(turn);
+    float needed   = (float)MIN_STICTION + abs_turn;
+    if (speed > 0.0f && speed < needed) {
+        speed = needed;
+    } else if (speed < 0.0f && -speed < needed) {
+        speed = -needed;
+    } else if (speed == 0.0f && abs_turn > 0.0f && abs_turn < (float)MIN_STICTION) {
+        turn = (turn > 0.0f) ? (float)MIN_STICTION : -(float)MIN_STICTION;
+    }
+
+    *speed_out = speed / 100.0f;
+    *rate_out  = turn  / 100.0f;
 }
 
 /* ── Formation control ────────────────────────────────────────────────────── */
@@ -161,48 +206,69 @@ void demo_compute_drive(const world_model_t *wm,
         return;
     }
 
-    /*
-     * Project world-frame force (fx, fy) onto the robot frame.
-     *
-     * Robot forward axis in world frame: (cos h, sin h)
-     * Robot left    axis in world frame: (-sin h, cos h)
-     *
-     * f_fwd > 0 → move forward
-     * f_lat > 0 → force is to the robot's left → turn left
-     */
-    float cos_h = cosf(odo->heading);
-    float sin_h = sinf(odo->heading);
-    float f_fwd = fx *  cos_h + fy * sin_h;
-    float f_lat = fx * -sin_h + fy * cos_h;
+    demo_force_to_twist(odo, fx, fy, 22.0f, 15.0f, speed_out, rate_out);
 
-    float speed = clampf(f_fwd * FORCE_TO_SPEED, -22.0f, 22.0f);
-    float turn  = clampf(f_lat * TURN_GAIN / DEMO_TARGET_SPACING,
-                         -15.0f, 15.0f);
+    LOG_DBG("fx=%.2f fy=%.2f spd=%.2f rate=%.2f peers=%d",
+            (double)fx, (double)fy,
+            (double)*speed_out, (double)*rate_out, peer_count);
+}
 
-    /* Both wheels must clear stiction independently.
-     * Substrate computes: left = speed - turn, right = speed + turn.
-     * The inner wheel (speed - |turn|) stalls if speed <= |turn| + MIN_STICTION,
-     * causing an uncontrolled pivot and rapid heading error in dead-reckoning.
-     * Fix: boost forward speed so the inner wheel always reaches MIN_STICTION.
-     * For in-place turns (speed==0), snap the turn command itself to MIN_STICTION
-     * so both wheels overcome stiction. */
-    float abs_turn = fabsf(turn);
-    float needed   = (float)MIN_STICTION + abs_turn;
-    if (speed > 0.0f && speed < needed) {
-        speed = needed;
-    } else if (speed < 0.0f && -speed < needed) {
-        speed = -needed;
-    } else if (speed == 0.0f && abs_turn > 0.0f && abs_turn < (float)MIN_STICTION) {
-        turn = (turn > 0.0f) ? (float)MIN_STICTION : -(float)MIN_STICTION;
+/* ── Choreo tracking (see formation.h) ───────────────────────────────────── */
+
+void demo_track_target(const world_model_t *wm,
+                        const demo_odometry_t *odo,
+                        float target_x, float target_y,
+                        float *speed_out, float *rate_out)
+{
+    float dx   = target_x - odo->x;
+    float dy   = target_y - odo->y;
+    float dist = sqrtf(dx * dx + dy * dy);
+
+    if (dist < DEMO_TRACK_ARRIVE_EPS) {
+        /* Close enough — stop rather than let the residual attraction
+         * force get overridden by demo_force_to_twist's stiction floor
+         * into a nonzero creep (see formation.h's DEMO_TRACK_ARRIVE_EPS
+         * doc). */
+        *speed_out = 0.0f;
+        *rate_out  = 0.0f;
+        return;
     }
 
-    *speed_out = speed / 100.0f;
-    *rate_out  = turn  / 100.0f;
+    /* Attraction: full DEMO_TRACK_MAX_FORCE beyond DEMO_TRACK_SLOW_RADIUS,
+     * ramping linearly to 0 inside it (trapezoidal approach profile). */
+    float mag = (dist > DEMO_TRACK_SLOW_RADIUS)
+                ? DEMO_TRACK_MAX_FORCE
+                : DEMO_TRACK_MAX_FORCE * (dist / DEMO_TRACK_SLOW_RADIUS);
+    float fx = mag * (dx / dist);
+    float fy = mag * (dy / dist);
 
-    LOG_DBG("fx=%.2f fy=%.2f fwd=%.2f lat=%.2f spd=%.2f rate=%.2f peers=%d",
-            (double)fx, (double)fy,
-            (double)f_fwd, (double)f_lat,
-            (double)*speed_out, (double)*rate_out, peer_count);
+    /* Emergency repulsion backstop — see formation.h's doc. Repulsion
+     * only (no attraction term): the target above already IS the
+     * attraction. */
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (!e->is_active || e->is_self || e->is_stale) {
+            continue;
+        }
+
+        float pdx  = e->state.position.x - odo->x;
+        float pdy  = e->state.position.y - odo->y;
+        float pdist = sqrtf(pdx * pdx + pdy * pdy);
+
+        if (pdist < 0.01f || pdist >= DEMO_TRACK_MIN_SEP) {
+            continue;
+        }
+
+        float force = (DEMO_TRACK_MIN_SEP - pdist) * DEMO_TRACK_EMERGENCY_K;
+        fx -= force * (pdx / pdist);
+        fy -= force * (pdy / pdist);
+    }
+
+    demo_force_to_twist(odo, fx, fy, 22.0f, 15.0f, speed_out, rate_out);
+
+    LOG_DBG("choreo cmd=(%.2f,%.2f) dist=%.2f spd=%.2f rate=%.2f",
+            (double)target_x, (double)target_y,
+            (double)dist, (double)*speed_out, (double)*rate_out);
 }
 
 /* ── Position display (micro:bit 5×5 matrix) ─────────────────────────────── */
@@ -233,8 +299,13 @@ void demo_display_position(const demo_odometry_t *odo)
 
 /* ── LED feedback ─────────────────────────────────────────────────────────── */
 
-void demo_set_leds(const world_model_t *wm)
+void demo_set_leds(const world_model_t *wm, substrate_signal_t step_indicator)
 {
+    if (step_indicator != SUBSTRATE_SIGNAL_NONE) {
+        substrate_set_signal(step_indicator);
+        return;
+    }
+
     int fresh  = 0;
     int active = 0;
 
