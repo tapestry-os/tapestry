@@ -22,28 +22,37 @@
  * ║  delegates to tapestry-os/subsys/bse/bse.c.                              ║
  * ║  Implemented: single goals, linear goal SCRIPTS (choreo_submit_script)   ║
  * ║  with per-step timeout / advance-on-achieved, the minimal L6             ║
- * ║  achievement predicate (choreo_goal_achieved), the install/configure/    ║
- * ║  deploy/terminate lifecycle stages (choreo_state_t below), and a TOML    ║
- * ║  script authoring/compiler toolchain (sdk/tools/choreoc.py — see         ║
- * ║  sdk/CHOREO_SCRIPTS.md), a hardware-in-the-loop simulation bridge        ║
- * ║  (examples/webots-formation/ — this stack, unmodified, against real      ║
- * ║  Webots physics), and an offline capture/replay harness (opt-in CSV      ║
- * ║  capture of per-tick inputs/outputs — choreo_telemetry.h — replayed      ║
- * ║  offline through sdk/python/tapestry and diffed tick-by-tick against     ║
- * ║  the recording — sdk/tools/choreo_sim.py --replay; see                   ║
- * ║  sdk/CHOREO_SCRIPTS.md's "Parity" section), and a synthetic              ║
- * ║  script-authoring simulator (sdk/tools/choreo_sim.py --simulate — N      ║
- * ║  in-process Choreo instances, perfect shared visibility, no C/Zephyr/    ║
- * ║  network, deliberately no repulsion/leash/arena-clamp physics; not a     ║
- * ║  fidelity simulator, see sdk/CHOREO_SCRIPTS.md's "Script-authoring       ║
- * ║  simulation" section).                                                   ║
+ * ║  achievement predicate (choreo_goal_achieved), per-step indicator/       ║
+ * ║  telemetry_tag effect annotations (§12 Stage 5 — see choreo_step_t),     ║
+ * ║  the install/configure/deploy/terminate lifecycle stages                 ║
+ * ║  (choreo_state_t below), and a TOML script authoring/compiler            ║
+ * ║  toolchain (sdk/tools/choreoc.py — see sdk/CHOREO_SCRIPTS.md), a         ║
+ * ║  hardware-in-the-loop simulation bridge (examples/webots-formation/ —    ║
+ * ║  this stack, unmodified, against real Webots physics), and an offline    ║
+ * ║  capture/replay harness (opt-in CSV capture of per-tick inputs/outputs   ║
+ * ║  — choreo_telemetry.h — replayed offline through sdk/python/tapestry     ║
+ * ║  and diffed tick-by-tick against the recording — sdk/tools/              ║
+ * ║  choreo_sim.py --replay; see sdk/CHOREO_SCRIPTS.md's "Parity" section),  ║
+ * ║  and a synthetic script-authoring simulator (sdk/tools/choreo_sim.py     ║
+ * ║  --simulate — N in-process Choreo instances, perfect shared visibility,  ║
+ * ║  no C/Zephyr/network, deliberately no repulsion/leash/arena-clamp        ║
+ * ║  physics; not a fidelity simulator, see sdk/CHOREO_SCRIPTS.md's          ║
+ * ║  "Script-authoring simulation" section).                                 ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 
 #ifndef TAPESTRY_CHOREO_H
 #define TAPESTRY_CHOREO_H
 
-#include <tapestry/bse.h>   /* tapestry_bse_directive_t, tapestry_bse_shape_t */
+#include <tapestry/bse.h>        /* tapestry_bse_directive_t, tapestry_bse_shape_t */
+#include <tapestry/substrate.h>  /* substrate_signal_t — reused directly for
+                                   * choreo_step_t::indicator, same pattern as
+                                   * bse.h's frame/anchor/shape/motion enums
+                                   * above: no parallel CHOREO_INDICATOR_*
+                                   * enum.  substrate.h itself depends on
+                                   * nothing else (its own layering note), so
+                                   * this pulls in no transitive cross-layer
+                                   * dependency. */
 
 /* ── Lifecycle state ──────────────────────────────────────────────────────── */
 /*
@@ -332,6 +341,43 @@ typedef struct {
      * transition, i.e. every existing choreo_step_t is unaffected. */
     choreo_transition_t on[CHOREO_MAX_TRANSITIONS];
     uint8_t              n_transitions;   /* 0 = none declared (default) */
+
+    /*
+     * Choreo SDK Design doc §12 Stage 5: effect step annotations.  Both
+     * default to "no effect" (SUBSTRATE_SIGNAL_NONE / NULL) — a step that
+     * doesn't set either is byte-identical to every choreo_step_t written
+     * before this feature existed.
+     *
+     * indicator — while this step is active, choreo_current_indicator()
+     *   returns this value instead of SUBSTRATE_SIGNAL_NONE.  Choreo
+     *   itself never calls substrate_set_signal() (L7 has no L1
+     *   dependency beyond this reused enum type — see the substrate.h
+     *   include above); the application is expected to read
+     *   choreo_current_indicator() once per tick and pass it through, the
+     *   same way it already passes choreo_get_directive() to
+     *   substrate_move().  This makes the *desired* signal declarative
+     *   and script-portable instead of hand-computed per app — see
+     *   examples/cf21bl-formation/src/formation.c's demo_set_leds() and
+     *   examples/webots-formation/controllers/common/tracker.c's
+     *   (previously independently-duplicated, identical) copy, both of
+     *   which now take the step's declared indicator as an override and
+     *   fall back to their existing wm-quorum heuristic when it's NONE.
+     *
+     * telemetry_tag — an opaque label surfaced verbatim by
+     *   choreo_current_telemetry_tag(), for a platform's telemetry
+     *   capture (e.g. examples/webots-formation's choreo_telemetry.h) to
+     *   record alongside script_step, so a replay or choreo-sim run can
+     *   be identified by which authored step produced a given tick
+     *   without depending on step index alone.  This is local capture
+     *   only — NOT a wire delivery mechanism to an external consumer
+     *   (e.g. a facility monitoring dashboard); no such consumer exists
+     *   anywhere in this repo, and building live delivery for one would
+     *   be speculative.  Must outlive the step array, same requirement
+     *   choreo_submit_script() already places on `steps` itself — a TOML-
+     *   authored string literal or a static const char* satisfies this.
+     */
+    substrate_signal_t indicator;
+    const char         *telemetry_tag;
 } choreo_step_t;
 
 /* ── SDK API ──────────────────────────────────────────────────────────────── */
@@ -533,6 +579,22 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr);
  * The directive is recomputed each tick; do not cache across cycles.
  */
 const tapestry_bse_directive_t *choreo_get_directive(void);
+
+/*
+ * choreo_current_indicator — The active step's declared indicator effect
+ * (§12 Stage 5), or SUBSTRATE_SIGNAL_NONE if the current step (or track
+ * step) declared none, or if no script is active (a bare submit_goal()
+ * has no step to annotate).  See choreo_step_t::indicator.
+ */
+substrate_signal_t choreo_current_indicator(void);
+
+/*
+ * choreo_current_telemetry_tag — The active step's declared telemetry tag
+ * (§12 Stage 5), or NULL under the same conditions
+ * choreo_current_indicator() returns SUBSTRATE_SIGNAL_NONE.  See
+ * choreo_step_t::telemetry_tag.
+ */
+const char *choreo_current_telemetry_tag(void);
 
 /* ── Tracks (Choreo SDK Design doc §7) ───────────────────────────────────── */
 /*

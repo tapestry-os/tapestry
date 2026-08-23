@@ -247,6 +247,49 @@ max_runtime = "10min"
 (`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS`) for a cyclic script; an acyclic script
 keeps the sum as before and doesn't need it.
 
+## Effects
+
+Any goal key can also carry `indicator` and/or `telemetry_tag` (design
+doc §12 Stage 5) — declarative annotations for what a step should signal
+and how it should be labeled in a telemetry capture, instead of hand-
+computing either in application code:
+
+```toml
+[[steps]]
+name = "spraying"
+[steps.form]
+target        = [10.0, 10.0, 3.0]
+radius        = 5
+duration      = "120s"
+indicator     = "active"
+telemetry_tag = "spraying_infected_zone"
+```
+
+| Key | Meaning |
+|---|---|
+| `indicator` | `"idle"` \| `"active"` \| `"degraded"` \| `"failed"` — while this step is active, the application's `choreo_current_indicator()` (`choreo_current_indicator` in C, `current_indicator()` in Python) returns this value instead of "no override". Omit for no override (the default, and the behavior of every step written before this feature existed). |
+| `telemetry_tag` | An arbitrary non-empty string, surfaced verbatim by `choreo_current_telemetry_tag()` / `current_telemetry_tag()`. Omit for no tag (`NULL`/`None`, the default). |
+
+**What `indicator` does and doesn't do:** Choreo itself never touches L1 —
+it has no `substrate_set_signal()` call anywhere. The value above is only
+made available for the application's main loop to read once per tick and
+pass through, the same way it already reads `choreo_get_directive()` and
+passes it to `substrate_move()`. `examples/cf21bl-formation/src/
+formation.c`'s `demo_set_leds()` (and the identical, independently
+duplicated copy in `examples/webots-formation/controllers/common/
+tracker.c`) now take the step's declared indicator as an override,
+falling back to their existing quorum/freshness heuristic when a step
+leaves it unset — so a script that never sets `indicator` drives those
+two apps exactly as before this feature existed.
+
+**What `telemetry_tag` does and doesn't do:** this is local capture only.
+`examples/webots-formation`'s `choreo_telemetry.h` CSV writer records it
+alongside `script_step` on every tick, so a replay or `choreo-sim` run
+can be identified by which authored step produced a given row without
+depending on step index alone. It is **not** a wire-delivery mechanism to
+an external consumer (e.g. a facility monitoring dashboard reading a live
+telemetry stream) — no such consumer exists anywhere in this repo.
+
 ## Tracks
 
 A script is normally one `[[steps]]` list every element runs — the
@@ -409,6 +452,10 @@ surface:
   `max_runtime` bound (see [Events and transitions](#events-and-transitions))
   — the parser detects this statically rather than let an unbounded show
   reach flight.
+- `indicator` must be one of `"idle"`/`"active"`/`"degraded"`/`"failed"`
+  (there is no `"none"` — omit the key instead); `telemetry_tag` must be
+  a non-empty string. Both are allowed on every goal key (see
+  [Effects](#effects)).
 
 Errors look like:
 

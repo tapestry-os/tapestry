@@ -36,7 +36,7 @@ choreo_telemetry_t *choreo_telemetry_open(element_id_t element_id)
                "quorum_state,fresh_count,role,"
                "goal_type,script_step,script_complete,goal_achieved,"
                "directive_type,directive_target_x,directive_target_y,"
-               "directive_target_z,"
+               "directive_target_z,indicator,telemetry_tag,"
                "wm_json\n");
     return t;
 }
@@ -125,7 +125,7 @@ void choreo_telemetry_write(choreo_telemetry_t *telemetry,
     const wm_entry_t *self_e = &wm->entries[self_id];
 
     fprintf(telemetry->f,
-           "%u,%.3f,%u,%.4f,%.4f,%.4f,%d,%u,%d,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,",
+           "%u,%.3f,%u,%.4f,%.4f,%.4f,%d,%u,%d,%d,%d,%d,%d,%d,%.4f,%.4f,%.4f,%d,",
            tick, wall_time_s, (unsigned)self_id,
            (double)self_e->state.position.x, (double)self_e->state.position.y,
            (double)self_e->state.position.z,
@@ -133,7 +133,10 @@ void choreo_telemetry_write(choreo_telemetry_t *telemetry,
            (int)choreo_current_goal_type(), choreo_script_step(),
            choreo_script_complete() ? 1 : 0, choreo_goal_achieved() ? 1 : 0,
            (int)dir->type, (double)dir->target.x, (double)dir->target.y,
-           (double)dir->target.z);
+           (double)dir->target.z, (int)choreo_current_indicator());
+    const char *tag = choreo_current_telemetry_tag();
+    write_csv_quoted(telemetry->f, tag != NULL ? tag : "");
+    fputc(',', telemetry->f);
     write_csv_quoted(telemetry->f, wm_json);
     fputc('\n', telemetry->f);
 }

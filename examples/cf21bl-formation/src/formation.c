@@ -300,8 +300,13 @@ float demo_choreo_track(const world_model_t *wm,
 
 /* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 
-void demo_set_leds(const world_model_t *wm)
+void demo_set_leds(const world_model_t *wm, substrate_signal_t step_indicator)
 {
+    if (step_indicator != SUBSTRATE_SIGNAL_NONE) {
+        substrate_set_signal(step_indicator);
+        return;
+    }
+
     int fresh  = 0;
     int active = 0;
 

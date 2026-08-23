@@ -797,3 +797,19 @@ const tapestry_bse_directive_t *choreo_get_directive(void)
 {
     return bse_get_directive();
 }
+
+substrate_signal_t choreo_current_indicator(void)
+{
+    if (!s_script_active) {
+        return SUBSTRATE_SIGNAL_NONE;
+    }
+    return s_steps[s_step_idx].indicator;
+}
+
+const char *choreo_current_telemetry_tag(void)
+{
+    if (!s_script_active) {
+        return NULL;
+    }
+    return s_steps[s_step_idx].telemetry_tag;
+}

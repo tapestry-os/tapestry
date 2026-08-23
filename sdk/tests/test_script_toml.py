@@ -277,6 +277,71 @@ def test_abs_position_is_a_known_capability_name(tmp_path):
     assert s.steps[0].required_caps == ChoreoCapabilities.ABS_POSITION
 
 
+# ── Effects (§12 Stage 5) ─────────────────────────────────────────────────────
+
+def test_indicator_and_telemetry_tag_parse(tmp_path):
+    s = parse_file(one_step('duration = "5s", indicator = "active", '
+                            'telemetry_tag = "spraying"', tmp_path))
+    assert s.steps[0].indicator == "active"
+    assert s.steps[0].telemetry_tag == "spraying"
+
+
+def test_effects_default_to_none(tmp_path):
+    s = parse_file(one_step('duration = "5s"', tmp_path))
+    assert s.steps[0].indicator is None
+    assert s.steps[0].telemetry_tag is None
+
+
+def test_unknown_indicator_is_rejected(tmp_path):
+    with pytest.raises(ScriptError, match="unknown indicator"):
+        parse_file(one_step('duration = "5s", indicator = "rainbow"',
+                            tmp_path))
+
+
+def test_indicator_none_is_not_a_valid_name(tmp_path):
+    """There is no "none" string — a step that wants no override omits
+    the key entirely; the runtime default already means that."""
+    with pytest.raises(ScriptError, match="unknown indicator"):
+        parse_file(one_step('duration = "5s", indicator = "none"', tmp_path))
+
+
+def test_telemetry_tag_must_be_a_nonempty_string(tmp_path):
+    with pytest.raises(ScriptError, match="non-empty string"):
+        parse_file(one_step('duration = "5s", telemetry_tag = ""', tmp_path))
+    with pytest.raises(ScriptError, match="non-empty string"):
+        parse_file(one_step('duration = "5s", telemetry_tag = 5', tmp_path))
+
+
+def test_effects_are_allowed_on_every_goal_key(tmp_path):
+    """Common to every goal, same as requires/on — not restricted to one
+    goal type."""
+    for goal, extra in [("hold", ""), ("exchange", ""),
+                        ("form", ", target = [0, 0, 0], radius = 1"),
+                        ("move", ", target = [0, 0, 0]"),
+                        ("converge", ", target = [0, 0, 0]"),
+                        ("disperse", ", radius = 1")]:
+        s = parse_file(one_step(f'duration = "5s", indicator = "idle"{extra}',
+                                tmp_path, goal=goal))
+        assert s.steps[0].indicator == "idle", goal
+
+
+def test_effects_convert_to_choreo_step_fields(tmp_path):
+    from tapestry.choreo import SubstrateSignal
+    s = parse_file(one_step('duration = "5s", indicator = "degraded", '
+                            'telemetry_tag = "watch"', tmp_path))
+    steps = to_choreo_steps(s)
+    assert steps[0].indicator == SubstrateSignal.DEGRADED
+    assert steps[0].telemetry_tag == "watch"
+
+
+def test_a_step_without_effects_converts_to_none_defaults(tmp_path):
+    from tapestry.choreo import SubstrateSignal
+    s = parse_file(one_step('duration = "5s"', tmp_path))
+    steps = to_choreo_steps(s)
+    assert steps[0].indicator == SubstrateSignal.NONE
+    assert steps[0].telemetry_tag is None
+
+
 # ── Derived capability floor / satisfiability warnings (§11) ────────────────
 # Non-fatal: the runtime derives and enforces these (derived_caps() in
 # choreo.c) whether or not `requires` declares them, so an unlisted one is

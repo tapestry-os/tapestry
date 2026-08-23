@@ -18,7 +18,7 @@ from tapestry.choreo import (Choreo, ChoreoCapabilities, ChoreoEvent,
                              ChoreoScope, ChoreoState, ChoreoStep,
                              ChoreoTrack, ChoreoTrackFilter,
                              ChoreoTransition, ELEMENT_HEALTH_LOW_BATTERY,
-                             Goal, GoalShape, GoalType)
+                             Goal, GoalShape, GoalType, SubstrateSignal)
 
 HEALTHY  = scr(QUORUM_HEALTHY)
 DEGRADED = scr(QUORUM_DEGRADED)
@@ -342,6 +342,41 @@ def test_the_time_bound_still_fires_when_achievement_never_does():
     for _ in range(3):
         c.tick(solo(50.0, 50.0), HEALTHY)
     assert c.script_step() == 1
+
+
+# ── Effects (§12 Stage 5) ────────────────────────────────────────────────────
+
+def test_current_indicator_and_tag_are_none_before_any_script():
+    c = Choreo(element_id=0)
+    assert c.current_indicator() == SubstrateSignal.NONE
+    assert c.current_telemetry_tag() is None
+
+
+def test_current_indicator_and_tag_reflect_the_active_step():
+    # 200ms bounds (> one WM_CYCLE_MS tick) so the first tick() below
+    # observes step_a still active, exactly like
+    # test_a_step_advances_when_its_time_bound_elapses above.
+    step_a = ChoreoStep(goal=Goal(type=GoalType.CONVERGE), max_duration_ms=200,
+                       indicator=SubstrateSignal.ACTIVE,
+                       telemetry_tag="watching")
+    step_b = timed(ms=200)   # no effect declared — must read back to NONE/None
+    c = Choreo(element_id=0)
+    c.submit_script([step_a, step_b])
+    c.tick(solo(), HEALTHY)
+    assert c.current_indicator() == SubstrateSignal.ACTIVE
+    assert c.current_telemetry_tag() == "watching"
+    c.tick(solo(), HEALTHY)   # advances to step_b
+    assert c.current_indicator() == SubstrateSignal.NONE
+    assert c.current_telemetry_tag() is None
+
+
+def test_current_indicator_is_none_for_a_bare_goal_not_a_script():
+    """A single submit_goal() has no ChoreoStep wrapper to annotate."""
+    c = Choreo(element_id=0)
+    c.submit_goal(Goal(type=GoalType.HOLD))
+    c.tick(solo(), HEALTHY)
+    assert c.current_indicator() == SubstrateSignal.NONE
+    assert c.current_telemetry_tag() is None
 
 
 # ── scope="all" ──────────────────────────────────────────────────────────────

@@ -1043,7 +1043,7 @@ int main(void)
         }
 
         substrate_move(&sp);
-        demo_set_leds(&wm);
+        demo_set_leds(&wm, choreo_current_indicator());
 
         static uint32_t log_accum;
         log_accum += WM_CYCLE_MS;
