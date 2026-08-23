@@ -104,14 +104,50 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
      *
      * Thresholds are peer counts (not fractions) — the L5 caller has
      * domain knowledge about expected swarm size that L4 does not.
+     * This is the raw, instantaneous classification; Step 2.5 below may
+     * hold a LOST -> >=DEGRADED recovery back from `new_quorum` (which
+     * everything from Step 3 onward reads) until it has been sustained.
      */
-    scr_quorum_state_t new_quorum;
+    scr_quorum_state_t raw_quorum;
     if (fresh_count >= scr->quorum_target) {
-        new_quorum = SCR_QUORUM_HEALTHY;
+        raw_quorum = SCR_QUORUM_HEALTHY;
     } else if (fresh_count >= scr->quorum_min) {
-        new_quorum = SCR_QUORUM_DEGRADED;
+        raw_quorum = SCR_QUORUM_DEGRADED;
     } else {
-        new_quorum = SCR_QUORUM_LOST;
+        raw_quorum = SCR_QUORUM_LOST;
+    }
+
+    /*
+     * ── Step 2.5: Quorum-recovery hold (scr_set_quorum_hold_ms()) ────────
+     *
+     * See that function's doc for the full rationale. Summary: holds only
+     * the LOST -> >=DEGRADED edge, for quorum_hold_ms of SUSTAINED
+     * >=DEGRADED readings; loss is always immediate; disabled (hold_ms=0)
+     * reproduces the pre-existing behavior exactly (new_quorum ==
+     * raw_quorum unconditionally).
+     *
+     * scr->quorum_state here is still LAST tick's reported (already-held)
+     * value — this line runs before it's overwritten below — so this is
+     * "was the last thing we told L6/L7 LOST, and does the world look
+     * recovered THIS tick," which composes correctly tick over tick.
+     */
+    scr_quorum_state_t new_quorum = raw_quorum;
+    if (scr->quorum_hold_ms > 0u) {
+        if (raw_quorum == SCR_QUORUM_LOST) {
+            scr->_quorum_recovery_ms = 0u;   /* loss is immediate */
+        } else if (scr->quorum_state == SCR_QUORUM_LOST) {
+            if (scr->_quorum_recovery_ms < scr->quorum_hold_ms) {
+                scr->_quorum_recovery_ms += WM_CYCLE_MS;
+            }
+            if (scr->_quorum_recovery_ms < scr->quorum_hold_ms) {
+                new_quorum = SCR_QUORUM_LOST;   /* not sustained yet — hold */
+            } else {
+                scr->_quorum_recovery_ms = 0u;   /* hold satisfied, consumed */
+            }
+        }
+        /* else: raw_quorum >= DEGRADED and we were already >= DEGRADED —
+         * no recovery in progress, nothing held; new_quorum == raw_quorum
+         * tracks live fluctuation within the recovered zone. */
     }
 
     /*
@@ -249,6 +285,13 @@ uint8_t scr_get_swarm_size(const scr_state_t *scr)
 scr_abort_state_t scr_get_abort_state(const scr_state_t *scr)
 {
     return scr->abort_state;
+}
+
+/* ── Quorum-recovery hold ─────────────────────────────────────────────────── */
+
+void scr_set_quorum_hold_ms(scr_state_t *scr, uint32_t hold_ms)
+{
+    scr->quorum_hold_ms = hold_ms;
 }
 
 /* ── BFT peer filtering ──────────────────────────────────────────────────── */

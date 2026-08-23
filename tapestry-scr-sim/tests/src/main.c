@@ -696,6 +696,274 @@ ZTEST(scr_suite, test_abort_cleared_on_recovery)
                   "Tick after recovery: abort resets to NONE");
 }
 
+/* ── Quorum-recovery hold (scr_set_quorum_hold_ms()) ─────────────────────── */
+
+/*
+ * test_quorum_hold_disabled_matches_prior_behavior — hold_ms == 0
+ * (scr_init()'s default) must reproduce test_abort_cleared_on_recovery
+ * exactly: recovery is reported the very tick sustained peers reappear.
+ */
+ZTEST(scr_suite, test_quorum_hold_disabled_matches_prior_behavior)
+{
+    world_model_t wm;
+    scr_state_t   scr;
+
+    make_wm(&wm, OWN_ID);
+    make_scr(&scr, OWN_ID);   /* quorum_hold_ms == 0 */
+
+    inject_peer(&wm, 1u, 1);
+    inject_peer(&wm, 6u, 1);
+    inject_peer(&wm, 7u, 1);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY, "Phase 1: HEALTHY");
+
+    wm_tick(&wm, WM_STALE_THRESHOLD_MS + 1);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST, "Phase 2: LOST");
+    zassert_equal(scr_get_abort_state(&scr), SCR_ABORT_TRIGGERED, "TRIGGERED");
+
+    inject_peer(&wm, 1u, 100);
+    inject_peer(&wm, 6u, 100);
+    inject_peer(&wm, 7u, 100);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY,
+                  "hold disabled: recovery reported immediately");
+    zassert_equal(scr_get_abort_state(&scr), SCR_ABORT_CLEARED, "CLEARED");
+}
+
+/*
+ * test_quorum_hold_delays_recovery_until_sustained — a real LOST -> HEALTHY
+ * recovery must be held for quorum_hold_ms of SUSTAINED >=DEGRADED
+ * readings before scr_get_quorum()/scr_get_abort_state() report it.
+ */
+ZTEST(scr_suite, test_quorum_hold_delays_recovery_until_sustained)
+{
+    world_model_t wm;
+    scr_state_t   scr;
+    uint32_t      clock;
+
+    make_wm(&wm, OWN_ID);
+    make_scr(&scr, OWN_ID);   /* hold disabled for warm-up — cold-boot
+                               * acquisition is its own held case too
+                               * (see scr_set_quorum_hold_ms()'s doc);
+                               * isolate recovery-from-a-real-loss here. */
+
+    inject_peer(&wm, 1u, 1);
+    inject_peer(&wm, 6u, 1);
+    inject_peer(&wm, 7u, 1);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY, "warm-up: HEALTHY");
+
+    scr_set_quorum_hold_ms(&scr, 1000u);   /* 10 ticks at WM_CYCLE_MS=100 */
+
+    wm_tick(&wm, WM_STALE_THRESHOLD_MS + 1);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST, "partitioned");
+    zassert_equal(scr_get_abort_state(&scr), SCR_ABORT_TRIGGERED, "TRIGGERED");
+
+    /* Peers come back fresh; re-inject every 5 ticks (500ms) to stay
+     * under WM_STALE_THRESHOLD_MS (1500ms), same as real gossip would. */
+    clock = 100;
+    for (int tick = 1; tick <= 9; tick++) {
+        if (tick == 1 || tick % 5 == 1) {
+            clock += 100;
+            inject_peer(&wm, 1u, clock);
+            inject_peer(&wm, 6u, clock);
+            inject_peer(&wm, 7u, clock);
+        }
+        wm_tick(&wm, WM_CYCLE_MS);
+        scr_tick(&scr, &wm);
+        zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST,
+                      "tick %d: recovery not yet sustained %d ms", tick,
+                      tick * (int)WM_CYCLE_MS);
+        zassert_equal(scr_get_abort_state(&scr), SCR_ABORT_TRIGGERED,
+                      "abort must stay TRIGGERED while held");
+    }
+    /* 10th tick: 1000ms sustained -> hold satisfied */
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY,
+                  "recovery sustained for the full hold -> reported");
+    zassert_equal(scr_get_abort_state(&scr), SCR_ABORT_CLEARED, "CLEARED");
+}
+
+/*
+ * test_quorum_hold_resets_on_flicker_back_to_lost — a recovery that drops
+ * back to real LOST mid-hold gets no partial credit; the next recovery
+ * attempt needs the full hold_ms again.
+ */
+ZTEST(scr_suite, test_quorum_hold_resets_on_flicker_back_to_lost)
+{
+    world_model_t wm;
+    scr_state_t   scr;
+    uint32_t      clock;
+
+    make_wm(&wm, OWN_ID);
+    make_scr(&scr, OWN_ID);
+
+    inject_peer(&wm, 1u, 1);
+    inject_peer(&wm, 6u, 1);
+    inject_peer(&wm, 7u, 1);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY, "warm-up: HEALTHY");
+
+    scr_set_quorum_hold_ms(&scr, 1000u);
+
+    wm_tick(&wm, WM_STALE_THRESHOLD_MS + 1);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST, "partitioned");
+
+    /* Recover for 500ms (half the hold)... */
+    clock = 100;
+    for (int tick = 0; tick < 5; tick++) {
+        clock += 100;
+        inject_peer(&wm, 1u, clock);
+        inject_peer(&wm, 6u, clock);
+        inject_peer(&wm, 7u, clock);
+        wm_tick(&wm, WM_CYCLE_MS);
+        scr_tick(&scr, &wm);
+        zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST, "still held");
+    }
+
+    /* ...then genuinely drop back to LOST before the hold elapses */
+    wm_tick(&wm, WM_STALE_THRESHOLD_MS + 1);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST, "lost again");
+
+    /* Recover again — must need the FULL 1000ms again, not "500ms more" */
+    clock = 1000;
+    for (int tick = 1; tick <= 9; tick++) {
+        if (tick == 1 || tick % 5 == 1) {
+            clock += 100;
+            inject_peer(&wm, 1u, clock);
+            inject_peer(&wm, 6u, clock);
+            inject_peer(&wm, 7u, clock);
+        }
+        wm_tick(&wm, WM_CYCLE_MS);
+        scr_tick(&scr, &wm);
+        zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_LOST,
+                      "no partial credit from the aborted recovery");
+    }
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY,
+                  "second recovery completes after its own full hold");
+}
+
+/*
+ * test_quorum_hold_does_not_affect_fluctuation_within_recovered_zone —
+ * once already recovered, DEGRADED<->HEALTHY fluctuation (never touching
+ * LOST) is reported live; the hold only ever gates the LOST edge.
+ */
+ZTEST(scr_suite, test_quorum_hold_does_not_affect_fluctuation_within_recovered_zone)
+{
+    world_model_t wm;
+    scr_state_t   scr;
+    uint32_t      clock;
+    uint32_t      elapsed;
+
+    make_wm(&wm, OWN_ID);
+    make_scr(&scr, OWN_ID);
+
+    inject_peer(&wm, 1u, 1);
+    inject_peer(&wm, 6u, 1);
+    inject_peer(&wm, 7u, 1);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY, "warm-up: HEALTHY");
+
+    scr_set_quorum_hold_ms(&scr, 1000u);
+
+    /* Let peer 7 go stale by simply not re-injecting it, while peers 1
+     * and 6 keep gossiping (re-injected each tick, like a real element
+     * would). After WM_STALE_THRESHOLD_MS, peer 7 alone goes stale ->
+     * DEGRADED (2 fresh, still >= quorum_min=1, < quorum_target=3). This
+     * must be reported LIVE (no hold) — we're already recovered, not
+     * coming from LOST. */
+    clock   = 1;
+    elapsed = 0;
+    while (elapsed <= WM_STALE_THRESHOLD_MS) {
+        clock++;
+        inject_peer(&wm, 1u, clock);
+        inject_peer(&wm, 6u, clock);
+        wm_tick(&wm, WM_CYCLE_MS);
+        scr_tick(&scr, &wm);
+        elapsed += WM_CYCLE_MS;
+    }
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_DEGRADED,
+                  "DEGRADED<->HEALTHY fluctuation must not be held");
+}
+
+/*
+ * test_quorum_hold_matches_old_app_level_filter — direct equivalence
+ * check against the flight-tested app-level QUORUM_UP_MS filter this
+ * generalizes (cf21bl-formation/src/main.c, pre-migration; see
+ * CHANGELOG), under that filter's own config (quorum_min=quorum_target=1
+ * -> a binary threshold, DEGRADED never appears, matching the old
+ * filter's own hardcoded fresh_count>=1 assumption). Runs the OLD
+ * algorithm (replicated inline, byte-for-byte) and the NEW L5 mechanism
+ * side by side against the SAME wm/gossip sequence and asserts they
+ * agree on the reported quorum every single tick, over a scripted
+ * sequence covering startup acquisition, sustained health, a real
+ * partition, a single lucky flicker packet, and a real recovery.
+ */
+ZTEST(scr_suite, test_quorum_hold_matches_old_app_level_filter)
+{
+    world_model_t wm;
+    scr_state_t   raw_scr;    /* hold disabled -- feeds the OLD algorithm */
+    scr_state_t   new_scr;    /* hold enabled  -- the NEW mechanism       */
+    uint32_t      old_fresh_streak_ms = 0;
+    uint32_t      clock = 0;
+
+    make_wm(&wm, OWN_ID);
+    scr_init(&raw_scr, OWN_ID, 1u, 1u, SCR_CAP_NONE);
+    scr_init(&new_scr, OWN_ID, 1u, 1u, SCR_CAP_NONE);
+    scr_set_quorum_hold_ms(&new_scr, 2000u);   /* matches QUORUM_UP_MS */
+
+    for (int tick = 0; tick < 40; tick++) {
+        bool     inject        = false;
+        uint32_t extra_stale_ms = 0;
+
+        if (tick < 5) {
+            inject = true;                              /* acquiring quorum */
+        } else if (tick < 15) {
+            if (tick % 3 == 0) inject = true;            /* sustained contact */
+        } else if (tick < 20) {
+            extra_stale_ms = WM_STALE_THRESHOLD_MS + 1;  /* partition */
+        } else if (tick == 22) {
+            inject = true;                               /* one lucky packet */
+        } else if (tick >= 28) {
+            if (tick == 28 || tick % 4 == 0) inject = true;  /* real heal */
+        }
+
+        if (inject) {
+            clock += 100;
+            inject_peer(&wm, 1u, clock);
+        }
+        wm_tick(&wm, WM_CYCLE_MS + extra_stale_ms);
+        scr_tick(&raw_scr, &wm);
+        scr_tick(&new_scr, &wm);
+
+        /* OLD algorithm, replicated exactly from the deleted app code */
+        if (raw_scr.fresh_count >= 1) {
+            if (old_fresh_streak_ms < 2000u) old_fresh_streak_ms += 100u;
+        } else {
+            old_fresh_streak_ms = 0;
+        }
+        bool old_quorum_up = old_fresh_streak_ms >= 2000u;
+        scr_quorum_state_t old_view = old_quorum_up ? SCR_QUORUM_HEALTHY
+                                                     : SCR_QUORUM_LOST;
+
+        zassert_equal(old_view, scr_get_quorum(&new_scr),
+                      "tick %d: old=%d new=%d fresh=%u", tick, old_view,
+                      scr_get_quorum(&new_scr), raw_scr.fresh_count);
+    }
+}
+
 /* ── Gap 1: Lightweight BFT ──────────────────────────────────────────────── */
 
 /*

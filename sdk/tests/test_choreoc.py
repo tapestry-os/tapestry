@@ -193,6 +193,13 @@ def test_transitions_are_emitted_as_a_designated_initializer_array():
     assert "CHOREO_EVENT_ACHIEVED" in c
 
 
+def test_quorum_lost_event_emits_the_matching_c_enum():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="hold", max_duration_ms=1000,
+        on=[NormalizedTransition(event="quorum_lost", goto_step_idx=1)]))
+    assert "CHOREO_EVENT_QUORUM_LOST" in c
+
+
 def test_scope_self_is_left_implicit():
     c = choreoc.emit_step(NormalizedStep(goal="hold", max_duration_ms=1000,
                                          scope=0))

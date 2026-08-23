@@ -141,12 +141,24 @@ typedef void (*scr_post_tick_fn)(const world_model_t *wm,
 /* ── Runtime state ────────────────────────────────────────────────────────── */
 
 typedef struct scr_state {
-    /* Configuration — set at scr_init(), immutable thereafter */
+    /* Configuration — set at scr_init(), immutable thereafter (except
+     * quorum_hold_ms, below, which has its own setter for the same
+     * reason peer_whitelist_mask does: adding a scr_init() parameter
+     * would break all 6 call sites; see scr_set_quorum_hold_ms()) */
     element_id_t       own_id;
     uint8_t            quorum_min;
     uint8_t            quorum_target;
     scr_capability_t   capabilities;
     scr_post_tick_fn   on_tick;
+
+    /* Quorum-recovery hold — configure via scr_set_quorum_hold_ms().
+     * 0 (scr_init()'s default) disables it: quorum_state tracks the
+     * instantaneous classification exactly as before this field existed. */
+    uint32_t           quorum_hold_ms;
+
+    /* Internal — accumulates while a LOST -> >=DEGRADED recovery is
+     * pending confirmation; see scr_set_quorum_hold_ms(). */
+    uint32_t           _quorum_recovery_ms;
 
     /* Computed fields — updated by scr_tick() */
     scr_role_t         role;
@@ -191,6 +203,60 @@ scr_quorum_state_t scr_get_quorum(const scr_state_t *scr);
 uint8_t            scr_get_task_slot(const scr_state_t *scr);
 uint8_t            scr_get_swarm_size(const scr_state_t *scr);
 scr_abort_state_t  scr_get_abort_state(const scr_state_t *scr);
+
+/* ── Quorum-recovery hold ─────────────────────────────────────────────────── */
+
+/*
+ * scr_set_quorum_hold_ms — Require a LOST -> >=DEGRADED recovery to be
+ * SUSTAINED for hold_ms before scr_tick() reports it, instead of reporting
+ * the very first tick a peer looks fresh again.
+ *
+ * Rationale: a single lucky gossip frame keeps a peer entry "fresh" for
+ * WM_STALE_THRESHOLD_MS even under otherwise-poor link quality, so gating
+ * quorum recovery on instantaneous freshness can flicker quorum_state (and
+ * therefore SCR_ABORT_CLEARED) up for one tick on a single packet — not
+ * real, sustained contact. Requiring hold_ms of continuous >=DEGRADED
+ * classification before reporting recovery filters that out; a genuine
+ * partition heal is unaffected once the network is actually reconnected
+ * for that long.
+ *
+ * Scope — deliberately narrow, matching the flight-tested behavior this
+ * generalizes (see CHANGELOG for the app-level filter this replaced):
+ *   - Only the recovery edge (LOST -> >=DEGRADED) is held. Quorum LOSS is
+ *     always immediate and unaffected by this setting — SCR_ABORT_TRIGGERED
+ *     still fires on the very tick quorum drops.
+ *   - Fluctuation entirely within the recovered zone (DEGRADED <-> HEALTHY,
+ *     never touching LOST) is never held — quorum_state tracks it live.
+ *   - While a recovery is held, scr_get_quorum() reports SCR_QUORUM_LOST
+ *     (not the true, better instantaneous classification) and
+ *     scr_get_abort_state() stays at whatever it already was — this is the
+ *     whole point: L6/L7 must see a single, self-consistent view, so
+ *     nothing downstream of scr_tick() (role, leader, task_slot,
+ *     SCR_ABORT_CLEARED — everything Step 4 onward computes) ever observes
+ *     a "recovered but still LOST" state that the L5 contract says cannot
+ *     happen. SCR_ABORT_CLEARED is delayed by hold_ms as a direct
+ *     consequence — this is intentional, not a side effect to work around.
+ *   - The recovery timer resets to 0 immediately if quorum drops back to
+ *     LOST before hold_ms elapses (no partial credit toward the next
+ *     recovery attempt).
+ *
+ * Cold-boot acquisition is held too, not just recovery from a real prior
+ * partition: scr_init() starts quorum_state at SCR_QUORUM_LOST, so the
+ * very first tick(s) after boot look identical to "recovering from LOST"
+ * to the logic above, and are held for the same hold_ms. This is
+ * intentional and faithful to the app-level filter this generalizes
+ * (its own hold counter also started at 0 on boot) — call
+ * scr_set_quorum_hold_ms() once, right after scr_init(), and expect
+ * every element's very first quorum acquisition to take at least
+ * hold_ms, not just its recovery from a later partition.
+ *
+ * hold_ms=0 (scr_init()'s default) disables this entirely: quorum_state
+ * tracks the instantaneous classification on every tick, exactly as before
+ * this feature existed. Assumes scr_tick() is called once per WM_CYCLE_MS,
+ * the same cadence every other per-cycle debounce in this codebase (BSE's
+ * anchor hold, Choreo's membership hold) already assumes.
+ */
+void scr_set_quorum_hold_ms(scr_state_t *scr, uint32_t hold_ms);
 
 /* ── Lightweight BFT — peer filtering ───────────────────────────────────── */
 

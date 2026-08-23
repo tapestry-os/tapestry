@@ -516,6 +516,76 @@ def test_a_missing_quorum_state_is_treated_as_healthy():
     assert c.goal_status() == ChoreoState.RUNNING
 
 
+# ── Isolation give-up: HOLD's timer keeps running while SUSPENDED ───────────
+
+def test_suspended_hold_times_out_while_still_isolated():
+    c = Choreo(element_id=0)
+    c.submit_script([timed(goal_type=GoalType.HOLD, ms=1000)])
+    for _ in range(11):
+        c.tick(solo(), LOST)
+    assert c.script_complete() is True
+
+
+def test_suspended_hold_advances_to_next_step_while_isolated():
+    c = Choreo(element_id=0)
+    c.submit_script([timed(goal_type=GoalType.HOLD, ms=500),
+                     timed(goal_type=GoalType.HOLD, ms=500)])
+    for _ in range(6):
+        c.tick(solo(), LOST)
+    assert c.script_step() == 1
+    assert c.goal_status() == ChoreoState.SUSPENDED
+    assert c.script_complete() is False
+    for _ in range(6):
+        c.tick(solo(), LOST)
+    assert c.script_complete() is True
+
+
+def test_non_hold_goal_still_freezes_forever_while_suspended():
+    """The isolation give-up is HOLD-specific — a peer-referential goal's
+    own timer must stay frozen exactly as before this feature existed."""
+    c = Choreo(element_id=0)
+    c.submit_script([timed(ms=1000)])   # default CONVERGE
+    for _ in range(50):
+        c.tick(solo(), LOST)
+    assert c.script_complete() is False
+    assert c.goal_status() == ChoreoState.SUSPENDED
+
+
+# ── Isolation escape hatch: on = QUORUM_LOST ─────────────────────────────────
+
+def test_quorum_lost_transition_redirects_before_suspending():
+    step0 = ChoreoStep(
+        goal=Goal(type=GoalType.CONVERGE, target=(5.0, 5.0, 0.0)),
+        max_duration_ms=60_000,
+        on=[ChoreoTransition(event=ChoreoEvent.QUORUM_LOST, goto_step_idx=1)])
+    step1 = timed(goal_type=GoalType.HOLD, ms=60_000)
+    c = Choreo(element_id=0)
+    c.submit_script([step0, step1])
+
+    c.tick(solo(3.0, 4.0), HEALTHY)
+    assert c.script_step() == 0
+
+    c.tick(solo(3.0, 4.0), LOST)
+    assert c.script_step() == 1
+    assert c.goal_status() == ChoreoState.SUSPENDED
+    assert c.current_goal_type() == GoalType.HOLD
+
+    # Station capture happens on the SUSPENDED branch's own BSE tick, the
+    # cycle after the redirect (same per-goal-quorum carve-out as always).
+    c.tick(solo(3.0, 4.0), LOST)
+    assert c.script_step() == 1
+    assert c.goal_status() == ChoreoState.SUSPENDED
+    assert c.get_directive().target == (3.0, 4.0, 0.0)
+
+
+def test_no_quorum_lost_transition_freezes_as_before():
+    c = Choreo(element_id=0)
+    c.submit_script([timed(ms=60_000)])   # default CONVERGE, no `on`
+    c.tick(solo(3.0, 4.0), LOST)
+    assert c.script_step() == 0
+    assert c.goal_status() == ChoreoState.SUSPENDED
+
+
 # ── Goal queue: preemption + resume ─────────────────────────────────────────
 # preempt_goal() saves the running goal (and, for a script, its exact
 # step/timer position) instead of discarding it; terminate() (and therefore

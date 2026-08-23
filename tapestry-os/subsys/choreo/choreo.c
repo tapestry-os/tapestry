@@ -537,9 +537,35 @@ static bool event_fires(choreo_event_t event, uint8_t threshold,
         return scr_get_swarm_size(scr) == threshold;
     case CHOREO_EVENT_ANCHOR_LOST:
         return bse_anchor_lost();
+    case CHOREO_EVENT_QUORUM_LOST:
+        return scr->quorum_state == SCR_QUORUM_LOST;
     default:
         return false;
     }
+}
+
+/* Shared tail of an advance: activate step target_idx, or complete the
+ * script if target_idx has run off the end.  Factored out of
+ * script_advance() so suspended_hold_timeout() below (an isolated HOLD
+ * giving up on its own timeout) can reach the exact same completion/
+ * next-step logic without duplicating it. */
+static void advance_to(int target_idx)
+{
+    s_step_ms = 0;
+
+    if (target_idx >= (int)s_n_steps) {
+        /* Script complete → quiescence: terminate submits the IDLE intent,
+         * so the directive goes IDLE and the platform maps it to its own
+         * inactive posture.  s_script_done survives the terminate. */
+        s_script_done = true;
+        choreo_terminate();
+        return;
+    }
+
+    s_step_idx = (uint8_t)target_idx;
+    s_goal = s_steps[s_step_idx].goal;
+    tapestry_bse_intent_t intent = goal_to_intent(&s_goal);
+    bse_submit_intent(&intent);
 }
 
 /* Advance the script if the current step's exit condition is met —
@@ -587,21 +613,38 @@ static void script_advance(const world_model_t *wm, const scr_state_t *scr)
         target_idx = (int)s_step_idx + 1;
     }
 
-    s_step_ms = 0;
+    advance_to(target_idx);
+}
 
-    if (target_idx >= (int)s_n_steps) {
-        /* Script complete → quiescence: terminate submits the IDLE intent,
-         * so the directive goes IDLE and the platform maps it to its own
-         * inactive posture.  s_script_done survives the terminate. */
-        s_script_done = true;
-        choreo_terminate();
+/*
+ * Isolated (SUSPENDED) timeout carve-out — HOLD only.  A HOLD step
+ * already ticks the BSE while suspended (choreo_tick()'s SUSPENDED case)
+ * because it's self-referential and needs no peers; this extends that
+ * same reasoning to its own max_duration_ms, so a script can give up on
+ * permanent isolation (all peers gone, out-of-mesh-range, a partition
+ * that never heals) instead of station-keeping forever with nothing left
+ * to revive it — see choreo_state_t's SUSPENDED doc.
+ *
+ * Deliberately narrow: unlike script_advance(), this does NOT evaluate
+ * on[] transitions (ELEMENT_JOINED/LOST, COUNT_*, ANCHOR_LOST all need
+ * live peer/anchor data that doesn't exist while isolated) or
+ * advance_on_achieved (bse_goal_achieved() for HOLD is unconditionally
+ * true — see choreo_goal_achieved()'s test coverage — so combining it
+ * with SUSPENDED would fire on the very first isolated tick, which is
+ * never useful; the TOML authoring surface already forbids
+ * until/eps/settle on hold for exactly this reason).  Only the time
+ * bound itself is unfrozen.
+ */
+static void suspended_hold_timeout(void)
+{
+    if (!s_script_active || s_goal.type != CHOREO_GOAL_HOLD) {
         return;
     }
-
-    s_step_idx = (uint8_t)target_idx;
-    s_goal = s_steps[s_step_idx].goal;
-    tapestry_bse_intent_t intent = goal_to_intent(&s_goal);
-    bse_submit_intent(&intent);
+    const choreo_step_t *st = &s_steps[s_step_idx];
+    s_step_ms += WM_CYCLE_MS;
+    if (st->max_duration_ms > 0u && s_step_ms >= st->max_duration_ms) {
+        advance_to((int)s_step_idx + 1);
+    }
 }
 
 /* Does `f` match THIS element's own state?  Never inspects a peer — track
@@ -776,11 +819,20 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
          * to quorum recovery would capture whatever position the element
          * has drifted to by then (2026-07-19 flight finding).  PEER-
          * referential goals (EXCHANGE) stay frozen: their snapshots are
-         * meaningless without fresh peers. */
+         * meaningless without fresh peers.  HOLD's own max_duration_ms is
+         * the one timer that isn't frozen either (suspended_hold_timeout()
+         * — see choreo_state_t's doc): permanent isolation needs a way
+         * out even for a step that never freezes at an unsafe position. */
         if (s_goal.type == CHOREO_GOAL_HOLD) {
             bse_tick(wm, scr);
+            suspended_hold_timeout();
         }
-        if (scr->quorum_state != SCR_QUORUM_LOST) {
+        /* suspended_hold_timeout() may have terminated -> IDLE, or
+         * advanced to a new step (still SUSPENDED — advance_to() doesn't
+         * touch s_state); the quorum-recovery check below only applies if
+         * still actually SUSPENDED, same guard RUNNING uses above. */
+        if (s_state == CHOREO_STATE_SUSPENDED &&
+            scr->quorum_state != SCR_QUORUM_LOST) {
             s_state = CHOREO_STATE_RUNNING;
         }
         break;

@@ -82,9 +82,9 @@
  * error, well inside the DEMO_TARGET_LEASH_M tracker already enforces. */
 #define TRACK_KP 2.0f
 
-/* Quorum debounce, layered on top of the real L5 scr_tick() output below
- * — see cf21bl-formation/src/main.c's QUORUM_UP_MS comment (2026-07-19
- * flight 2) for why quorum requires SUSTAINED freshness, not just an
+/* Quorum-recovery hold, fed to scr_set_quorum_hold_ms() below — see
+ * cf21bl-formation/src/main.c's QUORUM_UP_MS comment (2026-07-19 flight
+ * 2) for why quorum recovery requires SUSTAINED freshness, not just an
  * instantaneous fresh peer. */
 #define QUORUM_UP_MS 2000u
 
@@ -138,6 +138,7 @@ int main(int argc, char **argv)
      * real scr is registered. */
     scr_state_t scr;
     scr_init(&scr, element_id, 1, 1, SCR_CAP_ACTUATOR);
+    scr_set_quorum_hold_ms(&scr, QUORUM_UP_MS);
 
     choreo_init(element_id);
     choreo_register_scr(&scr);
@@ -178,7 +179,6 @@ int main(int argc, char **argv)
 
     flight_state_t state           = FLIGHT_RAMPING;
     uint32_t        gossip_accum_ms = DEMO_GOSSIP_MS;
-    uint32_t        fresh_streak_ms = 0;
     uint32_t        mission_elapsed_ms = 0;   /* counts up once FLYING starts */
     bool            log_quorum_up   = false;
     int             last_step       = -2;
@@ -267,37 +267,30 @@ int main(int argc, char **argv)
             }
 
             /* Real L5: recompute quorum/role/task_slot/abort from the
-             * actual world model, then apply the SUSTAINED-freshness
-             * debounce on top — see QUORUM_UP_MS above. The debounce goes
-             * into a COPY handed to L6/L7, never back into scr, so
-             * scr_get_quorum() and scr_get_abort_state() cannot disagree
-             * about quorum history; same rationale as cf21bl-formation's
+             * actual world model. scr_set_quorum_hold_ms() (below main())
+             * means scr.quorum_state (and everything scr_tick() derives
+             * from it — abort_state, leader, role, task_slot) is already
+             * the held view: a LOST -> >=DEGRADED recovery must be
+             * SUSTAINED for QUORUM_UP_MS before it's reported. Quorum
+             * LOSS remains immediate regardless — see scr_set_quorum_
+             * hold_ms()'s doc; same rationale as cf21bl-formation's
              * main.c, which carries the full comment. */
             scr_tick(&scr, &wm);
-            if (scr.fresh_count >= 1) {
-                if (fresh_streak_ms < QUORUM_UP_MS) {
-                    fresh_streak_ms += WM_CYCLE_MS;
-                }
-            } else {
-                fresh_streak_ms = 0;
-            }
-            bool quorum_up = fresh_streak_ms >= QUORUM_UP_MS;
+            bool quorum_up = scr.quorum_state != SCR_QUORUM_LOST;
             log_quorum_up = quorum_up;
-            scr_state_t scr_view = scr;
-            scr_view.quorum_state = quorum_up ? SCR_QUORUM_HEALTHY : SCR_QUORUM_LOST;
 
-            choreo_tick(&wm, &scr_view);
+            choreo_tick(&wm, &scr);
 
-            /* HARD_RT gossip on the REAL (undebounced) quorum-loss edge —
-             * scr_view's QUORUM_UP_MS softening above is for L6/L7 only;
-             * the wire signal that this element's quorum just failed
-             * should not wait on that confirmation delay. Fires once per
-             * outage, not every tick it persists — scr_get_abort_state()
-             * is a level held for the whole LOST period (see scr.h), so
-             * this checks the NONE/CLEARED -> TRIGGERED edge specifically.
-             * Same rationale as cf21bl-formation's main.c, which carries
-             * the full comment; mirrors tapestry-os/subsys/runtime/
-             * runtime.c's step 4b. */
+            /* HARD_RT gossip on the quorum-loss edge. Not delayed by
+             * QUORUM_UP_MS despite scr's held view above: loss is always
+             * reported immediately (scr_set_quorum_hold_ms() only ever
+             * holds the RECOVERY edge). Fires once per outage, not every
+             * tick it persists — scr_get_abort_state() is a level held
+             * for the whole LOST period (see scr.h), so this checks the
+             * NONE/CLEARED -> TRIGGERED edge specifically. Same rationale
+             * as cf21bl-formation's main.c, which carries the full
+             * comment; mirrors tapestry-os/subsys/runtime/runtime.c's
+             * step 4b. */
             {
                 static scr_abort_state_t last_abort_state;
                 scr_abort_state_t abort_state = scr_get_abort_state(&scr);
@@ -315,13 +308,10 @@ int main(int argc, char **argv)
                 last_abort_state = abort_state;
             }
 
-            /* Capture the VIEW, not scr: the replay harness re-drives the
-             * Python engine against exactly what choreo_tick() saw, so the
-             * recorded quorum_state has to be the debounced one. */
             const tapestry_bse_directive_t *dir = choreo_get_directive();
             choreo_telemetry_write(telemetry, telemetry_tick,
                                    (double)telemetry_tick * WM_CYCLE_MS / 1000.0,
-                                   &wm, &scr_view, dir);
+                                   &wm, &scr, dir);
             telemetry_tick++;
 
             if (choreo_script_step() != last_step) {
