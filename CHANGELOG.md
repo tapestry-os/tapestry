@@ -246,6 +246,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   quorum_target=1` (both apps' real config), plus new `scr_suite` ztests
   covering the hold/no-hold/reset/no-effect-on-in-zone-fluctuation cases,
   but not yet run through `native_sim` or real hardware
+- **`choreo_publish_state()`** — one call replacing the two manual
+  assignments (`own_state.goal_achieved = choreo_goal_achieved();
+  own_state.current_track = choreo_current_track();`) every app that
+  gossips had to remember, duplicated identically at all 5 call sites
+  across `runtime.c`, `cf21bl-formation`, `webots-formation`, and
+  `tapestry-scr-sim`. Choreo has no handle on `element_state_t` (an L3/L4
+  wire struct), so this can't be made fully automatic, only consolidated
+  to a single named call — this exact obligation was silently missed
+  twice in this repo's history before either mistake was caught (see
+  `tapestry-os/tests/transport`'s suite header comment). Pure mechanical
+  dedup, no behavior change, migrated all 5 sites
 
 ### Changed
 - **`tapestry_gossip_frame_t`'s `hop_count` byte repacked into `relay_qos`**
@@ -640,7 +651,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `CODE_OF_CONDUCT.md`, `SECURITY.md`
 
 [Unreleased]: https://github.com/tapestry-os/tapestry/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...v0.9.0[0.8.0]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...v0.8.0
+[0.9.0]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/tapestry-os/tapestry/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/tapestry-os/tapestry/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/tapestry-os/tapestry/compare/v0.5.0...v0.6.0
