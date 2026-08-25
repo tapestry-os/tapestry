@@ -266,12 +266,17 @@ typedef struct {
  *                      the zero-initialized behavior of every existing
  *                      choreo_step_t.
  *   CHOREO_SCOPE_ALL   — the collective predicate: this element's own
- *                      achievement AND every fresh active peer's gossiped
+ *                      achievement AND every ACTIVE peer's gossiped
  *                      achieved bit (choreo_collective_achieved()).
  *                      Eventually consistent — a peer's achieved bit is
  *                      only as fresh as its last gossip frame, and a
- *                      solo element (no fresh peers) is vacuously "all
- *                      achieved" so it cannot deadlock alone.  This is
+ *                      genuinely solo element (no active peers at all) is
+ *                      vacuously "all achieved" so it cannot deadlock
+ *                      alone.  A peer that has merely gone stale still
+ *                      votes, from its last-received bit: gating on
+ *                      freshness instead let this predicate collapse into
+ *                      CHOREO_SCOPE_SELF whenever the link dropped out.
+ *                      This is
  *                      NOT a barrier/lockstep guarantee — different
  *                      elements can observe "all achieved" on different
  *                      ticks, bounded by gossip latency.  The lockstep
@@ -594,9 +599,10 @@ bool choreo_goal_achieved(void);
 /*
  * choreo_collective_achieved — The scope=all achievement predicate (see
  * choreo_achieve_scope_t): true when choreo_goal_achieved() is true AND
- * every fresh, active, non-self entry in wm has its gossiped achieved bit
- * set.  Vacuously true with no fresh peers (a solo element cannot deadlock
- * on a scope=all step).  Eventually consistent — bounded by gossip
+ * every ACTIVE, non-self entry in wm has its gossiped achieved bit set.
+ * Vacuously true only with no active peers at all (a genuinely solo element
+ * cannot deadlock on a scope=all step); a stale-but-active peer still votes
+ * from its last-received bit.  Eventually consistent — bounded by gossip
  * latency, not a synchronization barrier.
  */
 bool choreo_collective_achieved(const world_model_t *wm);

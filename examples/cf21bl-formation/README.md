@@ -118,6 +118,37 @@ west build -p always -b crazyflie21bl tapestry/examples/cf21bl-formation
 cfloader flash build/zephyr/zephyr.bin stm32-dfu     # same binary, both drones
 ```
 
+Two build flags matter for a readable multi-drone flight:
+
+| Flag | Default | Effect |
+| --- | --- | --- |
+| `CONFIG_DEMO_CONSOLE_VERBOSE` | `n` | `y` runs `formation.c`'s tracking traces at the full per-tick rate (10 Hz instead of the throttled ~1 Hz) and restores the lighthouse driver's per-fix info lines. Single-drone debugging only — every drone shares one CRTP console address and `read_console.py` has no source discrimination, so at the full rate the two drones' output splices together mid-line and destroys the 1 Hz status timeline. |
+| `CONFIG_DEMO_MISSION_MARGIN_S` | `90` | Seconds added to the script's own time bound for the mission backstop. Step timers freeze while the Choreo is SUSPENDED, so wall-clock runtime exceeds the script bound by however long the link was down. Raise it when chasing script behavior on a poor link. |
+
+The 1 Hz status line carries both facts that one-shot log lines keep
+losing to console splicing:
+
+```
+id=0 LANDED peers 1/1 pos=(0.72,0.77) tgt=(0.72,0.93) alt=0.30 cmd_z=-1.00
+     min_d=1.42 step=-1 q=L why=complete
+```
+
+- `why=` — how the flight ended: `complete` (script ran out, the good
+  case), `backstop` (`mission duration elapsed`), `fixloss`, `geofence`.
+  Absent while still flying. From the ground `complete` and `backstop`
+  look identical, so read this before concluding a script finished.
+- `min_d=` — distance to the nearest fresh peer, the separation margin
+  against `DEMO_MIN_SEP_M` (0.50 m). `-1.00` means no fresh peer in view:
+  separation UNKNOWN, not known-safe.
+
+`step=-1` is the corroborating signal for `why=complete`: the backstop
+only forces the descent and leaves the step index alone, so a backstopped
+drone lands with its step still set.
+
+Place the drones **at least 1.0 m apart** (2x the separation floor). Any
+closer and station-keeping fights the emergency repulsion for the whole
+flight; the firmware warns once per contact (`peers only N m apart`).
+
 Before the first flight, bench-test auto-ID over the radio with motors
 disabled (`-- -DCONFIG_PWM=n`, or props off): power both drones on
 together and confirm unique `auto_id:` ids and `n_total=2` on both
@@ -198,7 +229,7 @@ exchange's hold-until-snapshot behavior, and rejection of unadvanceable
 steps.
 
 ```sh
-west build -p always -b native_sim tapestry/examples/cf21bl-formation/tests
+west build -p always -b native_sim/native/64 tapestry/examples/cf21bl-formation/tests
 ./build/zephyr/zephyr.exe
 ```
 
@@ -410,12 +441,12 @@ parameters). Override at build time with `-- -D<CONSTANT>=<value>`.
 - No wireless "land now" command — mission duration is the only
   coordinated stop; a real abort still means power-cycling or physically
   intervening (same as every single-drone example in this project).
-- **3D target-tracking math is unvalidated in flight, and there is no
-  vertical deconfliction of any kind anymore — deliberately.** Choreo/BSE's
-  goal-tracking math (`tapestry-os/subsys/bse/bse.c`) is now full 3D:
-  `formation.c`'s peer-distance check folds
-  in z, but its repulsion *force* stays horizontal-only by explicit,
-  separate design
+- **There is no vertical deconfliction of any kind — deliberately.**
+  Choreo/BSE's goal-tracking math (`tapestry-os/subsys/bse/bse.c`) is full
+  3D, and `formation.c`'s peer-distance check folds in z, but its repulsion
+  *force* stays horizontal-only by explicit, separate design. Vertical
+  separation, if a show wants it, is something the script expresses
+  (distinct `z` per track or element); nothing in the runtime supplies it.
 - **No attitude-estimate accessor.** `own_state.orientation` gossips
   `orientation_identity()` (no rotation) rather than a real IMU-derived
   estimate — `cf21bl_stabilizer.c` runs a complementary filter internally

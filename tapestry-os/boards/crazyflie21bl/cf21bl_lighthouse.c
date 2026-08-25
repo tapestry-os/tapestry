@@ -75,7 +75,13 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(cf21bl_lh2, LOG_LEVEL_INF);
+/* CONFIG_CF21BL_LH2_LOG_LEVEL lets an application quiet the per-fix info
+ * stream on a shared multi-drone console (see cf21bl-formation's
+ * DEMO_CONSOLE_VERBOSE).  Apps that do not define it keep LOG_LEVEL_INF. */
+#ifndef CONFIG_CF21BL_LH2_LOG_LEVEL
+#define CONFIG_CF21BL_LH2_LOG_LEVEL LOG_LEVEL_INF
+#endif
+LOG_MODULE_REGISTER(cf21bl_lh2, CONFIG_CF21BL_LH2_LOG_LEVEL);
 
 /* ── Constants ─────────────────────────────────────────────────────────────── */
 

@@ -26,8 +26,9 @@
  *     field (demo_compute_drive(), unchanged): pure emergent behavior, no
  *     SCR/L6/L7. Kept as a fallback — see Kconfig's help text.
  *
- * UNVALIDATED ON REAL CUTEBOT HARDWARE: DEMO_MODE_CHOREO (this session's
- * addition) has not been flashed to or run on physical robots. The
+ * DEMO_MODE_CHOREO ran end-to-end on four physical robots on 2026-08-24
+ * (hold -> form(grid) -> hold, BLE gossip, real L5 quorum); approach speed
+ * is untuned.  The tests/ suite covers the same path host-side.  The
  * boot/negotiation/sync-hold path and DEMO_MODE_SHOWCASE are unchanged
  * from the flight-validated original — only the choice of what drives
  * speed_cmd/rate_cmd in the main loop is new. See the README's "Known

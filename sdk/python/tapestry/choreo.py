@@ -148,9 +148,9 @@ class ChoreoScope(IntEnum):
     """Whose achievement gates an advance_on_achieved step (design doc
     §8.5). SELF (default) is this element's own achievement only. ALL is
     the collective predicate — this element's own achievement AND every
-    fresh peer's gossiped achieved bit (see Choreo._collective_achieved).
+    active peer's gossiped achieved bit (see Choreo._collective_achieved).
     Eventually consistent, not a synchronization barrier; vacuously true
-    with no fresh peers."""
+    only when genuinely solo."""
     SELF = 0
     ALL  = 1
 
@@ -747,16 +747,21 @@ class Choreo:
                 self._state = ChoreoState.RUNNING
 
     def _collective_achieved(self, wm_entries: List[dict]) -> bool:
-        """scope=ALL predicate: own achievement AND every fresh, active,
-        non-self peer's gossiped 'achieved' key (default False if absent).
-        Vacuously true with no fresh peers — mirrors choreo_collective_achieved
-        in choreo.c. Eventually consistent, not a synchronization barrier."""
+        """scope=ALL predicate: own achievement AND every ACTIVE, non-self
+        peer's gossiped 'achieved' key (default False if absent).  Vacuously
+        true only when genuinely solo — mirrors choreo_collective_achieved
+        in choreo.c. Eventually consistent, not a synchronization barrier.
+
+        Active, not fresh: a merely stale peer still votes, from its
+        last-received bit.  Skipping stale peers let scope=ALL degrade
+        silently into per-element achievement under packet loss — see the
+        C implementation's comment for the full mechanism."""
         if not self._bse.goal_achieved():
             return False
         for e in wm_entries:
             if e.get('is_self', False):
                 continue
-            if not e.get('is_active') or e.get('is_stale'):
+            if not e.get('is_active'):
                 continue
             if not e.get('achieved', False):
                 return False

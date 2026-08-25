@@ -100,6 +100,49 @@ config DEMO_HOLD_STATION
 	  static setpoint but is continuously re-excited by a moving one:
 	    west build ... -- -DCONFIG_DEMO_HOLD_STATION=y
 
+config DEMO_MISSION_MARGIN_S
+	int "Choreo: backstop margin added to the script's own time bound"
+	depends on DEMO_MODE_CHOREO
+	range 20 600
+	default 90
+	help
+	  The mission-duration backstop is CHOREO_SCRIPT_TOTAL_TIMEOUT_MS
+	  plus this margin, counted from the end of the convergence hold.
+
+	  Sizing it is NOT just ramp + descent.  Script step timers FREEZE
+	  while the Choreo is SUSPENDED (quorum lost), so a script's
+	  wall-clock runtime exceeds its own time bound by however long the
+	  link was down.  On a marginal P2P link that is most of the flight:
+	  the 48 s change-partners script has taken >90 s of wall clock at
+	  ~15% gossip delivery.  The old 40 s margin left the script racing
+	  its own backstop, and a flight that lands on the backstop instead
+	  of on script completion looks identical from the ground while
+	  meaning something completely different (2026-08-24 flight 16).
+
+	  Raise this when chasing script behavior on a poor link; lower it
+	  for a tight safety envelope on a good one.
+
+config DEMO_CONSOLE_VERBOSE
+	bool "Verbose console (per-tick tracking debug + lighthouse info)"
+	default n
+	help
+	  Deep single-drone debugging: formation.c's tracking traces at the
+	  full per-tick rate (10 Hz instead of the throttled ~1 Hz) and the
+	  lighthouse driver's per-fix info lines.
+
+	  Leave this OFF for multi-drone flights.  Every drone shares one
+	  CRTP console address, and read_console.py has a single line buffer
+	  with no source discrimination, so the two drones' output splices
+	  together mid-line: at the default levels ~34 lines/s combined
+	  destroyed most of the 1 Hz formation status lines — including the
+	  landing lines — in flights 15 and 16.  Off, the same flight emits
+	  roughly a third of that and the status timeline survives.
+
+config CF21BL_LH2_LOG_LEVEL
+	int
+	default 3 if DEMO_CONSOLE_VERBOSE
+	default 2
+
 config TAPESTRY_QUORUM_MIN
 	int "Minimum fresh peers for DEGRADED state"
 	range 0 4

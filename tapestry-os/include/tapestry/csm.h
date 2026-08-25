@@ -181,9 +181,9 @@ typedef struct {
  * where altitude is independently held constant per element (e.g.
  * cf21bl-formation's per-ID cruise-altitude staggering), folding a fixed
  * altitude difference into the distance metric measurably weakens
- * horizontal-proximity detection versus the 2D-only math this was
- * flight-tested against, and has NOT itself been re-validated in flight —
- * see that example's README "Known limitations".
+ * horizontal-proximity detection versus the 2D-only math it replaced.
+ * A platform that staggers altitude per element should size its
+ * MIN_SEPARATION with that weakening in mind — see that example's README.
  */
 static inline float position_distance(const position_t *a, const position_t *b)
 {

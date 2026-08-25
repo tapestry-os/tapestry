@@ -12,6 +12,20 @@
 
 LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
 
+/* Per-tick trace throttle.  The tracking traces below fire once per
+ * control tick (10 Hz per drone, 20 Hz for a pair) — at full rate they
+ * were the single largest source of console splicing on a shared CRTP
+ * address, and they destroyed the 1 Hz status timeline in flights 15/16.
+ * Dropping the whole module to INF fixed the splicing but took min_d with
+ * it, which is a safety number; throttling instead keeps the trace and
+ * its min_d while cutting the volume tenfold.  DEMO_CONSOLE_VERBOSE
+ * restores the full per-tick rate for single-drone debugging. */
+#ifdef CONFIG_DEMO_CONSOLE_VERBOSE
+#define DEMO_TRACE_DIV 1
+#else
+#define DEMO_TRACE_DIV 10      /* ~1 Hz at WM_CYCLE_MS = 100 */
+#endif
+
 static float clampf(float v, float lo, float hi)
 {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -196,12 +210,16 @@ float demo_compute_drive(const world_model_t *wm,
         }
     }
 
-    LOG_DBG("id=%u fx=%.2f fy=%.2f |f|=%.2f v=(%.2f,%.2f) tgt=(%.2f,%.2f) peers=%d min_d=%.2f",
-            (unsigned)own_id,
-            (double)fx, (double)fy, (double)force_mag,
-            (double)vx, (double)vy,
-            (double)target->x, (double)target->y,
-            peer_count, (double)min_dist_m);
+    static int drive_trace_div;
+    if (++drive_trace_div >= DEMO_TRACE_DIV) {
+        drive_trace_div = 0;
+        LOG_DBG("id=%u fx=%.2f fy=%.2f |f|=%.2f v=(%.2f,%.2f) tgt=(%.2f,%.2f) peers=%d min_d=%.2f",
+                (unsigned)own_id,
+                (double)fx, (double)fy, (double)force_mag,
+                (double)vx, (double)vy,
+                (double)target->x, (double)target->y,
+                peer_count, (double)min_dist_m);
+    }
 
     return min_dist_m;
 }
@@ -289,11 +307,15 @@ float demo_choreo_track(const world_model_t *wm,
         }
     }
 
-    LOG_DBG("id=%u choreo cmd=(%.2f,%.2f) tgt=(%.2f,%.2f) min_d=%.2f",
-            (unsigned)own_id,
-            (double)cmd_x, (double)cmd_y,
-            (double)target->x, (double)target->y,
-            (double)min_dist_m);
+    static int choreo_trace_div;
+    if (++choreo_trace_div >= DEMO_TRACE_DIV) {
+        choreo_trace_div = 0;
+        LOG_DBG("id=%u choreo cmd=(%.2f,%.2f) tgt=(%.2f,%.2f) min_d=%.2f",
+                (unsigned)own_id,
+                (double)cmd_x, (double)cmd_y,
+                (double)target->x, (double)target->y,
+                (double)min_dist_m);
+    }
 
     return min_dist_m;
 }
