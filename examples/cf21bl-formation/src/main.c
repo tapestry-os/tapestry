@@ -207,10 +207,21 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
  * and the field re-forms without it. */
 #ifdef CONFIG_DEMO_MODE_CHOREO
 /* The script's own total time bound (choreoc requires every step to be
- * time-bounded, so this is a hard ceiling) + margin for ramp and descent.
- * Reached only if the script stalls (e.g. partner lost mid-show →
- * SUSPENDED). */
-#define MISSION_DURATION_S   (CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u + 40u)
+ * time-bounded, so this is a hard ceiling) + CONFIG_DEMO_MISSION_MARGIN_S.
+ *
+ * The margin is NOT just ramp + descent, which is what the original 40 s
+ * covered.  Step timers freeze while the Choreo is SUSPENDED (quorum
+ * lost), so wall-clock runtime exceeds the script's own bound by however
+ * long the link was down — on a marginal P2P link, most of the flight.
+ * At 40 s the 48 s change-partners script was racing its own backstop:
+ * flight 15 completed with ~2-6 s to spare, and flight 16 (with the
+ * stricter scope=all predicate, which advances later by design) appears
+ * to have lost the race entirely.  A flight that lands on this backstop
+ * instead of on script completion looks identical from the ground and
+ * means something completely different, so the margin is now generous by
+ * default and tunable per build.  See the Kconfig help. */
+#define MISSION_DURATION_S   (CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u \
+                              + (uint32_t)CONFIG_DEMO_MISSION_MARGIN_S)
 #else
 #define MISSION_DURATION_S   CONFIG_DEMO_MISSION_DURATION_S
 #endif
@@ -240,6 +251,35 @@ typedef enum {
                        * (fix-loss landings: X/Y zeroed — no position to hold) */
     FLIGHT_LANDED,    /* idle sentinel forever                                  */
 } flight_state_t;
+
+/*
+ * Why this element started its descent.  Every trigger below announces
+ * itself with a one-shot LOG_INF/LOG_ERR, and on a shared CRTP console
+ * one-shots are exactly what line splicing destroys — flights 15-17 lost
+ * every "choreo complete" and "mission duration elapsed" line.  That is
+ * the single most important fact about how a flight ended: a script that
+ * ran to completion and one cut off by the backstop look identical from
+ * the ground.  Riding the repeating 1 Hz status line means the reason
+ * survives even when the announcement does not.
+ */
+typedef enum {
+    LAND_REASON_NONE = 0,   /* still flying                                */
+    LAND_REASON_COMPLETE,   /* script finished — quiescence -> land        */
+    LAND_REASON_BACKSTOP,   /* MISSION_DURATION_S elapsed                  */
+    LAND_REASON_FIXLOSS,    /* lighthouse fix lost > FIX_LOSS_GRACE_MS     */
+    LAND_REASON_GEOFENCE,   /* strayed past GEOFENCE_RADIUS_M              */
+} land_reason_t;
+
+static const char *land_reason_name(land_reason_t r)
+{
+    switch (r) {
+    case LAND_REASON_COMPLETE: return " why=complete";
+    case LAND_REASON_BACKSTOP: return " why=backstop";
+    case LAND_REASON_FIXLOSS:  return " why=fixloss";
+    case LAND_REASON_GEOFENCE: return " why=geofence";
+    default:                   return "";
+    }
+}
 
 static const char *flight_state_name(flight_state_t s)
 {
@@ -598,6 +638,7 @@ int main(void)
      * not just takeoff. */
     float          z_setpoint_m = ALT_BASE_M;
     float          landing_alt_m = 0.0f;
+    land_reason_t  land_reason   = LAND_REASON_NONE;
     uint32_t       mission_t0_ms = k_uptime_get_32();
     uint32_t       fix_lost_since_ms = 0;
     uint32_t       land_settle_ms = 0;
@@ -689,6 +730,14 @@ int main(void)
         substrate_twist_t sp = { 0 };
 #ifdef CONFIG_DEMO_MODE_CHOREO
         bool log_quorum_up = false;   /* debounced quorum, set in FLYING */
+        /* Nearest fresh peer, surfaced in the 1 Hz status line below.
+         * It used to live only in formation.c's per-tick DBG trace, so
+         * throttling or quieting that module took the separation margin
+         * with it — and the margin is exactly what you want when a flight
+         * runs near DEMO_MIN_SEP_M (flight 16 spent its swap at 0.53 m
+         * against a 0.50 m floor and nothing in the default log said so).
+         * -1 means "no fresh peer": separation UNKNOWN, not known-safe. */
+        float log_min_dist_m = -1.0f;
 #endif
 
         switch (state) {
@@ -715,6 +764,7 @@ int main(void)
                     LOG_ERR("id=%u fix lost > %d ms — landing independently",
                             (unsigned)element_id, FIX_LOSS_GRACE_MS);
                     state = FLIGHT_LANDING;
+                    land_reason = LAND_REASON_FIXLOSS;
                     land_hold_valid = false;   /* no fix — no position to hold */
                     landing_alt_m = alt_cmd_m;
                     sp.linear.z = alt_cmd_m - 1.0f;
@@ -745,6 +795,7 @@ int main(void)
                         (unsigned)element_id,
                         (double)origin_dist, (double)GEOFENCE_RADIUS_M);
                 state = FLIGHT_LANDING;
+                land_reason = LAND_REASON_GEOFENCE;
                 land_hold_x = own_pos_m.x;
                 land_hold_y = own_pos_m.y;
                 land_hold_valid = true;
@@ -758,6 +809,7 @@ int main(void)
                         "(%.2f, %.2f)", (unsigned)element_id,
                         (double)own_pos_m.x, (double)own_pos_m.y);
                 state = FLIGHT_LANDING;
+                land_reason = LAND_REASON_BACKSTOP;
                 land_hold_x = own_pos_m.x;
                 land_hold_y = own_pos_m.y;
                 land_hold_valid = true;
@@ -898,6 +950,7 @@ int main(void)
                         "at (%.2f, %.2f)", (unsigned)element_id,
                         (double)own_pos_m.x, (double)own_pos_m.y);
                 state = FLIGHT_LANDING;
+                land_reason = LAND_REASON_COMPLETE;
                 land_hold_x = own_pos_m.x;
                 land_hold_y = own_pos_m.y;
                 land_hold_valid = true;
@@ -943,6 +996,7 @@ int main(void)
             demo_setpoint_init(&target, seed_x, seed_y);
 #endif
 #endif /* CONFIG_DEMO_MODE_CHOREO */
+            log_min_dist_m = min_dist_m;
             if (min_dist_m >= 0.0f && min_dist_m < DEMO_MIN_SEP_M) {
                 static int sep_log_div;
                 if (++sep_log_div >= 20) {   /* ~2 Hz at WM_CYCLE_MS=100 */
@@ -950,6 +1004,24 @@ int main(void)
                     LOG_WRN("id=%u separation violation: nearest peer %.2f m "
                             "(min %.2f m)", (unsigned)element_id,
                             (double)min_dist_m, (double)DEMO_MIN_SEP_M);
+                }
+            } else if (min_dist_m < 0.0f) {
+                /* No fresh peer to measure against: separation is UNKNOWN,
+                 * not known-safe, and this branch used to pass silently.
+                 * It is reached routinely at the end of a show — the first
+                 * finisher lands and goes gossip-silent (the FLIGHT_LANDED
+                 * gate at the send site), its entry expires, and whoever is
+                 * still airborne flies out its remaining seconds with the
+                 * check above inert over a partner it can no longer see
+                 * (2026-08-24 flight 15: ~6 s of it).  Logging does not
+                 * restore the check — that needs last-known peer positions
+                 * carried through staleness, a larger change — but it stops
+                 * the blind window being invisible in the flight log. */
+                static int sep_blind_div;
+                if (++sep_blind_div >= 50) {   /* ~0.2 Hz at WM_CYCLE_MS=100 */
+                    sep_blind_div = 0;
+                    LOG_WRN("id=%u separation UNKNOWN — no fresh peer in view",
+                            (unsigned)element_id);
                 }
             }
 
@@ -1045,16 +1117,20 @@ int main(void)
 #ifdef CONFIG_DEMO_MODE_CHOREO
             /* q=H/L is the DEBOUNCED quorum; (susp) = choreo SUSPENDED.
              * Flight 2 hid the flicker story because neither was logged. */
+            /* min_d=-1.00 means no fresh peer: separation UNKNOWN, not
+             * known-safe.  why= is absent while still flying. */
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
-                    "cmd_z=%.2f step=%d q=%c%s%s",
+                    "cmd_z=%.2f min_d=%.2f step=%d q=%c%s%s%s",
                     (unsigned)element_id, flight_state_name(state), fresh, active,
                     (double)own_pos_m.x, (double)own_pos_m.y,
                     (double)target.x, (double)target.y,
                     (double)alt_cmd_m, (double)sp.linear.z,
+                    (double)log_min_dist_m,
                     choreo_script_step(),
                     log_quorum_up ? 'H' : 'L',
                     choreo_goal_status() == CHOREO_STATE_SUSPENDED ? "(susp)" : "",
-                    choreo_goal_achieved() ? " achieved" : "");
+                    choreo_goal_achieved() ? " achieved" : "",
+                    land_reason_name(land_reason));
 #else
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
                     "cmd_z=%.2f",

@@ -259,7 +259,7 @@ integration (not a teleporting perfect tracker) — matches
 `cf21bl-formation/tests`'s pattern.
 
 ```sh
-west build -p always -b native_sim tapestry/examples/cutebot-formation/tests
+west build -p always -b native_sim/native/64 tapestry/examples/cutebot-formation/tests
 ./build/zephyr/zephyr.exe
 ```
 
@@ -280,15 +280,10 @@ motor power again. The planned fix is to replace dead-reckoning distance with
 RSSI-based proximity from the BLE scan callbacks (`transceiver_ble.c` already
 receives `rssi` per peer).
 
-**`DEMO_MODE_CHOREO` is unvalidated on real Cutebot hardware.** Unlike
-`DEMO_MODE_SHOWCASE` (the original, flight-validated behavior), the L5/L6/L7
-wiring, the `form-grid.choreo.toml` script, and `demo_track_target()`'s
-control law were written and verified this session only via host-side
-compilation and standalone numeric/behavioral checks (see "Testing" above)
-— never flashed to or run on a physical robot. Constants borrowed from the
-flight-tested `cf21bl-formation`/`webots-formation` examples (e.g.
-`QUORUM_UP_MS`) are a reasonable starting point, not independently tuned
-for BLE gossip timing or Cutebot motor dynamics.
+Note the grid's own spacing is tight against the repulsion backstop:
+`form-grid.choreo.toml`'s `radius = 25` puts adjacent vertices 200 mm apart
+against a `DEMO_TRACK_MIN_SEP` of 160 mm, only 1.25x. Widen the radius before
+reading much into settling behaviour at the vertices.
 
 **FORM's `abs_position` capability claim is weaker than its usual meaning.**
 `SCR_CAP_ABS_POSITION` (declared in `main.c`'s `scr_init()` call, and

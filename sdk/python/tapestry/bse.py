@@ -672,8 +672,9 @@ class BSE:
         advance_on_achieved=True and no timeout would never advance.
 
         Real 3D distance (mirrors formation.c's own position_distance()):
-        this is safety-relevant spacing math, not yet flight-validated —
-        see examples/cf21bl-formation/README.md's "Known limitations"."""
+        this is safety-relevant spacing math, so the z fold-in follows the
+        same position_distance() convention as the C implementation rather
+        than diverging from it."""
         eps  = self._intent.achieve_eps or ACHIEVE_EPS_DEFAULT
         hold = self._intent.achieve_hold_ms or ACHIEVE_HOLD_MS_DEFAULT
         own  = self._own_position(wm_entries)

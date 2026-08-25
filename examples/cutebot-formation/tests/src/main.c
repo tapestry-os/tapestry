@@ -38,6 +38,12 @@
 #define DT_MS      100u
 #define EPS        0.001f
 
+/* Zephyr builds with -std=c17, under which glibc's <math.h> does not expose
+ * M_PI (it is a _DEFAULT_SOURCE extension, not ISO C). Use the same float
+ * constant formation.c itself uses, so the headings here are bit-identical
+ * to the ones its wrap-around math produces. */
+#define M_PI_F     3.14159265f
+
 /* ── World-model scaffolding ──────────────────────────────────────────────── */
 
 static world_model_t wm;
@@ -82,7 +88,7 @@ ZTEST(formation_field, test_spring_repels_when_too_close)
 
     demo_odometry_t odo;
     demo_odometry_init(&odo, 0.0f, 0.0f);
-    odo.heading = M_PI;   /* facing away from the peer: pure reverse case */
+    odo.heading = 0.0f;   /* facing the peer: escape is directly behind */
 
     float speed, rate;
     /* Two ticks: force must exceed FORCE_START before movement engages. */
@@ -116,7 +122,7 @@ ZTEST(formation_field, test_track_converges_off_axis)
     wm_reset();
     demo_odometry_t odo;
     demo_odometry_init(&odo, 0.0f, 0.0f);
-    odo.heading = M_PI - 0.4f;   /* mostly facing away, off-axis */
+    odo.heading = M_PI_F - 0.4f;   /* mostly facing away, off-axis */
 
     float speed, rate;
     demo_track_target(&wm, &odo, 30.0f, 0.0f, &speed, &rate);
@@ -140,7 +146,7 @@ ZTEST(formation_field, test_track_reverses_when_exactly_behind)
     wm_reset();
     demo_odometry_t odo;
     demo_odometry_init(&odo, 0.0f, 0.0f);
-    odo.heading = M_PI;
+    odo.heading = M_PI_F;
 
     float speed, rate;
     demo_track_target(&wm, &odo, 30.0f, 0.0f, &speed, &rate);

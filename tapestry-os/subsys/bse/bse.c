@@ -920,8 +920,10 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * advance_on_achieved=true and no timeout would never advance.
          *
          * Real 3D distance (mirrors formation.c's own position_distance()):
-         * this is safety-relevant spacing math, not yet flight-validated —
-         * see examples/cf21bl-formation/README.md's "Known limitations". */
+         * this is safety-relevant spacing math, so the z fold-in follows
+         * csm.h's position_distance() convention rather than diverging from
+         * it — see that function's comment for what folding z in costs on a
+         * platform that staggers altitude per element. */
         float    eps  = s_intent.achieve_eps > 0.0f
                         ? s_intent.achieve_eps
                         : TAPESTRY_BSE_ACHIEVE_EPS_DEFAULT;

@@ -11,6 +11,14 @@ target_sources(app PRIVATE
     # L6/L7 under test: the choreo demo mode's script engine + BSE
     ${TAPESTRY_OS_ROOT}/subsys/bse/bse.c
     ${TAPESTRY_OS_ROOT}/subsys/choreo/choreo.c
+    # L5 rank/role state: bse.c and choreo.c read the swarm view through
+    # scr_get_*()/scr_peer_is_trusted(), and the frame/track tests drive
+    # scr_init()/scr_tick() directly to set up the anchor selectors.
+    ${TAPESTRY_OS_ROOT}/subsys/scr/scr.c
+    # scr_tick()'s trusted-peer scan reads the world model through
+    # wm_get_entry(); the suite builds its own wm.entries[] by hand, but
+    # the accessor itself lives here.
+    ${TAPESTRY_OS_ROOT}/subsys/csm/world_model.c
     # demo_set_leds() calls substrate_set_signal(); the null substrate
     # provides it (same trick as the -DCONFIG_PWM=n gossip-only build).
     ${TAPESTRY_OS_ROOT}/boards/substrate_null.c)

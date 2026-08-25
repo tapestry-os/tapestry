@@ -954,8 +954,10 @@ ZTEST(choreo_script, test_scope_all_waits_for_peer_achievement)
 
 ZTEST(choreo_script, test_scope_all_vacuous_when_solo)
 {
-    /* No fresh peers to disagree — scope=all must not deadlock a lone
-     * survivor. */
+    /* No ACTIVE peer to disagree — scope=all must not deadlock a lone
+     * survivor.  Vacuity is reserved for genuinely solo elements now that
+     * a merely stale peer still votes (see
+     * test_scope_all_waits_for_stale_peer). */
     static const choreo_step_t script[] = {
         { .goal = { .type = CHOREO_GOAL_HOLD },
           .max_duration_ms = 60000, .advance_on_achieved = true,
@@ -973,13 +975,18 @@ ZTEST(choreo_script, test_scope_all_vacuous_when_solo)
     choreo_tick(&wm, &scr);
 
     zassert_true(choreo_script_complete(),
-                 "scope=all must be vacuously true with no fresh peers");
+                 "scope=all must be vacuously true with no active peers");
 }
 
-ZTEST(choreo_script, test_scope_all_ignores_stale_peer)
+ZTEST(choreo_script, test_scope_all_waits_for_stale_peer)
 {
-    /* A stale (non-fresh) peer's achieved bit is not gossip we can trust —
-     * it must not block the collective predicate. */
+    /* A merely STALE peer still votes, from its last-received achieved bit.
+     * Skipping stale peers let scope=all degrade silently into per-element
+     * achievement under packet loss: script_advance() runs before
+     * choreo_tick() suspends on the quorum loss that the same staleness
+     * threshold triggers, so every quorum-loss transition let a
+     * personally-arrived element advance alone (2026-08-24 flight 15 —
+     * partners finished 6.3 s apart on a 17%-delivery link). */
     static const choreo_step_t script[] = {
         { .goal = { .type = CHOREO_GOAL_HOLD },
           .max_duration_ms = 60000, .advance_on_achieved = true,
@@ -998,8 +1005,17 @@ ZTEST(choreo_script, test_scope_all_ignores_stale_peer)
     scr.quorum_state = SCR_QUORUM_HEALTHY;
     choreo_tick(&wm, &scr);
 
+    zassert_false(choreo_script_complete(),
+                  "a stale peer's last-known unachieved bit must still block "
+                  "scope=all");
+
+    /* Its last-known bit flipping to achieved releases the step even while
+     * the entry stays stale — the vote is the peer's, not its freshness. */
+    wm.entries[1].state.goal_achieved = true;
+    choreo_tick(&wm, &scr);
+
     zassert_true(choreo_script_complete(),
-                 "a stale peer's unachieved bit must not block scope=all");
+                 "a stale peer reporting achieved must release scope=all");
 }
 
 /* ── Goal queue: preemption + resume ───────────────────────────────────────

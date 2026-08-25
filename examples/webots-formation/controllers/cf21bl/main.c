@@ -51,8 +51,9 @@
  * separation, if wanted, is now something a script expresses explicitly
  * (e.g. distinct z per track/element), and the physical safety net for
  * elements sharing an altitude is formation.c's existing repulsion/
- * emergency-spring math (still not itself flight-validated in 3D — see
- * the "Known limitations" section of ../../README.md). */
+ * emergency-spring math, which folds z into the peer-distance check but
+ * keeps the repulsion force itself horizontal (see the "Known
+ * limitations" section of ../../README.md). */
 #define ALT_BASE_M        0.30f
 
 #define LAND_TOUCHDOWN_M  0.05f

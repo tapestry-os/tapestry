@@ -462,14 +462,31 @@ bool choreo_collective_achieved(const world_model_t *wm)
     }
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
-        if (e->is_self || !e->is_active || e->is_stale) {
+        /* ACTIVE, not fresh: a peer that has merely gone stale
+         * (WM_STALE_THRESHOLD_MS) still gets a vote, cast from its
+         * last-received goal_achieved.  Skipping stale peers here made
+         * CHOREO_SCOPE_ALL silently degrade to per-element achievement
+         * under packet loss.  scr_tick() drops quorum on that same
+         * staleness threshold, but script_advance() runs BEFORE
+         * choreo_tick() flips the state to SUSPENDED, so every
+         * quorum-loss transition opened a one-tick window in which an
+         * element that had personally arrived advanced alone — nobody
+         * left "to disagree".  Two partners on a 17%-delivery link
+         * finished a scope=all step 6.3 s apart (2026-08-24 flight 15).
+         * Waiting on the last-known vote is the conservative direction: a
+         * peer that had not yet reported achieved still blocks.  Expiry
+         * (WM_EXPIRE_THRESHOLD_MS) takes 5 s of silence, by which point
+         * quorum has been LOST for 3.5 s and the script is SUSPENDED —
+         * script_advance() is unreachable — so an expired peer cannot
+         * reopen the window either. */
+        if (e->is_self || !e->is_active) {
             continue;
         }
         if (!e->state.goal_achieved) {
             return false;
         }
     }
-    return true;   /* vacuously true when solo — no fresh peer to disagree */
+    return true;   /* vacuously true when genuinely solo — no peer to disagree */
 }
 
 void choreo_cancel_goal(void)
