@@ -1,0 +1,75 @@
+/*
+ * tapestry-os/boards/apollo510_evb/apollo510_evb.overlay
+ * Tapestry devicetree overlay for the Ambiq Apollo510 EVB (AP510EVB).
+ *
+ * The Apollo510 has no radio on-die, so the element's gossip medium is a
+ * wired serial bus (transceiver_uart.c).  This overlay brings up UART2 as
+ * that bus and points the transport layer at it via a chosen node.
+ *
+ * UART0 is left exactly as the board defines it: console, shell, and the
+ * CSV telemetry stream that collect_serial.py reads.  Only UART2 is added.
+ *
+ * ── Bus pins — confirmed against the EVB schematic, 2026-08-25 ───────────
+ *
+ *   TX   GP1    header J8   net TRC0_SSDA_SMOSI_TX23_VC0_GP1
+ *   RX   GP23   header J8   net M7SDA_M7MOSI_SWO_RX23_GP23
+ *   GND         header J8   required once a second element is attached
+ *
+ * Both pins sit on J8 opposite each other, so one jumper lead loops TX back
+ * to RX for a single-board bring-up test of the whole transport path.
+ *
+ * Why UART2 and not UART1: the pins carrying TX01/RX01 on J8 (GP0, GP2) are
+ * not both jumperable on this board.  GP1 and GP23 are TX23/RX23 pins — i.e.
+ * UART2 or UART3 — and UART2 is the lower free instance.
+ *
+ * Neither pin is claimed by an enabled peripheral.  GP1 doubles as trace
+ * data (TRC0) and GP23 as an alternate SWO, but the board DTS puts SWO on
+ * P28 and never enables ETM trace; IOM7, GP23's I2C/SPI role, is disabled.
+ * Do not enable ETM trace in a debug session while the bus is live.
+ *
+ * To move the bus: change the two pinmux macros below and the matching
+ * GPIO_Pn in uart2_sleep, then repoint the &uartN node and the chosen node.
+ * TX and RX must belong to the SAME UART instance.  The EVB net names say
+ * which instances a pin can serve — TX01/RX01 means UART0 or UART1, TX23/RX23
+ * means UART2 or UART3 — and the authoritative list is
+ * modules/hal/ambiq/dts/apollo510/ambiq-apollo510-pinmux.h.
+ */
+
+&pinctrl {
+	uart2_default: uart2_default {
+		group1 {
+			pinmux = <UART2TX_P1>;
+		};
+
+		group2 {
+			pinmux = <UART2RX_P23>;
+			input-enable;
+		};
+	};
+
+	uart2_sleep: uart2_sleep {
+		group1 {
+			pinmux = <GPIO_P1>, <GPIO_P23>;
+		};
+	};
+};
+
+/*
+ * Gossip bus baud.  Every element on the bus must agree.  115200 carries a
+ * 27-byte framed gossip frame in ~2.3 ms, so a five-element swarm gossiping
+ * at GOSSIP_INTERVAL_MS = 500 occupies well under 1% of the line — raise it
+ * only if you add elements or shorten the gossip interval.
+ */
+&uart2 {
+	current-speed = <115200>;
+	pinctrl-0 = <&uart2_default>;
+	pinctrl-1 = <&uart2_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+};
+
+/ {
+	chosen {
+		tapestry,gossip-uart = &uart2;
+	};
+};

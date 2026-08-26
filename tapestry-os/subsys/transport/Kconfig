@@ -31,6 +31,37 @@ config TAPESTRY_WIRE_AUTH_KEY
 	  default before deploying hardware; all elements in a deployment must
 	  share the same key string.
 
+config TAPESTRY_NET_CONNECT_TIMEOUT_MS
+	int "Network bring-up timeout in ms (0 = wait forever)"
+	depends on NETWORKING
+	default 0 if !(BT || TAPESTRY_TRANSCEIVER_UART || TAPESTRY_TRANSCEIVER_SYSLINK)
+	default 30000
+	help
+	  How long transport_init() waits for DHCP to deliver an IPv4 address
+	  before giving up on the network and continuing without it.
+
+	  This wait used to be unbounded, which was worse than slow: network
+	  bring-up runs before any other transceiver is registered, so an element
+	  with a healthy wired or radio medium and an unplugged Ethernet cable
+	  would block forever inside transport_init() and never initialise the
+	  medium that was actually working.  It also never reached the log line
+	  that would have said so.
+
+	  On timeout the UDP transceiver is skipped and the element continues on
+	  whatever other transports are configured.  If none come up at all,
+	  transport_init() fails and says so.
+
+	  The default is chosen for you: 0 (wait forever) when UDP is the ONLY
+	  transport configured, 30 s when some other medium is also present.
+
+	  That distinction matters.  Giving up is only safe when there is another
+	  way to reach the collective.  On a UDP-only element a timeout would turn
+	  a merely slow lease — an AP reboot, or 30 s of STP forwarding delay on a
+	  switch — into a permanent failure: transport_init() would find no
+	  transport at all, return -1, and stop the element until it is power
+	  cycled.  Waiting is correct there, and is what happened before this
+	  option existed.
+
 config TAPESTRY_AUTO_ID_WINDOW_MS
 	int "Auto-ID nonce exchange window duration (ms)"
 	default 4000
@@ -118,6 +149,30 @@ config CF21BL_RADIO_ADDR_LSB
 	  the familiar one, and give each additional element its own value:
 	    west build ... -- -DCONFIG_CF21BL_RADIO_ADDR_OVERRIDE=y \
 	                      -DCONFIG_CF21BL_RADIO_ADDR_LSB=232
+
+config TAPESTRY_TRANSCEIVER_UART
+	bool "Wired UART broadcast transceiver (shared serial gossip bus)"
+	depends on UART_INTERRUPT_DRIVEN
+	default n
+	help
+	  Gossip over a shared multi-drop serial bus for elements with no radio
+	  (e.g. the Ambiq Apollo510 EVB, whose SoC has no transceiver on-die).
+	  Board-agnostic: any Zephyr target with a spare interrupt-driven UART
+	  can use it.
+
+	  The bus UART is selected in DTS, not Kconfig — add a chosen node in a
+	  board overlay:
+
+	      chosen { tapestry,gossip-uart = &uart1; };
+
+	  All elements must share one ground and one baud rate (set by the
+	  UART node's current-speed property).  Two elements can be wired
+	  straight across TX↔RX; three or more need a series resistor in each
+	  TX leg or a real open-drain / RS-485 transceiver per node, because
+	  push-pull TX pins tied together contend during a collision.
+
+	  Colliding frames fail the frame checksum and are dropped; gossip
+	  tolerates the loss and re-sends every GOSSIP_INTERVAL_MS.
 
 config TAPESTRY_MESH_RELAY
 	bool "Two-hop opportunistic relay forwarding (BATMAN-inspired mesh)"

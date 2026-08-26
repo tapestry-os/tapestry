@@ -280,7 +280,8 @@ jobs:
 
   # Compile the test suites for both Phase 1 hardware targets.
   # These builds are compile-only (no run): they verify that the pure C99
-  # L4/L5 core compiles cleanly for Xtensa (ESP32) and Cortex-M85 (RA8D1).
+  # L4/L5 core compiles cleanly for Xtensa (ESP32), Cortex-M85 (RA8D1),
+  # Cortex-M4F (nRF52833, STM32F405), and Cortex-M55 (Apollo510).
   hw-build:
     name: Hardware target compile check
     runs-on: ubuntu-22.04
@@ -351,6 +352,23 @@ jobs:
             --build-dir tapestry/tapestry-scr-sim/build/hw-mb-test-scr \
             tapestry/tapestry-scr-sim/tests
 
+      # ── Ambiq Apollo510 EVB (Apollo510 / Cortex-M55) ────────────────────
+      # Phase 1: verify that the pure C99 L4/L5 core compiles for Cortex-M55.
+
+      - name: Build L4 tests — apollo510_evb
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b apollo510_evb \
+            --build-dir tapestry/tapestry-csm-sim/build/hw-ap510-test-csm \
+            tapestry/tapestry-csm-sim/tests
+
+      - name: Build L5 tests — apollo510_evb
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b apollo510_evb \
+            --build-dir tapestry/tapestry-scr-sim/build/hw-ap510-test-scr \
+            tapestry/tapestry-scr-sim/tests
+
       # ── Phase 2 hardware element (tapestry-scr-hw) ──────────────────────
       # WiFi credentials are not needed for a compile-only check; a dummy
       # wifi.conf supplies the required Kconfig strings.
@@ -418,6 +436,17 @@ jobs:
           west build -b bbc_microbit_v2 \
             --build-dir tapestry/tapestry-scr-hw/build/hw-mb-auth \
             --extra-conf /tmp/ci_auth.conf \
+            tapestry/tapestry-scr-hw
+
+      # ── Apollo510 EVB Phase 2 element ───────────────────────────────────
+      # Radio-less element: wired UART gossip bus (transceiver_uart.c) and the
+      # LED/button L1 substrate.  Compile-only.
+
+      - name: Build Phase 2 element — apollo510_evb
+        working-directory: ${{ github.workspace }}
+        run: |
+          west build -b apollo510_evb \
+            --build-dir tapestry/tapestry-scr-hw/build/hw-ap510 \
             tapestry/tapestry-scr-hw
 
       # ── cutebot-formation example ─────────────────────────────────────

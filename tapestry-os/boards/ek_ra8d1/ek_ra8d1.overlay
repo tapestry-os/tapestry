@@ -1,0 +1,35 @@
+/*
+ * tapestry-os/boards/ek_ra8d1/ek_ra8d1.overlay
+ * Tapestry devicetree overlay for the Renesas EK-RA8D1.
+ *
+ * Points the L3 transport at UART3 (SCI3) so the RA8D1 can join a wired
+ * gossip bus — the same medium the radio-less Apollo510 EVB uses.  This makes
+ * a heterogeneous two-vendor swarm possible over one pair of wires.
+ *
+ * No pin or peripheral setup is needed: the stock board DTS already enables
+ * SCI3 with pinctrl and a 115200 baud UART3 child node, which matches the
+ * Apollo510 bus baud exactly.  All this overlay adds is the chosen node.
+ *
+ * Bus pins (from the board's sci3_default pinctrl group):
+ *
+ *   TX   P4_09    RA_PSEL(RA_PSEL_SCI_3, 4, 9)
+ *   RX   P4_08    RA_PSEL(RA_PSEL_SCI_3, 4, 8)
+ *   GND  any board ground
+ *
+ * The console stays on UART9 (SCI9, P10_14 / P10_15) — untouched.
+ *
+ * NOTE: the EK-RA8D1 carries an SW1 DIP-switch bank that re-routes some pins
+ * between on-board functions and the expansion connectors (SW1-1 is PMOD1).
+ * If the bus stays silent with the wiring correct, check SW1 before suspecting
+ * the firmware.
+ *
+ * Declaring the chosen node unconditionally is harmless for the Ethernet/UDP
+ * build of this board: nothing reads it unless
+ * CONFIG_TAPESTRY_TRANSCEIVER_UART=y compiles transceiver_uart.c in.
+ */
+
+/ {
+	chosen {
+		tapestry,gossip-uart = &uart3;
+	};
+};
