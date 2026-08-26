@@ -12,7 +12,8 @@
  *
  *   CONFIG_BT              → transceiver_ble.c  (BLE advertising / scan)
  *   CONFIG_NETWORKING      → transceiver_udp.c + net_init.c  (UDP broadcast)
- *   Both                   → both backends; gossip_drain merges frames
+ *   CONFIG_TAPESTRY_TRANSCEIVER_UART → transceiver_uart.c  (wired serial bus)
+ *   Any combination        → all matching backends; gossip_drain merges frames
  * Telemetry routing:
  *   CONFIG_NETWORKING → UDP unicast to collector (every cycle)
  *   BLE-only          → serial CSV to stdout (throttled to GOSSIP_INTERVAL_MS)
@@ -40,6 +41,10 @@
 
 #ifdef CONFIG_TAPESTRY_TRANSCEIVER_SYSLINK
 #include "transceiver_syslink_p2p.h"
+#endif
+
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_UART
+#include "transceiver_uart.h"
 #endif
 
 #include <zephyr/kernel.h>
@@ -79,11 +84,20 @@ int transport_init(void)
     n_active = 0;
 
 #ifdef CONFIG_NETWORKING
-    if (net_connect() != 0) {
-        LOG_ERR("network bring-up failed");
-        return -1;
+    /*
+     * Network bring-up is bounded (CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS) and
+     * a failure here is NOT fatal on its own.  This runs before every other
+     * transceiver is registered, so treating it as fatal took the entire
+     * transport layer down with it: an element with a perfectly good wired bus
+     * and an unplugged Ethernet cable would never bring the bus up at all, and
+     * would hang before saying so.  Whether the element actually has a way to
+     * talk is decided by the n_active check after the init loop below.
+     */
+    if (net_connect() == 0) {
+        active[n_active++] = &transceiver_udp;
+    } else {
+        LOG_ERR("network bring-up failed — UDP gossip and UDP telemetry are off");
     }
-    active[n_active++] = &transceiver_udp;
 #endif
 
 #ifdef CONFIG_BT
@@ -94,18 +108,33 @@ int transport_init(void)
     active[n_active++] = &transceiver_syslink_p2p;
 #endif
 
+#ifdef CONFIG_TAPESTRY_TRANSCEIVER_UART
+    active[n_active++] = &transceiver_uart;
+#endif
 
 
+
+    /*
+     * Bring each backend up, keeping only those that succeed.  A transceiver
+     * whose init() failed must not stay in the registry — gossip_send() would
+     * go on to call tx() on hardware that was never initialised, which on some
+     * backends means touching an unconfigured peripheral.
+     */
+    int n_ready = 0;
     for (int i = 0; i < n_active; i++) {
         int ret = active[i]->init();
-        if (ret != 0) {
-            if (active[i]->type == TRANSCEIVER_TYPE_UDP) {
-                LOG_ERR("UDP transceiver init failed: %d", ret);
-                return ret;
-            }
+        if (ret == 0) {
+            active[n_ready++] = active[i];
+        } else {
             LOG_WRN("transceiver type=%d init failed: %d — peers on this medium "
                     "will not be heard", (int)active[i]->type, ret);
         }
+    }
+    n_active = n_ready;
+
+    if (n_active == 0) {
+        LOG_ERR("no transport came up — this element cannot gossip");
+        return -1;
     }
 
     gossip_register_transceivers(active, n_active);
@@ -146,9 +175,9 @@ bool transport_poll_directive(element_id_t own_id,
 static uint32_t hw_nonce(void)
 {
 #ifdef CONFIG_HWINFO
-    uint8_t buf[16] = {0};
+    uint8_t buf[32] = {0};   /* the longest device id any hwinfo driver returns */
     ssize_t len = hwinfo_get_device_id(buf, sizeof(buf));
-    if (len >= 4) {
+    if (len > 0) {
         return auto_id_nonce_from_id(buf, (size_t)len);
     }
 #endif

@@ -1,0 +1,39 @@
+# Kconfig — Ambiq Apollo510 EVB board options
+#
+# Source this from your application Kconfig with:
+#   rsource "../tapestry-os/boards/apollo510_evb/Kconfig"
+
+config TAPESTRY_AP510_LED_WALK
+	bool "Boot-time LED identification walk"
+	default n
+	help
+	  Lights led0, then led1, then led2 in turn for 1.5 s each during
+	  substrate_init(), logging the alias and SoC pin of each as it goes.
+
+	  Bring-up aid: the EVB silkscreen numbers its LEDs independently of
+	  Zephyr's devicetree alias numbering, and the board carries indicator
+	  LEDs (power, J-Link) that are not under software control at all — so
+	  "which physical LED is led2" cannot be answered from the board files.
+	  This walk answers it by inspection.
+
+	  Adds ~4.5 s to boot and holds off gossip for that long.  Leave off in
+	  normal builds.
+
+config TAPESTRY_AP510_PIN_FINDER
+	bool "Header pin finder (identify EVB header pins by grounding them)"
+	default n
+	help
+	  Arms every UART1/2/3 TX or RX pin as a pull-up input and reports on
+	  the console which SoC pin is grounded, so header positions can be
+	  mapped to GPIO numbers without the EVB schematic.
+
+	  Ground a header pin through a ~1 kOhm series resistor and the console
+	  prints e.g. "PIN FINDER: P23 GROUNDED".  The resistor matters: it
+	  turns an accidental touch on a power rail into a few milliamps
+	  instead of a short.
+
+	  P53 (mspi1 chip enable) and P55 (UART0 console RX) are excluded
+	  because an enabled peripheral owns them.
+
+	  The element does NOT come up in this mode — substrate_init() enters
+	  the finder loop and never returns.  Bring-up only.

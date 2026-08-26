@@ -126,6 +126,7 @@ tapestry/
 │   │   ├── bbc_microbit_v2/       micro:bit V2 board support (Cutebot HAL, BLE overlay)
 │   │   ├── crazyflie21bl/         Crazyflie 2.1 brushless board support (motor mix, LED,
 │   │   │                          IWDG, power management, lighthouse positioning)
+│   │   ├── apollo510_evb/         Apollo510 EVB board support (LED substrate, UART bus overlay)
 │   │   └── substrate_null.c       No-op substrate for host-only builds
 │   ├── subsys/csm/
 │   │   └── world_model.c          L4 CSM implementation (pure C99)
@@ -143,6 +144,7 @@ tapestry/
 │   │   ├── gossip.c/.h            Wire framing, relay + QoS eviction, HMAC auth
 │   │   ├── transceiver_ble.c/.h   BLE extended-advertising backend (Bluetooth 5.0+)
 │   │   ├── transceiver_udp.c/.h   UDP broadcast backend (Zephyr zsock_* API)
+│   │   ├── transceiver_uart.c/.h  Wired multi-drop serial gossip bus (radio-less boards)
 │   │   └── net_init.c/.h          WiFi / Ethernet bring-up (Zephyr net_mgmt)
 │   ├── tools/
 │   │   └── gen_wire_protocol.py   Generates Python wire-struct mirrors from wire.h

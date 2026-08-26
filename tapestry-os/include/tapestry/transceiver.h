@@ -37,6 +37,7 @@ typedef enum {
     TRANSCEIVER_TYPE_OPTICAL  = 3,
     TRANSCEIVER_TYPE_CHEMICAL = 4,
     TRANSCEIVER_TYPE_SYSLINK  = 5,   /* nRF51 ESB P2P broadcast (CF21BL) */
+    TRANSCEIVER_TYPE_UART     = 6,   /* wired multi-drop serial bus      */
 } transceiver_type_t;
 
 /* ── Vtable ───────────────────────────────────────────────────────────────── */

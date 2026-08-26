@@ -2,7 +2,8 @@
 #
 # Values are baked into the firmware at build time via CONFIG_* macros.
 # WiFi credentials are sensitive: supply them via a gitignored wifi.conf
-# passed with  west build --extra-conf tapestry/tapestry-scr-hw/wifi.conf
+# passed with  west build --extra-conf wifi.conf
+# (--extra-conf resolves relative to the application directory, not the CWD)
 
 # Pull in all Zephyr Kconfig symbols (NETWORKING, WIFI, LOG, …).
 # Without this every standard symbol appears "undefined".
@@ -10,6 +11,7 @@ source "Kconfig.zephyr"
 rsource "../tapestry-os/subsys/runtime/Kconfig"
 rsource "../tapestry-os/subsys/transport/Kconfig"
 rsource "../tapestry-os/boards/crazyflie21bl/Kconfig"
+rsource "../tapestry-os/boards/apollo510_evb/Kconfig"
 
 config TAPESTRY_ELEMENT_ID
 	int "Element ID [0..4]"

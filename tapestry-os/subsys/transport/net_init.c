@@ -10,6 +10,13 @@
  *   1. Register a net_mgmt callback for IPv4 address assignment.
  *   2. Start DHCPv4 on the default interface.
  *   3. Block until an address is assigned.
+ *
+ * The wait for an address is bounded by CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS
+ * and returns -ETIMEDOUT rather than blocking forever.  An unbounded wait here
+ * is not merely slow: transport_init() calls net_connect() before registering
+ * any other transceiver, so on a multi-transport element a dead Ethernet link
+ * would silently prevent an otherwise healthy medium from ever initialising.
+ * Set the timeout to 0 to restore the old wait-forever behaviour.
  */
 
 #include "net_init.h"
@@ -27,6 +34,29 @@ LOG_MODULE_REGISTER(net_init, LOG_LEVEL_INF);
 static K_SEM_DEFINE(ip_acquired, 0, 1);
 
 static struct net_mgmt_event_callback ipv4_cb;
+
+#ifndef CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS
+#define CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS 30000
+#endif
+
+/*
+ * wait_for_ip — block until DHCP delivers an address, or the configured
+ * timeout expires.  Returns 0 on success, -ETIMEDOUT on expiry.
+ */
+static int wait_for_ip(void)
+{
+#if CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS > 0
+    if (k_sem_take(&ip_acquired,
+                   K_MSEC(CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS)) != 0) {
+        LOG_ERR("no IPv4 address after %d ms — continuing without the network",
+                CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS);
+        return -ETIMEDOUT;
+    }
+#else
+    k_sem_take(&ip_acquired, K_FOREVER);
+#endif
+    return 0;
+}
 
 static void ipv4_event_handler(struct net_mgmt_event_callback *cb,
                                uint64_t event,
@@ -106,7 +136,10 @@ int net_connect(void)
         return ret;
     }
 
-    k_sem_take(&ip_acquired, K_FOREVER);
+    ret = wait_for_ip();
+    if (ret != 0) {
+        return ret;
+    }
 
     /* Disable WiFi power save so the AP delivers broadcast frames immediately
      * rather than buffering them until the next DTIM beacon interval.
@@ -142,8 +175,7 @@ int net_connect(void)
     net_dhcpv4_start(iface);
     LOG_INF("DHCP started — waiting for IPv4 address");
 
-    k_sem_take(&ip_acquired, K_FOREVER);
-    return 0;
+    return wait_for_ip();
 }
 
 #endif /* CONFIG_WIFI */
