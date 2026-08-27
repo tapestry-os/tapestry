@@ -25,4 +25,12 @@ target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../sdk/include   # <tapestry/choreo.h>
     ${CMAKE_CURRENT_SOURCE_DIR}/../src)        # "formation.h"
 
-target_link_libraries(app PRIVATE m)
+# No `target_link_libraries(app PRIVATE m)` here, however natural that
+# looks for bse.c's sqrtf/sinf/cosf/ceilf: Zephyr links the application
+# image with -nostdlib, so -lm resolves to the STATIC libm.a and drags in
+# ifunc resolvers (__ceilf_ifunc, __sincosf_ifunc) that reference
+# _dl_x86_cpu_features, a glibc-internal symbol the native_simulator's
+# final link cannot resolve.  zephyr/scripts/native_simulator/Makefile
+# already links -lm dynamically into the runner executable, which is what
+# actually resolves these — cf21bl-formation's suite builds the same math
+# and names no libraries at all.
