@@ -16,6 +16,17 @@
 #include <stdint.h>
 #include <time.h>
 
+/* clock_gettime()/CLOCK_MONOTONIC below are POSIX, not ISO C, and glibc
+ * hides them under __STRICT_ANSI__ (any -std=c99 build without a POSIX
+ * feature-test macro).  The failure is otherwise an opaque "storage size
+ * of 'ts' isn't known" pointing at a line that looks perfectly ordinary —
+ * name the actual cause instead.  Tested for after <time.h>, so a build
+ * that reaches POSIX by any route (-D_POSIX_C_SOURCE, -std=gnu*, Webots'
+ * own default flags, Apple libc) passes without having to enumerate them. */
+#ifndef CLOCK_MONOTONIC
+#error "zephyr_shim/kernel.h needs POSIX clocks: build with -D_POSIX_C_SOURCE=200809L (see examples/webots-formation/ci-check/Makefile) or -std=gnu99"
+#endif
+
 /* IS_ENABLED(CONFIG_TAPESTRY_MESH_RELAY) in gossip.c: this build never
  * defines CONFIG_TAPESTRY_MESH_RELAY, so it is always false. */
 #define IS_ENABLED(macro) 0

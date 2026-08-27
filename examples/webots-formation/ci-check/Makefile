@@ -30,6 +30,21 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -Wall -Wextra -g
 BUILD   := build
 
+# k_uptime_get_32() in ../controllers/common/zephyr_shim/zephyr/kernel.h
+# calls clock_gettime(CLOCK_MONOTONIC).  Those are POSIX, not ISO C, and
+# -std=c99 defines __STRICT_ANSI__, under which glibc hides both them and
+# struct timespec — so the shim stops compiling on Linux while the real
+# Webots build (Webots' Makefile.include does not pass -std=) is fine.
+# Declaring the POSIX level the shim actually needs keeps the strict-C99
+# conformance check on the Tapestry sources, which is the point of this
+# build, instead of relaxing it to -std=gnu99.
+#
+# It cannot live in the shim header: a feature-test macro must precede the
+# first libc include, and gossip.c includes <string.h> before it reaches
+# <zephyr/kernel.h>.  Kept out of CFLAGS so that overriding CFLAGS on the
+# command line cannot silently drop it.
+POSIX_DEFS := -D_POSIX_C_SOURCE=200809L
+
 STUB_DIRS    := webots_stub ../controllers/common/webots_stub
 ALL_SOURCES  := $(C_SOURCES) webots_stub/webots_stub.c
 ALL_INCLUDE  := $(INCLUDE) $(addprefix -I,$(STUB_DIRS))
@@ -45,7 +60,7 @@ $(BINARY): $(OBJECTS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 $(BUILD)/%.o: %.c | $(BUILD)
-	$(CC) $(CFLAGS) $(ALL_INCLUDE) -c -o $@ $<
+	$(CC) $(CFLAGS) $(POSIX_DEFS) $(ALL_INCLUDE) -c -o $@ $<
 
 $(BUILD):
 	mkdir -p $(BUILD)

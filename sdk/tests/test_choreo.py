@@ -419,15 +419,35 @@ def test_the_collective_predicate_requires_own_achievement_first():
     assert c.collective_achieved(entries) is False
 
 
-def test_the_collective_predicate_is_vacuously_true_without_fresh_peers():
-    """Eventually consistent, not a synchronization barrier — a solo
-    element is not blocked by peers it cannot hear."""
+def test_the_collective_predicate_is_vacuously_true_without_active_peers():
+    """Eventually consistent, not a synchronization barrier — a genuinely
+    solo element is not blocked by peers that are no longer there.  Vacuity
+    is reserved for elements with no ACTIVE peer, now that a merely stale
+    one still votes (see the test below)."""
     c = Choreo(element_id=0)
     c.submit_goal(Goal(type=GoalType.HOLD))
-    lonely = wm([(0, 0), (5, 5)], self_id=0, stale=[1], achieved=[False, False])
+    lonely = wm([(0, 0), (5, 5)], self_id=0, inactive=[1],
+                achieved=[False, False])
     c.tick(lonely, HEALTHY)
     assert c.goal_achieved() is True
     assert c.collective_achieved(lonely) is True
+
+
+def test_the_collective_predicate_waits_on_a_stale_peers_last_vote():
+    """A merely STALE peer still votes, from its last-received achieved bit.
+    Skipping stale peers let scope=all degrade silently into per-element
+    achievement under packet loss: script advance runs before the tick
+    suspends on the quorum loss that the same staleness threshold triggers,
+    so every quorum-loss transition let a personally-arrived element advance
+    alone (2026-08-24 flight 15 — partners finished 6.3 s apart on a
+    17%-delivery link)."""
+    c = Choreo(element_id=0)
+    c.submit_goal(Goal(type=GoalType.HOLD))
+    entries = wm([(0, 0), (5, 5)], self_id=0, stale=[1],
+                 achieved=[False, False])
+    c.tick(entries, HEALTHY)
+    assert c.goal_achieved() is True
+    assert c.collective_achieved(entries) is False
 
 
 def test_a_peer_entry_without_an_achieved_key_counts_as_not_achieved():

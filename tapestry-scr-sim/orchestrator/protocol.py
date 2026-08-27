@@ -28,14 +28,14 @@ LOOPBACK          = "127.0.0.1"
 # decode() rejects a header whose version does not match —
 # see wire.h's "Wire schema version" section for why.
 
-WIRE_VERSION = 3
+WIRE_VERSION = 4
 
 MSG_GOSSIP     = 1
 MSG_METRIC     = 2
 MSG_SCR_METRIC = 4
 
 HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
-GOSSIP_FMT     = struct.Struct('<BfffffffIIBBBBB')  # 42 bytes: id,x,y,z,qw,qx,qy,qz,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,version
+GOSSIP_FMT     = struct.Struct('<BfffffffIIBBBBBB')  # 43 bytes: id,x,y,z,qw,qx,qy,qz,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,current_track,version
 METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
 SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
 # === END GENERATED WIRE PROTOCOL ===
@@ -99,6 +99,7 @@ def encode_gossip(state: dict) -> bytes:
         state.get('health_flags', 0),
         pack_relay_qos(state.get('hop_count', 0), state.get('qos', QOS_SOFT_RT)),
         1 if state.get('achieved') else 0,
+        state.get('current_track', 0),
         WIRE_VERSION,
     )
     return header + payload
@@ -138,7 +139,7 @@ def decode(data: bytes) -> dict | None:
 
     if msg_type == MSG_GOSSIP and len(payload) >= GOSSIP_FMT.size:
         id_, x, y, z, qw, qx, qy, qz, clock, seq, energy, health, relay_qos, \
-            achieved, frame_version = GOSSIP_FMT.unpack_from(payload)
+            achieved, current_track, frame_version = GOSSIP_FMT.unpack_from(payload)
         # Checked here too, not just the header above: BLE and syslink P2P
         # carry this frame with no header wrapper at all on real hardware,
         # so a frame-level check is what actually protects those transports
@@ -167,6 +168,7 @@ def decode(data: bytes) -> dict | None:
             'hop_count':     hop,
             'qos':           qos,
             'achieved':      bool(achieved),
+            'current_track': current_track,
         }
 
     if msg_type == MSG_METRIC and len(payload) >= METRIC_FMT.size:
