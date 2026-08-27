@@ -22,9 +22,10 @@ config DEMO_MODE_CHOREO
 	  BLE (transport_negotiate_id), same auto-ID protocol as the legacy
 	  showcase mode below.
 
-	  UNVALIDATED ON REAL CUTEBOT HARDWARE as of this option's introduction
-	  — see the README's "Known limitations". If problems arise, fall back
-	  to DEMO_MODE_SHOWCASE, which IS flight-validated.
+	  Ran end-to-end on four physical robots on 2026-08-24 (hold ->
+	  form(grid) -> hold): they reached and held the grid. Approach speed
+	  is untuned — see the README's "Known limitations". If problems
+	  arise, fall back to DEMO_MODE_SHOWCASE.
 
 config DEMO_MODE_SHOWCASE
 	bool "Legacy showcase (L4 spring field only, no SCR/L6/L7)"
@@ -32,7 +33,7 @@ config DEMO_MODE_SHOWCASE
 	  The original emergent formation behavior: a spring-field force
 	  computed directly from L4 world-model peer positions (repulsion when
 	  closer than DEMO_TARGET_SPACING, attraction when farther), no SCR,
-	  no Choreo. This is the flight-validated behavior every prior
+	  no Choreo. This is the hardware-validated behavior every prior
 	  revision of this example shipped — kept as a fallback and as a
 	  smaller reference for the L1-L4 stack in isolation.
 

@@ -307,9 +307,13 @@ See [`tapestry-scr-hw/README.md`](tapestry-scr-hw/README.md) for build, flash, a
 L6/L7 (BSE + Choreographer) is separately under active hardware flight-testing: a two-drone
 Crazyflie station-swap script — authored in TOML and compiled via `sdk/tools/choreoc.py` — driving
 real aerial elements through hold/exchange/rest. Iterative flights have found and fixed real bugs
-in identity negotiation, gossip delivery, and the exchange/landing interaction. The flight envelope
-covered so far is one script on one platform; L4/L5 above have been exercised more broadly. See
-[`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md) for the current state.
+in identity negotiation, gossip delivery, and the exchange/landing interaction. A second script on a
+second substrate class has since run on hardware too: `examples/cutebot-formation`'s `form-grid`
+script drove differential-drive ground rovers into a grid they reached and held, so FORM and
+EXCHANGE are each hardware-exercised on the platform class they were written for. The envelope is
+two scripts on two platforms; L4/L5 above have been exercised more broadly. See
+[`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md) and
+[`examples/cutebot-formation/README.md`](examples/cutebot-formation/README.md) for the current state.
 
 The same `change-partners` script also runs unmodified in simulation:
 [`examples/webots-formation/README.md`](examples/webots-formation/README.md) compiles the real

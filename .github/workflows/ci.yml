@@ -423,9 +423,10 @@ jobs:
       # ── cutebot-formation example ─────────────────────────────────────
       # Compile-only (flashing requires physical hardware). Two Kconfig
       # modes (DEMO_MODE choice, see examples/cutebot-formation/Kconfig):
-      # DEMO_MODE_CHOREO (default, L5/L6/L7 — unvalidated on real hardware,
-      # see that example's README) and DEMO_MODE_SHOWCASE (the original,
-      # flight-validated L4-only spring field). Both built here so a
+      # DEMO_MODE_CHOREO (default, L5/L6/L7 — run on real hardware, which
+      # reached and held the grid; see that example's README) and
+      # DEMO_MODE_SHOWCASE (the original, hardware-validated L4-only
+      # spring field). Both built here so a
       # regression in either mode is caught, not just whichever is default.
 
       - name: Build cutebot-formation (DEMO_MODE_CHOREO, default) — bbc_microbit_v2

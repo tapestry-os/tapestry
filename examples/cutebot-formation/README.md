@@ -4,17 +4,18 @@ BBC micro:bit V2 + Cutebot Mini robots self-organize using the Tapestry
 world model and BLE gossip. No central controller. This is the L1-L7
 Choreo reference example on a differential-drive ground rover — a
 different substrate class from `cf21bl-formation`'s lighthouse-tracked
-quadrotor, and (as of this session) the first real-hardware-targeted
-consumer of Choreo's FORM goal anywhere in this repo.
+quadrotor, and the first consumer of Choreo's FORM goal to run on real
+hardware anywhere in this repo.
 
 Two build modes (Kconfig choice `DEMO_MODE`, see `Kconfig`):
 
 - **`DEMO_MODE_CHOREO` (default)** — a real L5 SCR + a declarative L7
   Choreo script (`form-grid.choreo.toml`) driven through the L6 BSE: hold
   the boot-time station, arrange into a near-square grid, hold the
-  finished grid. **Unvalidated on real Cutebot hardware** — see "Known
-  limitations" below.
-- **`DEMO_MODE_SHOWCASE`** — the original, flight-validated L4-only
+  finished grid. **Run on real Cutebot hardware, which reached and held
+  the grid.** Read "Known limitations" below for what that run does and
+  does not establish.
+- **`DEMO_MODE_SHOWCASE`** — the original, hardware-validated L4-only
   emergent spring field (no SCR/L6/L7). Kept as a fallback.
 
 ## How it works (both modes)
@@ -90,7 +91,7 @@ Run from the workspace root (`tapestry-workspace/`):
 west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation
 ```
 
-Builds `DEMO_MODE_CHOREO` by default. For the original, flight-validated
+Builds `DEMO_MODE_CHOREO` by default. For the original, hardware-validated
 spring field instead:
 
 ```sh

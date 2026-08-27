@@ -22,7 +22,7 @@
  *     it to simply holding still (no takeoff/landing concept for a ground
  *     rover, unlike cf21bl-formation).
  *
- *   DEMO_MODE_SHOWCASE — the original, flight-validated L4-only spring
+ *   DEMO_MODE_SHOWCASE — the original, hardware-validated L4-only spring
  *     field (demo_compute_drive(), unchanged): pure emergent behavior, no
  *     SCR/L6/L7. Kept as a fallback — see Kconfig's help text.
  *
@@ -30,7 +30,7 @@
  * (hold -> form(grid) -> hold, BLE gossip, real L5 quorum); approach speed
  * is untuned.  The tests/ suite covers the same path host-side.  The
  * boot/negotiation/sync-hold path and DEMO_MODE_SHOWCASE are unchanged
- * from the flight-validated original — only the choice of what drives
+ * from the hardware-validated original — only the choice of what drives
  * speed_cmd/rate_cmd in the main loop is new. See the README's "Known
  * limitations" for the FORM/abs_position caveat (dead-reckoning drift).
  *
@@ -70,7 +70,7 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
  * (flight-tested there, 2026-07-19 flight 2) — kept as the best available
  * starting point for BLE gossip timing here too, NOT independently tuned
  * against real Cutebot/BLE loss rates (see this file's top-of-file
- * "UNVALIDATED" note). */
+ * note on the 2026-08-24 run). */
 #define QUORUM_UP_MS 2000
 #endif
 

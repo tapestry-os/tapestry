@@ -249,13 +249,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `DEGRADED` and `HEALTHY` is reported as before. `SCR_ABORT_CLEARED` is
   now delayed by the same hold duration as a direct, intended consequence
   — this is a change to L5's exported abort-signal timing, not just an
-  SDK addition, so treat it as flight-validation-pending like every other
-  quorum-adjacent change in this release: verified here via a scripted
+  SDK addition, so it gets the same scrutiny as every other quorum-adjacent
+  change in this release: verified via a scripted
   40-tick equivalence test asserting the new L5 mechanism reproduces the
   old app-level filter's output tick-for-tick under `quorum_min=
   quorum_target=1` (both apps' real config), plus new `scr_suite` ztests
   covering the hold/no-hold/reset/no-effect-on-in-zone-fluctuation cases,
-  but not yet run through `native_sim` or real hardware
+  run in CI on `native_sim`. Exercised in flight on 2026-08-24 (flight 15):
+  the held quorum drove choreo suspension in the air across a ~50 s
+  peer-loss stretch
 - **`choreo_publish_state()`** — one call replacing the two manual
   assignments (`own_state.goal_achieved = choreo_goal_achieved();
   own_state.current_track = choreo_current_track();`) every app that

@@ -2,7 +2,7 @@
  * main.c — formation.c unit tests (no hardware, no BLE radio)
  *
  * Covers the two pieces this session added on top of the existing,
- * flight-validated spring field (demo_compute_drive, exercised only
+ * hardware-validated spring field (demo_compute_drive, exercised only
  * lightly below as a regression check that the demo_force_to_twist
  * extraction didn't change its behavior):
  *
