@@ -203,6 +203,14 @@ static void sim_init(sim_drone_t *d, float x, float y)
 {
     d->pos.x = x;
     d->pos.y = y;
+    /* sim_drone_t is an uninitialised stack local, and position_t grew a
+     * third component when the world model went 6DoF (465920b).  Peers
+     * come from the memset-zeroed wm, so they sit at z=0, but an unset own z
+     * left
+     * demo_compute_drive folding stack garbage into dz — these tests passed
+     * on aarch64 and failed on x86 CI purely on what the frame happened to
+     * hold.  This is a horizontal-plane fixture: say so. */
+    d->pos.z = 0.0f;
     demo_setpoint_init(&d->tgt, x, y);
 }
 
