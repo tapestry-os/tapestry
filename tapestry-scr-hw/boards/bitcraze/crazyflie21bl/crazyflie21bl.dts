@@ -121,7 +121,7 @@
  * Enabled here so that all builds (app and tests) can use USART6 for
  * CRTP syslink console output (cf21bl_crtp_log.c).  The nRF51 factory
  * firmware forwards CRTP console packets over 2.4 GHz radio to
- * crazyradio2; read_console.py receives them on the host.
+ * crazyradio2; crazyflie_console.py receives them on the host.
  *
  * When the nRF51 is reflashed with HCI firmware for BLE, uncomment
  * CONFIG_BT_HCI_UART in tapestry-scr-hw/boards/crazyflie21bl.conf and

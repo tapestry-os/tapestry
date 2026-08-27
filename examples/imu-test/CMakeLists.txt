@@ -22,7 +22,7 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_imu.c
 )
 
-# CRTP radio log backend — routes Zephyr LOG_* to nRF51 → crazyradio2 → read_console.py
+# CRTP radio log backend — routes Zephyr LOG_* to nRF51 → crazyradio2 → crazyflie_console.py
 target_sources(app PRIVATE
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c)

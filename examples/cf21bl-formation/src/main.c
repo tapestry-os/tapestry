@@ -91,7 +91,7 @@
  * Flash:
  *   cfloader flash build/zephyr/zephyr.bin stm32-dfu
  * Console:
- *   python3 ~/code/tapestry/read_console.py   (CRTP radio — USART3 is taken
+ *   python3 tapestry/tapestry-os/tools/crazyflie_console.py   (CRTP radio — USART3 is taken
  *   by the lighthouse deck; see boards/crazyflie21bl.conf.  With 3 drones
  *   transmitting on the same nRF51 radio config, treat concurrent consoles
  *   as best-effort — see Phase D fleet bring-up notes.)
@@ -757,8 +757,9 @@ int main(void)
             if (!fix_valid) {
                 if (fix_lost_since_ms == 0) {
                     fix_lost_since_ms = k_uptime_get_32();
-                    LOG_WRN("id=%u lighthouse fix lost — holding, X/Y zeroed",
-                            (unsigned)element_id);
+                    LOG_WRN("id=%u lighthouse fix lost (age %u ms) — "
+                            "holding, X/Y zeroed", (unsigned)element_id,
+                            cf21bl_lighthouse_fix_age_ms());
                 }
                 if (k_uptime_get_32() - fix_lost_since_ms > FIX_LOSS_GRACE_MS) {
                     LOG_ERR("id=%u fix lost > %d ms — landing independently",

@@ -23,7 +23,7 @@ set(TAPESTRY_OS_BOARDS ${TAPESTRY_OS_ROOT}/boards)
 
 target_sources(app PRIVATE src/main.c)
 
-# CRTP radio log backend — routes Zephyr LOG_* to nRF51 → crazyradio2 → read_console.py
+# CRTP radio log backend — routes Zephyr LOG_* to nRF51 → crazyradio2 → crazyflie_console.py
 if("${BOARD}" STREQUAL "crazyflie21bl")
     target_sources(app PRIVATE
         ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c

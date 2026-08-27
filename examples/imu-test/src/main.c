@@ -11,7 +11,7 @@
  * Build:  west build -p always -b crazyflie21bl tapestry/examples/imu-test
  * Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu  (activate ~/code/tapestry/.venv)
  * Read:   minicom -D /dev/ttyUSB0 -b 115200   (USART3)
- *         python3 ~/code/tapestry/read_console.py   (CRTP radio)
+ *         python3 tapestry/tapestry-os/tools/crazyflie_console.py   (CRTP radio)
  */
 
 #include <zephyr/kernel.h>

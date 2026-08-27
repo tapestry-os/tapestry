@@ -43,7 +43,7 @@ USART3 (PC10/PC11) and the CRTP radio backend are both enabled simultaneously:
 
 ```sh
 minicom -D /dev/ttyUSB0 -b 115200          # wired USART3
-python3 ~/code/tapestry/read_console.py    # CRTP radio (crazyradio2)
+python3 tapestry/tapestry-os/tools/crazyflie_console.py    # CRTP radio (crazyradio2)
 ```
 
 ## bbc_microbit_v2 (Cutebot) — speed/stiction sweep

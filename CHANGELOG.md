@@ -5,9 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-## [1.0.0] - 2026-08-24
+## [1.0.0] - 2026-08-27
 
 ### Added
+- **`CONFIG_CF21BL_RADIO_ADDR_OVERRIDE` / `_LSB`** — give an element its own
+  CRTP console address (`0xE7E7E7E7xx`) via `SYSLINK_RADIO_ADDRESS`. 
+- **`cf21bl_lighthouse_fix_age_ms()`** — reports how stale a lost fix is, not
+  merely that it is lost; surfaced in the fix-loss warning.
+- **`CONFIG_CF21BL_STABILIZER_LOG_LEVEL`**, folded into
+  `DEMO_CONSOLE_VERBOSE`. The console is not free: it shares USART6 with P2P
+  gossip, and the STM32F4's 1-byte UART FIFO makes every byte an ISR
+  competing with the 1 kHz control loop. 
 - **CI compile check for `examples/webots-formation`** — rather than 
   an actual Webots install (~1 GB), a new sibling directory
   `ci-check/` compiles and links the same L3-L7 core sources (pulled in
@@ -341,6 +349,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `examples/cf21bl-formation/README.md`'s "Known limitations"
 
 ### Fixed
+- **Lighthouse position validity was a latch, and a blinded drone flew away**
+  (`cf21bl_lighthouse.c`). `g_pos_valid` was set `true` on the first fix and
+  never cleared, so `cf21bl_lighthouse_is_valid()` reported "valid" forever
+  regardless of the estimate's age. Occlude the base stations mid-flight and
+  the position simply FROZE while still reporting good. Validity is now
+  time-based (`LH2_POS_STALE_MS`, 400 ms = 2x `LH2_BLOCK_FRESH_MS`): a stale
+  fix is a failure, not a value. `main.c`'s existing fix-loss handling was
+  always correct — it had simply never been reachable in flight.
+- **`cf21bl_stabilizer.c` could fly on an uninitialized position.** It asked
+  `is_valid()` and then called `get_position()` without checking the return,
+  leaving `lhpos` untouched on failure. Harmless while validity was a latch
+  (the two could never disagree); a live hazard the moment it became
+  time-based. Now reads once, zero-initialized, and branches on the result.
+- **The nRF51 syslink handshake was fire-and-forget and lost on cold boot.**
+  `SYSLINK_RADIO_CHANNEL` is not just the channel — the nRF51 sends no
+  syslink packet until it first receives one, so it is the activation trigger
+  for the entire P2P link. On a cold power-up the STM32 reached
+  `syslink_init()` while the nRF51 was still booting and the message was
+  dropped, with no retransmit at that layer. Invisible until now because
+  `CONFIG_TAPESTRY_P2P_CHANNEL` and the nRF51's own `DEFAULT_RADIO_CHANNEL`
+  are both 80, so a lost message looks exactly like a working one — except
+  the link never activates. The nRF51 echoes both handshake messages once
+  applied, so they are now resent every 250 ms until confirmed (~6 s, then
+  `LOG_ERR`) rather than sent once and hoped for.
 - **Recorded telemetry omitted the gossiped `achieved` bit** —
   `choreo_telemetry.c` wrote six of the seven `wm_entries` fields the
   Python engine reads, leaving out `achieved`. Replaying a capture of the

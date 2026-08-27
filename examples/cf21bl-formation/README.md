@@ -122,7 +122,8 @@ Two build flags matter for a readable multi-drone flight:
 
 | Flag | Default | Effect |
 | --- | --- | --- |
-| `CONFIG_DEMO_CONSOLE_VERBOSE` | `n` | `y` runs `formation.c`'s tracking traces at the full per-tick rate (10 Hz instead of the throttled ~1 Hz) and restores the lighthouse driver's per-fix info lines. Single-drone debugging only — every drone shares one CRTP console address and `read_console.py` has no source discrimination, so at the full rate the two drones' output splices together mid-line and destroys the 1 Hz status timeline. |
+| `CONFIG_DEMO_CONSOLE_VERBOSE` | `n` | `y` adds the full per-tick tracking traces (10 Hz), the lighthouse per-fix lines, and the stabilizer's 2 Hz pos/alt. Off, the console is roughly just the 1 Hz status line. See "The console is not free" below. |
+| `CONFIG_CF21BL_RADIO_ADDR_OVERRIDE` / `_LSB` | `n` / `231` | Give this element its own CRTP console address (`0xE7E7E7E7xx`, LSB in decimal: 232 = `0xE8`). Every Crazyflie ships on `0xE7E7E7E7E7`; two on one address both auto-ACK every host poll, and the colliding ACKs collapse the link. Not persisted — a power-cycle into the bootloader returns to the factory address, so `cfloader` keeps working. |
 | `CONFIG_DEMO_MISSION_MARGIN_S` | `90` | Seconds added to the script's own time bound for the mission backstop. Step timers freeze while the Choreo is SUSPENDED, so wall-clock runtime exceeds the script bound by however long the link was down. Raise it when chasing script behavior on a poor link. |
 
 The 1 Hz status line carries both facts that one-shot log lines keep
@@ -148,6 +149,32 @@ drone lands with its step still set.
 Place the drones **at least 1.0 m apart** (2x the separation floor). Any
 closer and station-keeping fights the emergency repulsion for the whole
 flight; the firmware warns once per contact (`peers only N m apart`).
+
+### The console is not free
+
+Console output rides the same USART6 syslink link as P2P gossip, and the
+STM32F4's 1-byte UART FIFO makes every byte an interrupt competing with the
+1 kHz control loop. Logging therefore consumes the gossip the swarm runs on.
+
+Measured on one script, one pair of drones, changing only the console:
+
+| Console | syslink `ck_fail` | Landing gap |
+| --- | --- | --- |
+| Default levels | ~20-25/s | **59.6 s** |
+| `CONFIG_LOG=n` | — | **under 10 s** |
+
+With the console active, quorum flapped continuously; `EXCHANGE`'s step timer
+freezes while suspended, so its 30 s budget took 106 s of wall clock to
+accumulate on one drone and far less on the other. That asymmetry *is* the
+landing gap — not a choreography bug.
+
+So pick deliberately:
+
+- `CONFIG_LOG=n` — fastest, blindest. Judge the flight by the LEDs.
+- Defaults — the compromise. Status timeline readable, some link cost.
+- `CONFIG_DEMO_CONSOLE_VERBOSE=y` — single-drone debugging only.
+
+The proper fix is DMA on USART6 RX, which is not done.
 
 Before the first flight, bench-test auto-ID over the radio with motors
 disabled (`-- -DCONFIG_PWM=n`, or props off): power both drones on
@@ -282,10 +309,34 @@ west build -p always -b crazyflie21bl tapestry/examples/cf21bl-formation \
 Flash: `cfloader flash build/zephyr/zephyr.bin stm32-dfu`
 
 Console: CRTP radio only — the lighthouse deck takes USART3.
-`python3 ~/code/tapestry/read_console.py`. With 3 drones transmitting on the
-same nRF51 radio config note the id of each drone in the log and 
-treat concurrent consoles as best-effort, or build using the compiler
-flag `-DCONFIG_LOG=n` to quiet all but one drone.
+
+**Give each drone its own console address.** All Crazyflies ship on
+`0xE7E7E7E7E7`; two on one address both auto-ACK every poll, and the
+colliding ACKs collapse the link (~85% ack rate with one drone, 10-70%
+erratic with two) while the overloaded nRF51 corrupts the syslink UART.
+Build the second drone with:
+
+```sh
+west build -p always -b crazyflie21bl tapestry/examples/cf21bl-formation \
+  -- -DCONFIG_CF21BL_RADIO_ADDR_OVERRIDE=y -DCONFIG_CF21BL_RADIO_ADDR_LSB=232
+```
+
+`232` is decimal for `0xE8`. Then capture both, round-robin, from one dongle:
+
+```sh
+python3 tapestry/tapestry-os/tools/crazyflie_console.py \
+    -a E7E7E7E7E7 -a E7E7E7E7E8 -o flightNN
+```
+
+That writes `flightNN-<ADDR>.log` per drone, each with its own line buffer —
+so the two console streams can no longer splice into each other. Expect ~99%
+acks on both; a rate well below that means something else is answering.
+
+`cfclient`'s EEPROM config dialog is *not* the route here: it needs Bitcraze
+firmware, and against a Tapestry build it hangs waiting for a param/log TOC
+that never arrives. The Kconfig option sets the address at boot over syslink
+and deliberately does not persist, so a power-cycle into the bootloader always
+returns to the factory address and `cfloader` can never be locked out.
 
 Gossip-only bench test (no motors): add `-DCONFIG_PWM=n` — runs the L4
 gossip/transport/lighthouse stack against `substrate_null.c`, useful for

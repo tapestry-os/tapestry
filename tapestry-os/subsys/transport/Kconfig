@@ -74,6 +74,48 @@ config TAPESTRY_P2P_CHANNEL
 	  Default 80 = 2480 MHz (standard Crazyflie CRTP channel).
 	  Change to avoid interference when a crazyradio2 host is also active.
 
+config CF21BL_RADIO_ADDR_OVERRIDE
+	bool "Set this element's CRTP console address at boot"
+	depends on TAPESTRY_TRANSCEIVER_SYSLINK
+	default n
+	help
+	  Send SYSLINK_RADIO_ADDRESS (0x05) to the nRF51 at init so this
+	  element answers the host console on 0xE7E7E7E7xx instead of the
+	  factory 0xE7E7E7E7E7.
+
+	  Every Crazyflie ships on the same address.  With two on one address
+	  both nRF51s auto-ACK every poll from the host console tool; the
+	  colliding ACKs collapse the link and the overloaded nRF51 corrupts
+	  the syslink UART, so P2P frames are dropped before the STM32 ever
+	  sees them.  Measured 2026-08-24: ack rate ~85% with one drone,
+	  10-70% erratic with two, and syslink ck_fail jumping 3 -> 377 the
+	  moment a second drone powered on.  One address per element removes
+	  it.
+
+	  P2P gossip is unaffected either way — the nRF51 broadcasts on a
+	  hardcoded 0xFFE7E7E7E7, independent of this.
+
+	  NOT persisted: this is a runtime syslink message, not the EEPROM
+	  config block, so a power-cycle into the bootloader always comes back
+	  on the factory address and cfloader keeps working.
+
+	  Enabling this costs the one-binary-for-every-drone property, so it
+	  is intended for instrumented multi-drone sessions, not for shows.
+
+config CF21BL_RADIO_ADDR_LSB
+	int "Last byte of the CRTP console address (0xE7E7E7E7xx)"
+	depends on CF21BL_RADIO_ADDR_OVERRIDE
+	range 0 255
+	default 231
+	help
+	  Decimal, because Kconfig ints are decimal: 231 = 0xE7 (factory),
+	  232 = 0xE8, 233 = 0xE9, 234 = 0xEA.
+
+	  Leave one element on 231 so the address you type most often stays
+	  the familiar one, and give each additional element its own value:
+	    west build ... -- -DCONFIG_CF21BL_RADIO_ADDR_OVERRIDE=y \
+	                      -DCONFIG_CF21BL_RADIO_ADDR_LSB=232
+
 config TAPESTRY_MESH_RELAY
 	bool "Two-hop opportunistic relay forwarding (BATMAN-inspired mesh)"
 	default n

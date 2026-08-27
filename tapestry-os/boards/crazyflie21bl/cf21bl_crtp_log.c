@@ -4,7 +4,7 @@
  * Encodes Zephyr LOG_* output as syslink-framed CRTP console packets and
  * sends them over USART6 (PC6/PC7, 1 Mbps) to the nRF51822 co-processor.
  * The nRF51 factory firmware relays them over 2.4 GHz radio to crazyradio2;
- * read_console.py on the host receives and prints them.
+ * crazyflie_console.py on the host receives and prints them.
  *
  * Syslink frame format (per Bitcraze syslink protocol):
  *
@@ -26,7 +26,7 @@
  * Usage:
  *   Build:  west build -p always -b crazyflie21bl tapestry/tapestry-scr-hw
  *   Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu
- *   Read:   python3 ~/code/tapestry/read_console.py
+ *   Read:   python3 tapestry/tapestry-os/tools/crazyflie_console.py
  */
 
 #include <zephyr/kernel.h>

@@ -6,7 +6,7 @@
  *
  * CONSOLE: USART3 is taken by the lighthouse deck (230400 baud).
  * Read log output via CRTP radio:
- *   python3 ~/code/tapestry/read_console.py
+ *   python3 tapestry/tapestry-os/tools/crazyflie_console.py
  *
  * Build:  west build -p always -b crazyflie21bl tapestry/examples/lighthouse-test
  * Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu  (activate .venv)

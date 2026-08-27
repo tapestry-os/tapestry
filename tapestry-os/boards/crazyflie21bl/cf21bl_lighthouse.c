@@ -106,6 +106,33 @@ static const uint32_t LH2_CYCLE_PERIODS[16] = {
 #define LH2_BLOCK_FRESH_MS  200u
 
 /*
+ * Position staleness timeout.
+ *
+ * g_pos_valid used to be a LATCH: set true on the first fix and never
+ * cleared, so cf21bl_lighthouse_is_valid() reported "valid" forever no
+ * matter how old g_pos was.  Occlude the base stations mid-flight (a body
+ * in the way, a drone turning through its own shadow) and the position
+ * simply FREEZES at its last value while still reporting valid.
+ *
+ * That defeated both safety nets at once, because both read the same
+ * estimate: the consumer's fix-loss path never armed (it gates on
+ * is_valid()), and its geofence kept measuring the frozen — legal —
+ * position.  Meanwhile the stabilizer saw a position error that could
+ * never shrink, wound up, and flew the airframe away.  2026-08-26
+ * flight 24: pos frozen at (-0.37, 0.62) for 21 s, no fix-loss warning, no
+ * geofence breach, no landing trigger of any kind — the drone flew until
+ * it hit something.
+ *
+ * 400 ms = 2x LH2_BLOCK_FRESH_MS: long enough that a normal ~30 Hz fix
+ * stream never trips it and a brief single-station dropout rides through
+ * on the other station, short enough that the consumer's own
+ * FIX_LOSS_GRACE_MS (2 s of SUSTAINED loss before landing) still dominates
+ * the actual land/no-land decision.  This timeout decides "is this
+ * estimate still real", not "should we land".
+ */
+#define LH2_POS_STALE_MS    400u
+
+/*
  * 5-sample sliding median filter on the triangulated position.
  * Rejects single-sample outliers (bad rotor pairing, brief frame errors)
  * before the position reaches any control loop.  At ~30 Hz fix rate the
@@ -221,6 +248,7 @@ static struct k_spinlock g_pos_lock;
 static lh2_position_t g_pos;
 static lh2_position_t g_vel;    /* m/s, world frame, from position derivative */
 static bool           g_pos_valid;
+static uint32_t       g_pos_ms;      /* uptime of the last accepted fix */
 
 /* LPF coefficient for the position-derivative velocity estimate (applied per
  * accepted fix, ~50 Hz → time constant ≈ 60 ms). */
@@ -1051,6 +1079,7 @@ static void process_frame(const uint8_t data[LH2_FRAME_LEN])
     g_vel.y     = vy;
     g_vel.z     = vz;
     g_pos_valid = true;
+    g_pos_ms    = k_uptime_get_32();
     k_spin_unlock(&g_pos_lock, key);
 }
 
@@ -1304,10 +1333,21 @@ void cf21bl_lighthouse_set_bs_channel(int bs_id, uint8_t channel)
     g_bs_channel[bs_id] = channel;
 }
 
+/* Fresh == we have ever had a fix AND the last one is younger than
+ * LH2_POS_STALE_MS (see that constant: a frozen-but-"valid" position is
+ * what crashed flight 24).  Caller must hold g_pos_lock. */
+static bool pos_fresh_locked(void)
+{
+    if (!g_pos_valid) {
+        return false;
+    }
+    return (k_uptime_get_32() - g_pos_ms) < LH2_POS_STALE_MS;
+}
+
 int cf21bl_lighthouse_get_position(lh2_position_t *pos)
 {
     k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
-    bool valid = g_pos_valid;
+    bool valid = pos_fresh_locked();
     if (valid) {
         *pos = g_pos;
     }
@@ -1318,7 +1358,7 @@ int cf21bl_lighthouse_get_position(lh2_position_t *pos)
 int cf21bl_lighthouse_get_velocity(lh2_position_t *vel)
 {
     k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
-    bool valid = g_pos_valid;
+    bool valid = pos_fresh_locked();
     if (valid) {
         *vel = g_vel;
     }
@@ -1328,5 +1368,16 @@ int cf21bl_lighthouse_get_velocity(lh2_position_t *vel)
 
 bool cf21bl_lighthouse_is_valid(void)
 {
-    return g_pos_valid;
+    k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
+    bool valid = pos_fresh_locked();
+    k_spin_unlock(&g_pos_lock, key);
+    return valid;
+}
+
+uint32_t cf21bl_lighthouse_fix_age_ms(void)
+{
+    k_spinlock_key_t key = k_spin_lock(&g_pos_lock);
+    uint32_t age = g_pos_valid ? (k_uptime_get_32() - g_pos_ms) : UINT32_MAX;
+    k_spin_unlock(&g_pos_lock, key);
+    return age;
 }

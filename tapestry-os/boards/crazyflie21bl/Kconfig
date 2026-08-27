@@ -178,7 +178,7 @@ config CF21BL_LIGHTHOUSE
 
 	  CONSOLE CONFLICT: USART3 PC10/PC11 is also the Zephyr wired debug
 	  console.  When the lighthouse deck is attached, the wired console
-	  is unavailable.  Use the CRTP radio console (read_console.py via
+	  is unavailable.  Use the CRTP radio console (crazyflie_console.py via
 	  crazyradio2) or USB CDC ACM instead.
 
 	  Requires in application conf:
