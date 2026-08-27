@@ -54,7 +54,7 @@
  * Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu
  * Read:   minicom -D /dev/ttyUSB0 -b 115200
  *   or:   picocom /dev/ttyACM0
- *   or:   python3 ~/code/tapestry/read_console.py
+ *   or:   python3 tapestry/tapestry-os/tools/crazyflie_console.py
  */
 
 #include <zephyr/kernel.h>

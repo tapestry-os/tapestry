@@ -6,7 +6,7 @@
  * This overlay overrides the default 115200 baud console setting.
  *
  * WIRED CONSOLE IS UNAVAILABLE while the lighthouse deck is attached.
- * Use: python3 ~/code/tapestry/read_console.py  (CRTP radio via crazyradio2)
+ * Use: python3 tapestry/tapestry-os/tools/crazyflie_console.py  (CRTP radio via crazyradio2)
  */
 
 /* Reconfigure USART3 to 230400 baud for lighthouse data */

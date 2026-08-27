@@ -9,7 +9,7 @@
  * Build:  west build -p always -b crazyflie21bl tapestry/tapestry/examples/baro-test
  * Flash:  cfloader flash build/zephyr/zephyr.bin stm32-dfu  (activate .venv)
  * Read:   minicom -D /dev/ttyUSB0 -b 115200       (wired USART3 on PC10/PC11)
- *   or:   python3 ~/code/tapestry/read_console.py  (CRTP radio via crazyradio2)
+ *   or:   python3 tapestry/tapestry-os/tools/crazyflie_console.py  (CRTP radio via crazyradio2)
  */
 
 #include <zephyr/kernel.h>

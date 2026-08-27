@@ -52,7 +52,18 @@
 #include <zephyr/drivers/sensor.h>
 #endif
 
-LOG_MODULE_REGISTER(cf21bl_stabilizer, LOG_LEVEL_INF);
+/* CONFIG_CF21BL_STABILIZER_LOG_LEVEL lets an application quiet the 2 Hz
+ * pos/alt streams on a shared console.  The console is not free here: it
+ * rides the same USART6 syslink link as P2P gossip, and the STM32F4's
+ * 1-byte UART FIFO means every byte is an ISR competing with the 1 kHz
+ * control loop.  Measured 2026-08-26: with logging on, ck_fail ran
+ * ~20-25/s, quorum flapped, and two drones running one script finished
+ * 59.6 s apart; with CONFIG_LOG=n the same flight landed them under 10 s
+ * apart.  Apps that do not define this keep LOG_LEVEL_INF. */
+#ifndef CONFIG_CF21BL_STABILIZER_LOG_LEVEL
+#define CONFIG_CF21BL_STABILIZER_LOG_LEVEL LOG_LEVEL_INF
+#endif
+LOG_MODULE_REGISTER(cf21bl_stabilizer, CONFIG_CF21BL_STABILIZER_LOG_LEVEL);
 
 /* ── Configuration ─────────────────────────────────────────────────────────── */
 
@@ -642,9 +653,16 @@ static void stabilizer_fn(void *a, void *b, void *c)
         float pos_pitch_correction_deg = 0.0f;
         float pos_roll_correction_deg  = 0.0f;
 
-        if (cf21bl_lighthouse_is_valid() && sp.linear.z > -0.9f) {
-            lh2_position_t lhpos;
-            cf21bl_lighthouse_get_position(&lhpos);
+        /* Fetch ONCE and branch on the result, rather than asking
+         * is_valid() and then reading.  Validity is now time-based (see
+         * LH2_POS_STALE_MS), so those two calls can straddle the staleness
+         * boundary — and the read would then leave lhpos untouched while
+         * the caller believed it held a position.  Zero-init and a checked
+         * return close that. */
+        lh2_position_t lhpos  = { 0 };
+        bool           lh_ok  = (cf21bl_lighthouse_get_position(&lhpos) == 0);
+
+        if (lh_ok && sp.linear.z > -0.9f) {
 
             if (!g_pos_home_set) {
                 g_pos_home_x   = lhpos.x;
@@ -766,7 +784,7 @@ static void stabilizer_fn(void *a, void *b, void *c)
                             (double)g_yaw_now_deg);
                 }
             }
-        } else if (g_pos_home_set && !cf21bl_lighthouse_is_valid()) {
+        } else if (g_pos_home_set && !lh_ok) {
             /* Fix lost mid-flight: log once and allow angle-mode fallback.
              * The integrator is kept: the trim is body-frame level bias,
              * not home-relative, so it stays valid across re-acquisition

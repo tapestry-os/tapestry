@@ -20,7 +20,7 @@ target_sources(app PRIVATE
     # IWDG: Bitcraze bootloader arms the watchdog; without this the board
     # resets after ~32 s.  The timer in cf21bl_iwdg.c kicks it every 10 s.
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_iwdg.c
-    # CRTP log backend: routes Zephyr LOG_* to nRF51 → crazyradio2 → read_console.py
+    # CRTP log backend: routes Zephyr LOG_* to nRF51 → crazyradio2 → crazyflie_console.py
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_crtp_log.c
     ${TAPESTRY_OS_BOARDS}/crazyflie21bl/cf21bl_syslink_tx.c
 )

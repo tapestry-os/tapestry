@@ -14,7 +14,7 @@ target_sources(app PRIVATE src/main.c)
 #   cf21bl_iwdg.c — extends the bootloader IWDG to ~32 s so tests can run without
 #                 the watchdog resetting the board mid-suite.
 #   cf21bl_crtp_log.c — routes ztest output (via CONFIG_LOG_PRINTK) over USART6
-#                     to the nRF51 radio co-processor; read_console.py shows
+#                     to the nRF51 radio co-processor; crazyflie_console.py shows
 #                     PASS/FAIL results on the host without a serial cable.
 if("${BOARD}" STREQUAL "crazyflie21bl")
     target_sources(app PRIVATE ${TAPESTRY_OS_ROOT}/boards/crazyflie21bl/cf21bl_iwdg.c)

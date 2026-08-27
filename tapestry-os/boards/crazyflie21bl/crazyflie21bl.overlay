@@ -91,7 +91,7 @@
  *
  * CONFLICT: USART3 PC10/PC11 is also our Zephyr wired debug console.
  * When the lighthouse deck is attached, the wired console is unavailable.
- * Use the CRTP radio console (read_console.py via crazyradio2) or USB CDC ACM.
+ * Use the CRTP radio console (crazyflie_console.py via crazyradio2) or USB CDC ACM.
  *
  * The 230400 baud override is applied per-example via an extra boards overlay
  * (e.g. examples/lighthouse-test/boards/crazyflie21bl.overlay) so that

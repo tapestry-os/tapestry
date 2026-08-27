@@ -73,7 +73,7 @@ endif()
 # IWDG before jumping to us; without this, the watchdog fires within ~100-353ms.
 #
 # CF2.1 CRTP log backend — sends Zephyr LOG_* output as syslink console packets
-# over USART6 to the nRF51 co-processor; read_console.py receives them via radio.
+# over USART6 to the nRF51 co-processor; crazyflie_console.py receives them via radio.
 # Compiled only when CONFIG_LOG=y (i.e. the log subsystem is present).
 # cf21bl_syslink_tx.c (the shared USART6 TX mutex) is compiled unconditionally
 # alongside it so any combination of USART6 writers (console, PM, syslink P2P

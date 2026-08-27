@@ -123,22 +123,40 @@ config DEMO_MISSION_MARGIN_S
 	  for a tight safety envelope on a good one.
 
 config DEMO_CONSOLE_VERBOSE
-	bool "Verbose console (per-tick tracking debug + lighthouse info)"
+	bool "Verbose console (per-tick tracking, lighthouse + stabilizer info)"
 	default n
 	help
 	  Deep single-drone debugging: formation.c's tracking traces at the
-	  full per-tick rate (10 Hz instead of the throttled ~1 Hz) and the
-	  lighthouse driver's per-fix info lines.
+	  full per-tick rate (10 Hz instead of the throttled ~1 Hz), the
+	  lighthouse driver's per-fix lines, and the stabilizer's 2 Hz pos/alt
+	  streams.  Off, the console is roughly just the 1 Hz status line.
 
-	  Leave this OFF for multi-drone flights.  Every drone shares one
-	  CRTP console address, and read_console.py has a single line buffer
-	  with no source discrimination, so the two drones' output splices
-	  together mid-line: at the default levels ~34 lines/s combined
-	  destroyed most of the 1 Hz formation status lines — including the
-	  landing lines — in flights 15 and 16.  Off, the same flight emits
-	  roughly a third of that and the status timeline survives.
+	  THE CONSOLE IS NOT FREE.  It rides the same USART6 syslink link as
+	  P2P gossip, and the STM32F4's 1-byte UART FIFO makes every byte an
+	  ISR competing with the 1 kHz control loop.  Logging therefore eats
+	  the gossip the swarm runs on: with the console active, syslink
+	  ck_fail ran ~20-25/s, quorum flapped, EXCHANGE's step timer (frozen
+	  while suspended) took 106 s of wall clock to accumulate its 30 s
+	  budget, and two drones running one script finished 59.6 s apart
+	  (2026-08-26 flight 22).  The same flight with CONFIG_LOG=n landed
+	  them under 10 s apart.
+
+	  So there is a real observability/fidelity trade here, and it is not
+	  subtle.  Default-off levels are the compromise: enough to read the
+	  status timeline, little enough to fly.  CONFIG_LOG=n is the fastest
+	  and blindest; this option is the slowest and most detailed.  The
+	  proper fix is DMA on USART6 RX, which is not done.
+
+	  (Splicing is a separate, now-fixed problem: every drone shipped on
+	  one CRTP address, so two drones' output interleaved mid-line with no
+	  source id.  See CF21BL_RADIO_ADDR_OVERRIDE.)
 
 config CF21BL_LH2_LOG_LEVEL
+	int
+	default 3 if DEMO_CONSOLE_VERBOSE
+	default 2
+
+config CF21BL_STABILIZER_LOG_LEVEL
 	int
 	default 3 if DEMO_CONSOLE_VERBOSE
 	default 2

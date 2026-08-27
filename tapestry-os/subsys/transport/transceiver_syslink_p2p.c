@@ -59,6 +59,7 @@ LOG_MODULE_REGISTER(syslink_p2p, LOG_LEVEL_INF);
 #define SYSLINK_MAGIC_0             0xBCu
 #define SYSLINK_MAGIC_1             0xCFu
 #define SYSLINK_RADIO_CHANNEL       0x01u
+#define SYSLINK_RADIO_ADDRESS       0x05u
 #define SYSLINK_RADIO_P2P_BROADCAST 0x0Au
 #define SYSLINK_PM_BATTERY_STATE    0x13u
 #define SYSLINK_PM_BATTERY_AUTOUPDATE 0x14u
@@ -144,6 +145,71 @@ static void stats_log_fn(struct k_work *work)
 }
 
 static K_WORK_DELAYABLE_DEFINE(stats_log_work, stats_log_fn);
+
+/*
+ * Cold-boot handshake retry.
+ *
+ * The nRF51 will not send syslink packets until it first receives one, so
+ * SYSLINK_RADIO_CHANNEL is both the channel setting AND the activation
+ * trigger for the whole link.  But on a COLD power-up the STM32 reaches
+ * syslink_init() while the nRF51 is still booting, and anything sent then is
+ * simply lost — there is no retransmit at this layer.  A warm restart (what
+ * cfloader does: the STM32 resets while the nRF51 stays powered and already
+ * listening) always worked, which is exactly why this only showed up as
+ * "the address applies when flashed but not after a power cycle"
+ * (2026-08-26).  The same race silently applies to the channel; it has been
+ * invisible because CONFIG_TAPESTRY_P2P_CHANNEL and the nRF51's own
+ * DEFAULT_RADIO_CHANNEL are both 80, so a lost channel message looks like a
+ * working one.
+ *
+ * The nRF51 echoes both messages back on success (its main.c
+ * SYSLINK_RADIO_CHANNEL / _ADDRESS cases), so this resends until the echo
+ * arrives rather than guessing at a safe boot delay.
+ */
+static void syslink_send(uint8_t type, const uint8_t *data, uint8_t len);
+
+#define SYSLINK_HANDSHAKE_RETRY_MS  250
+#define SYSLINK_HANDSHAKE_TRIES     24    /* ~6 s, then give up and log */
+
+static uint8_t         g_want_chan;
+static volatile bool   g_chan_ok;
+#ifdef CONFIG_CF21BL_RADIO_ADDR_OVERRIDE
+static uint8_t         g_want_addr[5];
+static volatile bool   g_addr_ok;
+#else
+#define g_addr_ok true
+#endif
+
+static void handshake_fn(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+    static int tries;
+
+    if (g_chan_ok && g_addr_ok) {
+        if (tries > 1) {
+            LOG_INF("syslink handshake confirmed after %d tries", tries);
+        }
+        return;
+    }
+    if (++tries > SYSLINK_HANDSHAKE_TRIES) {
+        LOG_ERR("nRF51 never echoed the syslink handshake (chan_ok=%d "
+                "addr_ok=%d) — P2P may be dead and the console may be on "
+                "the factory address", (int)g_chan_ok, (int)g_addr_ok);
+        return;
+    }
+
+    if (!g_chan_ok) {
+        syslink_send(SYSLINK_RADIO_CHANNEL, &g_want_chan, 1u);
+    }
+#ifdef CONFIG_CF21BL_RADIO_ADDR_OVERRIDE
+    if (!g_addr_ok) {
+        syslink_send(SYSLINK_RADIO_ADDRESS, g_want_addr, sizeof(g_want_addr));
+    }
+#endif
+    k_work_schedule(dwork, K_MSEC(SYSLINK_HANDSHAKE_RETRY_MS));
+}
+
+static K_WORK_DELAYABLE_DEFINE(handshake_work, handshake_fn);
 
 /* ── Syslink TX ──────────────────────────────────────────────────────────── */
 
@@ -295,6 +361,18 @@ static void syslink_rx_byte(uint8_t c)
                     g_p2p_short++;
                 }
             }
+            /* Handshake echoes (see handshake_fn): the nRF51 mirrors the
+             * message back only once it has actually applied it. */
+            else if (g_type == SYSLINK_RADIO_CHANNEL && g_len == 1u &&
+                     g_buf[0] == g_want_chan) {
+                g_chan_ok = true;
+            }
+#ifdef CONFIG_CF21BL_RADIO_ADDR_OVERRIDE
+            else if (g_type == SYSLINK_RADIO_ADDRESS && g_len == 5u &&
+                     memcmp(g_buf, g_want_addr, 5u) == 0) {
+                g_addr_ok = true;
+            }
+#endif
 #ifdef CONFIG_CF21BL_PM
             else if (g_type == SYSLINK_PM_BATTERY_STATE &&
                      g_len <= SYSLINK_MTU) {
@@ -351,9 +429,42 @@ static int syslink_init(void)
     /* Activate the nRF51 syslink TX path and set the shared P2P channel.
      * The nRF51 will not send syslink packets until it first receives one;
      * SYSLINK_RADIO_CHANNEL (0x01) serves as both the activation trigger
-     * and the channel configuration for all three drones. */
-    uint8_t ch = (uint8_t)CONFIG_TAPESTRY_P2P_CHANNEL;
-    syslink_send(SYSLINK_RADIO_CHANNEL, &ch, 1u);
+     * and the channel configuration for all three drones.
+     *
+     * Driven from handshake_fn() rather than sent once inline: on a cold
+     * power-up the nRF51 is still booting and drops whatever arrives, and
+     * there is no retransmit at this layer.  See that function. */
+    g_want_chan = (uint8_t)CONFIG_TAPESTRY_P2P_CHANNEL;
+
+#ifdef CONFIG_CF21BL_RADIO_ADDR_OVERRIDE
+    /* Give this element its own CRTP console address (0xE7E7E7E7xx).
+     *
+     * Every Crazyflie ships on 0xE7E7E7E7E7.  With two on one address both
+     * nRF51s auto-ACK every poll from the host console tool, the colliding
+     * ACKs collapse the link, and the overloaded nRF51 corrupts THIS
+     * syslink UART.  One address per element removes that.
+     *
+     * P2P is untouched either way: the nRF51 broadcasts gossip on a
+     * hardcoded 0xFFE7E7E7E7 (esb.c's BASE1/PREFIX1), independent of the
+     * CRTP address this sets (BASE0/PREFIX0).
+     *
+     * Deliberately NOT persisted to the EEPROM config block: that needs
+     * Bitcraze firmware, and it would survive into the bootloader, where a
+     * non-factory address means cfloader can no longer find the drone.  A
+     * runtime message cannot strand an airframe.
+     *
+     * Payload is the 40-bit address LSB-first (nRF main.c does
+     * memcpy(&address, &data[0], 5) into a uint64). */
+    g_want_addr[0] = (uint8_t)CONFIG_CF21BL_RADIO_ADDR_LSB;
+    g_want_addr[1] = 0xE7u;
+    g_want_addr[2] = 0xE7u;
+    g_want_addr[3] = 0xE7u;
+    g_want_addr[4] = 0xE7u;
+    LOG_INF("requesting CRTP console address E7E7E7E7%02X",
+            (unsigned)CONFIG_CF21BL_RADIO_ADDR_LSB);
+#endif
+
+    k_work_schedule(&handshake_work, K_NO_WAIT);
 
 #ifdef CONFIG_CF21BL_PM
     k_work_schedule(&pm_kick_work, K_NO_WAIT);

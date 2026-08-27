@@ -19,7 +19,7 @@ target_sources(app PRIVATE
 #   cf21bl_iwdg.c     — extends bootloader IWDG to ~32 s so the full test suite
 #                     completes before the watchdog resets the board.
 #   cf21bl_crtp_log.c — routes ztest output over USART6 to the nRF51 radio;
-#                     read_console.py shows PASS/FAIL on the host.
+#                     crazyflie_console.py shows PASS/FAIL on the host.
 if("${BOARD}" STREQUAL "crazyflie21bl")
     target_sources(app PRIVATE ${TAPESTRY_OS_ROOT}/boards/crazyflie21bl/cf21bl_iwdg.c)
     if(CONFIG_LOG)

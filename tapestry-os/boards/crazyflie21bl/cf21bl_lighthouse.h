@@ -171,8 +171,16 @@ void cf21bl_lighthouse_set_bs_channel(int bs_id, uint8_t channel);
 
 /*
  * cf21bl_lighthouse_get_position — Copy the latest position estimate into *pos.
- * Returns 0 when valid (both base stations seen within LH2_VALID_MS ms).
- * Returns -EAGAIN when no fix.
+ * Returns 0 when the fix is both present and FRESH (younger than
+ * LH2_POS_STALE_MS); -EAGAIN when there has never been a fix, or the last
+ * one has aged out.
+ *
+ * The freshness half is load-bearing.  Validity used to latch true on the
+ * first fix and stay true forever, so an occluded drone kept reporting a
+ * frozen position as good — which defeated the consumer's fix-loss AND
+ * geofence checks simultaneously, since both are computed from this
+ * estimate (2026-08-26 flight 24).  A stale fix is now a failure, not a
+ * value.
  */
 int cf21bl_lighthouse_get_position(lh2_position_t *pos);
 
@@ -185,10 +193,19 @@ int cf21bl_lighthouse_get_position(lh2_position_t *pos);
 int cf21bl_lighthouse_get_velocity(lh2_position_t *vel);
 
 /*
- * cf21bl_lighthouse_is_valid — True when get_position() would succeed.
- * Lock-free; safe to poll from the stabilizer thread.
+ * cf21bl_lighthouse_is_valid — True when get_position() would succeed, i.e.
+ * a fix exists AND is younger than LH2_POS_STALE_MS.  Takes the position
+ * spinlock briefly (it must read the fix timestamp); safe to poll from the
+ * stabilizer thread.
  */
 bool cf21bl_lighthouse_is_valid(void);
+
+/*
+ * cf21bl_lighthouse_fix_age_ms — Age of the last accepted fix, or UINT32_MAX
+ * if there has never been one.  Diagnostic: lets a consumer log HOW stale a
+ * lost fix is rather than only that it is lost.
+ */
+uint32_t cf21bl_lighthouse_fix_age_ms(void);
 
 #ifdef __cplusplus
 }
