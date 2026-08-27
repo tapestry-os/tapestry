@@ -152,6 +152,7 @@ static element_state_t sender_state(element_id_t id, bool achieved)
     s.energy_level     = 77u;
     s.health_flags     = ELEMENT_HEALTH_LOW_BATTERY | ELEMENT_HEALTH_DEGRADED;
     s.goal_achieved    = achieved;
+    s.current_track    = 5u;          /* v4; distinct from id/energy above  */
     return s;
 }
 
@@ -204,9 +205,17 @@ ZTEST_SUITE(gossip_wire, NULL, NULL, suite_before, NULL, NULL);
  */
 ZTEST(gossip_wire, test_frame_sizes_match_the_documented_wire_contract)
 {
-    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 42u,
-                  "gossip frame must stay 42 bytes (wire.h v3 documents "
-                  "'<BfffffffIIBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
+    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 43u,
+                  "gossip frame must stay 43 bytes (wire.h v4 documents "
+                  "'<BfffffffIIBBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
+    /* Pinned together on purpose: a layout change that forgets the version
+     * bump leaves older peers parsing the new frame as the old one, and a
+     * version bump that forgets the Python mirrors leaves the orchestrators
+     * decoding garbage.  Change the frame, change both, and run
+     * tapestry-os/tools/gen_wire_protocol.py. */
+    zassert_equal(TAPESTRY_WIRE_VERSION, 4u,
+                  "wire version must be bumped with the frame layout; got %u",
+                  TAPESTRY_WIRE_VERSION);
     zassert_equal(TAPESTRY_MSG_HEADER_SIZE, 5u,
                   "message header must stay 5 bytes ('<BBBH'); got %u",
                   TAPESTRY_MSG_HEADER_SIZE);
@@ -269,6 +278,10 @@ ZTEST(gossip_wire, test_every_state_field_survives_the_round_trip)
     zassert_equal(e->state.health_flags,
                   ELEMENT_HEALTH_LOW_BATTERY | ELEMENT_HEALTH_DEGRADED,
                   "health_flags");
+    /* Added to the frame in v4 and packed by gossip.c ever since, but
+     * asserted nowhere until now — this test's name was already promising
+     * it. */
+    zassert_equal(e->state.current_track, 5u, "current_track");
 }
 
 /*
