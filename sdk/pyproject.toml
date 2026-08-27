@@ -45,7 +45,8 @@ testpaths = ["tests"]
 addopts = "-q --strict-markers"
 
 [tool.ruff]
-# tomllib (script_toml.py) requires 3.11; CONTRIBUTING.md asks for 3.12.
+# tomllib (script_toml.py) requires 3.11 — the documented floor
+# (CONTRIBUTING.md); the setup instructions install 3.12.
 target-version = "py311"
 line-length = 100
 extend-exclude = ["build", "*/build/*"]

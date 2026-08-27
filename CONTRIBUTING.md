@@ -6,7 +6,7 @@
 |---|---|---|
 | [Zephyr SDK](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html) | 0.17.0+ | Provides `west` and native_sim toolchain |
 | [west](https://docs.zephyrproject.org/latest/develop/west/index.html) | 1.2.0+ | Installed with the Zephyr SDK |
-| Python | 3.12+ | For the simulation orchestrators |
+| Python | 3.11+ | 3.11 works; step 1 installs 3.12 as preferred|
 | CMake | 3.20.0+ | Bundled with the Zephyr SDK |
 | ninja | any | Bundled with the Zephyr SDK |
 

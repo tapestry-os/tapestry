@@ -29,8 +29,11 @@ jobs:
       fail-fast: false
       matrix:
         # 3.11 is the floor: script_toml.py parses with tomllib, which
-        # arrived in 3.11.  3.12 is what CONTRIBUTING.md asks contributors
-        # to install.  Both are tested so the floor stays real.
+        # arrived in 3.11, and it is what stock Raspberry Pi OS (Debian 12)
+        # ships — CONTRIBUTING.md promises that interpreter works, and this
+        # leg is what keeps that promise honest.  3.12 is what the setup
+        # instructions install and what contributors develop on.  Both are
+        # tested so neither the floor nor the working version drifts.
         python-version: ['3.11', '3.12']
 
     defaults:

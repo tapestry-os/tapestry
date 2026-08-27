@@ -146,10 +146,11 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BfffffffIIBBBBB')
- * Size: 42 bytes
+ * Python format: struct.Struct('<BfffffffIIBBBBBB')
+ * Size: 43 bytes
  * Fields: id, x, y, z, qw, qx, qy, qz, logical_clock, update_seq,
- *         energy_level, health_flags, relay_qos, achieved, version
+ *         energy_level, health_flags, relay_qos, achieved, current_track,
+ *         version
  *
  * x, y, z: position, meters (or the abstract [0,100] sim-world unit on
  *   platforms that use that convention — see csm.h's WORLD_SIZE).
