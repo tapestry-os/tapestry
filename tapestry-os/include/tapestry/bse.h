@@ -65,9 +65,21 @@
  * configuration at activation (see below) — the formation translates as a
  * rigid body instead of collapsing onto the target.
  *
- *   HOLD      Stay at the current station.  On the first tick the element
- *             captures its own position as its station and station-keeps
- *             there (directive MOVE_TO_POINT to the captured point).
+ *   HOLD      Stay at the current station.  On the first tick, IF the
+ *             intent it replaces was an ACHIEVED MOVE_TO_POINT goal
+ *             (EXCHANGE/FORM/MOVE/CONVERGE all produce one), the element
+ *             inherits THAT goal point as its station instead of its live
+ *             position — "hold the station you were sent to," not "hold
+ *             wherever you coasted to."  Achievement only guarantees
+ *             being within achieve_eps, and a body decelerating from a
+ *             traverse routinely overshoots past that already-loose
+ *             tolerance before settling (flight 22: 0.19 m past an
+ *             EXCHANGE station, off a table edge).  Otherwise (no prior
+ *             achieved goal — e.g. HOLD is the very first goal, or the
+ *             prior step ended on a timeout instead of achievement) the
+ *             element captures its own live position as before.  Either
+ *             way, once captured, station-keeps there (directive
+ *             MOVE_TO_POINT to the captured point).
  *
  *   MOVE      Translate the formation to intent.target, preserving shape.
  *             On activation each element snapshots its own offset from the

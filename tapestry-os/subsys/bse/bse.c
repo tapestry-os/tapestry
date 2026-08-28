@@ -27,7 +27,12 @@
  *     the ID-sorted participant ring, over a SNAPSHOT of positions captured
  *     at activation; the commanded target travels a CCW arc about the
  *     snapshot centroid so mutual separation is preserved by construction.
- *   - HOLD: captures own position at activation and station-keeps there.
+ *   - HOLD: captures own position at activation and station-keeps there,
+ *     UNLESS the intent it replaces just achieved a MOVE_TO_POINT goal —
+ *     then it inherits that goal point instead (see bse_submit_intent()'s
+ *     snapshot_prev_goal() and the HOLD case in bse_tick()), avoiding the
+ *     achieve_eps slop and tracker overshoot a live-position capture would
+ *     otherwise bake in as a permanent station offset.
  *   - Feedback controller (minimal): achievement predicate — own position
  *     within achieve_eps of the goal point for achieve_hold_ms, for every
  *     goal type except DISPERSE, which has no single goal point (see below).
@@ -141,6 +146,16 @@ static bool                s_goal_pt_valid;   /* goal point computed this tick *
 static position_t s_goal_pt;
 static bool                s_anchor_lost;     /* frame==ELEMENT couldn't resolve
                                                 * this tick — see bse_anchor_lost() */
+
+/* Snapshot of the OUTGOING intent's goal point, taken by
+ * snapshot_prev_goal() the instant it is displaced — see that function and
+ * the HOLD case in bse_tick(), the only reader.  Deliberately NOT part of
+ * bse_activation_t: it describes the intent being REPLACED, not the one
+ * activating, so it must survive reset_activation() (which bse_
+ * submit_intent()/bse_preempt_intent() call immediately after capturing
+ * this) rather than be cleared by it. */
+static bool                s_prev_goal_valid;
+static position_t s_prev_goal_pt;
 
 /* ── Preemption stack ─────────────────────────────────────────────────────── */
 /*
@@ -554,6 +569,31 @@ static void reset_activation(void)
     s_act.spin_theta              = 0.0f;
 }
 
+/*
+ * Snapshot whatever goal point the intent about to be displaced was
+ * ticked against, for the incoming intent's HOLD case (bse_tick()) to
+ * optionally inherit — see that switch case and bse.h's HOLD doc for the
+ * full rationale. Called from bse_submit_intent()/bse_preempt_intent(),
+ * in both cases BEFORE reset_activation() clears s_goal_pt_valid/s_act,
+ * and before s_intent/s_directive are overwritten — so this always reads
+ * the OUTGOING intent's own just-computed tick state, never the
+ * incoming one's.
+ *
+ * Deliberately requires s_act.achieved, not just s_goal_pt_valid: a goal
+ * point that was merely being tracked (arc in progress, timeout pending)
+ * is not a place the body has actually settled near, and inheriting it
+ * would snap HOLD to a point nowhere close to the element's real
+ * position — only an ACHIEVED goal (within achieve_eps, sustained
+ * achieve_hold_ms) is close enough that inheriting it is "un-rounding" a
+ * small residual error rather than commanding a fresh traverse.
+ */
+static void snapshot_prev_goal(void)
+{
+    s_prev_goal_valid = s_goal_pt_valid && s_act.achieved &&
+                        s_directive.type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
+    s_prev_goal_pt    = s_goal_pt;
+}
+
 void bse_init(element_id_t self_id)
 {
     s_self_id = self_id;
@@ -563,6 +603,7 @@ void bse_init(element_id_t self_id)
     s_directive.type = TAPESTRY_BSE_DIRECTIVE_IDLE;
     s_parked_depth   = 0;
     s_track_scope    = 0;
+    s_prev_goal_valid = false;   /* no outgoing intent yet to inherit from */
 
     reset_activation();
 }
@@ -572,6 +613,7 @@ int bse_submit_intent(const tapestry_bse_intent_t *intent)
     if (intent == NULL) {
         return -1;
     }
+    snapshot_prev_goal();
     s_intent = *intent;
     reset_activation();
 
@@ -600,6 +642,7 @@ int bse_preempt_intent(const tapestry_bse_intent_t *intent)
     if (s_parked_depth >= BSE_MAX_PREEMPT_DEPTH) {
         return -1;   /* stack full */
     }
+    snapshot_prev_goal();
     s_parked_intent[s_parked_depth] = s_intent;
     s_parked_act[s_parked_depth]    = s_act;
     s_parked_depth++;
@@ -627,6 +670,12 @@ int bse_resume_intent(void)
      * intent that was active a moment ago. bse_tick() recomputes it fresh
      * on the next tick either way. */
     s_goal_pt_valid = false;
+
+    /* Likewise s_prev_goal_valid: it was last set by whichever intent
+     * preempted this one, describing THAT transition, not this resume —
+     * a resumed (not-yet-captured) HOLD must not inherit a goal point
+     * left over from an unrelated preemption elsewhere in the stack. */
+    s_prev_goal_valid = false;
     return 0;
 }
 
@@ -647,16 +696,31 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
         break;
 
     case TAPESTRY_BSE_INTENT_HOLD: {
-        /* Coordinate-free: the station is wherever the element is when the
-         * goal activates.  Captured once, then actively station-kept. */
+        /* Coordinate-free: the station is normally wherever the element is
+         * when the goal activates — captured once, then actively station-
+         * kept. EXCEPTION (bse.h's HOLD doc, bse_submit_intent()'s
+         * snapshot_prev_goal()): if the intent HOLD replaced just achieved
+         * a MOVE_TO_POINT goal, inherit THAT goal point instead of live
+         * position — "hold the station you were sent to," not "hold
+         * wherever you coasted to." Skips own_position() entirely in that
+         * case: the prior achievement already required a fresh self-entry
+         * on this very tick (bse_goal_achieved() reads it), so there is
+         * nothing to guard against. s_prev_goal_valid is consumed
+         * (cleared) here so it can't outlive this one activation. */
         if (!s_act.hold_captured) {
-            position_t own;
-            if (!own_position(wm, &own)) {
-                s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
-                break;
+            if (s_prev_goal_valid) {
+                s_act.hold_station  = s_prev_goal_pt;
+                s_act.hold_captured = true;
+                s_prev_goal_valid   = false;
+            } else {
+                position_t own;
+                if (!own_position(wm, &own)) {
+                    s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
+                    break;
+                }
+                s_act.hold_station  = own;
+                s_act.hold_captured = true;
             }
-            s_act.hold_station  = own;
-            s_act.hold_captured = true;
         }
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
         s_directive.target = s_act.hold_station;

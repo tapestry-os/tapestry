@@ -946,7 +946,30 @@ int main(void)
             if (choreo_script_complete()) {
                 /* Quiescence: the script is done and the directive is IDLE.
                  * This platform's inactive posture is "on the ground,
-                 * disarmed" — land in place. */
+                 * disarmed" — land in place.
+                 *
+                 * "In place" means the STATION the final step commanded,
+                 * not necessarily where own_pos_m happens to read this
+                 * exact tick. choreo_script_complete() fires the tick
+                 * AFTER the last step's own advance condition was met — if
+                 * that step was HOLD, bse.c's HOLD-inherits-the-prior-
+                 * achieved-goal-point fix (bse.h's HOLD doc) already keeps
+                 * this tight, but choreo_terminate() has, by this point,
+                 * already submitted the IDLE intent that ends the script
+                 * (advance_to() in choreo.c), so choreo_get_directive()
+                 * here reads IDLE, not the settled HOLD target — there is
+                 * nothing left to read the station back from. Latching
+                 * own_pos_m is therefore still correct for a script ENDING
+                 * on HOLD's achievement (the whole point of the bse.c fix
+                 * is that own_pos_m at this instant already equals the
+                 * commanded station, not a coasted-past overshoot of it).
+                 * A script ending on a bare MOVE/FORM/CONVERGE/EXCHANGE
+                 * step's own achievement (no trailing HOLD) — or on a
+                 * TIMEOUT rather than achievement — still lands at
+                 * whatever own_pos_m reads, same as before this comment;
+                 * that residual case is the achieve_eps/tracker-lag gap
+                 * bse.c's HOLD fix cannot reach without a HOLD step to
+                 * land the inheritance on. */
                 LOG_INF("id=%u choreo complete — resting: landing in place "
                         "at (%.2f, %.2f)", (unsigned)element_id,
                         (double)own_pos_m.x, (double)own_pos_m.y);

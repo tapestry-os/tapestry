@@ -775,6 +775,140 @@ ZTEST(choreo_script, test_hold_is_coordinate_free)
                  "hold is trivially achieved (duration governs)");
 }
 
+/* Regression test for the flight 22 / flight 15 overshoot: HOLD used to
+ * capture LIVE position at activation, but achievement only guarantees
+ * being within achieve_eps — a body that settles anywhere in that eps
+ * ball (tracker lag/overshoot decelerating from a traverse, entirely
+ * realistic and entirely legal per the achievement predicate) got that
+ * offset baked in as a permanent station. Fixed: HOLD now inherits the
+ * PRIOR step's own achieved goal point instead, when there is one (bse.h's
+ * HOLD doc, bse.c's snapshot_prev_goal()).
+ *
+ * The body is pinned at a fixed 0.18 m offset from the CONVERGE target —
+ * inside achieve_eps (0.25 m) but never closes to zero, unlike this
+ * suite's usual perfect-tracking idiom (see test_swap_script_end_to_end's
+ * comment) which would never exhibit this bug: perfect tracking puts the
+ * body exactly ON the goal point the instant it's commanded, so a live
+ * capture and an inherited capture are indistinguishable there. Realistic
+ * lag is exactly what a live capture gets wrong. */
+ZTEST(choreo_script, test_hold_inherits_prior_achieved_goal_point_not_live_position)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 10.0f, 20.0f, 0.0f },
+                    .achieve_eps = 0.25f, .achieve_hold_ms = 300 },
+          .max_duration_ms = 60000, .advance_on_achieved = true },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    const float off_x = 0.15f, off_y = -0.10f;   /* |offset| ≈ 0.18 m < 0.25 m eps */
+
+    for (int i = 0; i < 10; i++) {
+        wm_reset();
+        wm_set_self(0, 0, 10.0f + off_x, 20.0f + off_y);
+        choreo_tick(&wm, &scr);
+    }
+
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "must have advanced past the achieved CONVERGE by now");
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT, "hold directive");
+    zassert_within(d->target.x, 10.0f, EPS,
+                   "HOLD must inherit the CONVERGE goal point exactly, not "
+                   "the live position it merely achieved-within-eps at");
+    zassert_within(d->target.y, 20.0f, EPS,
+                   "HOLD must inherit the CONVERGE goal point exactly, not "
+                   "the live position it merely achieved-within-eps at");
+}
+
+/* The fallback this fix must NOT disturb: a HOLD with no prior achieved
+ * MOVE_TO_POINT (here, a step that only ever times out — never achieves)
+ * still captures live position, exactly as before. */
+ZTEST(choreo_script, test_hold_captures_live_position_after_an_unachieved_step)
+{
+    static const choreo_step_t script[] = {
+        /* No achieve_eps/hold_ms set that could ever be satisfied here —
+         * this step is 0.18 m away from its own goal the whole time and
+         * has no advance_on_achieved, so it only ever exits via timeout. */
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 10.0f, 20.0f, 0.0f } },
+          .max_duration_ms = 200 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    for (int i = 0; i < 5; i++) {
+        wm_reset();
+        wm_set_self(0, 0, 10.15f, 19.90f);
+        choreo_tick(&wm, &scr);
+    }
+
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "must have advanced past the timed-out CONVERGE by now");
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT, "hold directive");
+    zassert_within(d->target.x, 10.15f, EPS,
+                   "an unachieved step's HOLD must still capture live "
+                   "position, not the goal point it never reached");
+    zassert_within(d->target.y, 19.90f, EPS,
+                   "an unachieved step's HOLD must still capture live "
+                   "position, not the goal point it never reached");
+}
+
+/* Same inheritance, reached through choreo_preempt_goal() rather than a
+ * natural script advance — bse_preempt_intent() has its own
+ * snapshot_prev_goal() call (bse.c), separate from bse_submit_intent()'s,
+ * and this is the only test that exercises it. The general rule holds
+ * regardless of WHY the previous goal is being displaced: an achieved
+ * MOVE_TO_POINT means the body has genuinely settled near that point, so
+ * a preempting HOLD inheriting it is exactly as correct as a scripted one. */
+ZTEST(choreo_script, test_preempting_hold_inherits_prior_achieved_goal_point)
+{
+    choreo_init(0);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    choreo_goal_t converge = {
+        .type = CHOREO_GOAL_CONVERGE, .target = { 10.0f, 20.0f, 0.0f },
+        .achieve_eps = 0.25f, .achieve_hold_ms = 300,
+    };
+    zassert_equal(choreo_submit_goal(&converge), 0, "submit failed");
+
+    const float off_x = 0.15f, off_y = -0.10f;   /* within eps, never exact */
+    for (int i = 0; i < 3; i++) {
+        wm_reset();
+        wm_set_self(0, 0, 10.0f + off_x, 20.0f + off_y);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_goal_achieved(), "CONVERGE must be achieved by now");
+
+    choreo_goal_t hold = { .type = CHOREO_GOAL_HOLD };
+    zassert_equal(choreo_preempt_goal(&hold), 0, "preempt failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 10.0f + off_x, 20.0f + off_y);   /* still offset */
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 10.0f, EPS,
+                   "preempting HOLD must inherit the achieved CONVERGE "
+                   "goal point, not the live offset position");
+    zassert_within(d->target.y, 20.0f, EPS,
+                   "preempting HOLD must inherit the achieved CONVERGE "
+                   "goal point, not the live offset position");
+}
+
 /* ── FORM shapes + MOVE offset-preserving translation ─────────────────────── */
 
 ZTEST(choreo_script, test_form_shape_line)
