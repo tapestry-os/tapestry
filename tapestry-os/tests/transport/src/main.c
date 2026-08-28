@@ -98,12 +98,59 @@ static void loop_set_power(float level)
     ARG_UNUSED(level);
 }
 
+/* Directive frames (wire v5) ride their own FIFO, exactly as they ride
+ * their own message type on UDP — the same bytes-in-bytes-out contract as
+ * the gossip FIFO above. */
+static uint8_t  dir_buf[LOOP_DEPTH][LOOP_MAX_LEN];
+static uint16_t dir_len[LOOP_DEPTH];
+static int      dir_head;
+static int      dir_tail;
+
+static int loop_tx_directive(const uint8_t *data, uint16_t len)
+{
+    if (dir_tail >= LOOP_DEPTH) {
+        return -ENOSPC;
+    }
+    if (len > LOOP_MAX_LEN) {
+        len = LOOP_MAX_LEN;
+    }
+    memcpy(dir_buf[dir_tail], data, len);
+    dir_len[dir_tail] = len;
+    dir_tail++;
+    return 0;
+}
+
+static int loop_rx_directive(uint8_t *buf, uint16_t max_len)
+{
+    if (dir_head >= dir_tail) {
+        return 0;
+    }
+    uint16_t len = dir_len[dir_head];
+
+    if (len > max_len) {
+        len = max_len;
+    }
+    memcpy(buf, dir_buf[dir_head], len);
+    dir_head++;
+    return (int)len;
+}
+
+/* The most recently transmitted directive wire bytes, for tests that
+ * corrupt them before draining — mirror of loop_last(). */
+static uint8_t *dir_last(void)
+{
+    zassert_true(dir_tail > 0, "no directive has been transmitted");
+    return dir_buf[dir_tail - 1];
+}
+
 static const tapestry_transceiver_t loop_transceiver = {
-    .type      = TRANSCEIVER_TYPE_UDP,
-    .init      = loop_init,
-    .tx        = loop_tx,
-    .rx        = loop_rx,
-    .set_power = loop_set_power,
+    .type         = TRANSCEIVER_TYPE_UDP,
+    .init         = loop_init,
+    .tx           = loop_tx,
+    .rx           = loop_rx,
+    .set_power    = loop_set_power,
+    .tx_directive = loop_tx_directive,
+    .rx_directive = loop_rx_directive,
 };
 
 static const tapestry_transceiver_t *const loop_set[] = { &loop_transceiver };
@@ -115,6 +162,10 @@ static void loop_reset(void)
     loop_tx_calls = 0;
     memset(loop_buf, 0, sizeof(loop_buf));
     memset(loop_len, 0, sizeof(loop_len));
+    dir_head = 0;
+    dir_tail = 0;
+    memset(dir_buf, 0, sizeof(dir_buf));
+    memset(dir_len, 0, sizeof(dir_len));
 }
 
 /* Number of frames queued but not yet drained. */
@@ -213,7 +264,7 @@ ZTEST(gossip_wire, test_frame_sizes_match_the_documented_wire_contract)
      * version bump that forgets the Python mirrors leaves the orchestrators
      * decoding garbage.  Change the frame, change both, and run
      * tapestry-os/tools/gen_wire_protocol.py. */
-    zassert_equal(TAPESTRY_WIRE_VERSION, 4u,
+    zassert_equal(TAPESTRY_WIRE_VERSION, 5u,
                   "wire version must be bumped with the frame layout; got %u",
                   TAPESTRY_WIRE_VERSION);
     zassert_equal(TAPESTRY_MSG_HEADER_SIZE, 5u,
@@ -752,3 +803,218 @@ ZTEST(gossip_wire, test_a_higher_qos_frame_evicts_the_lowest_qos_queued_frame)
 }
 
 #endif /* CONFIG_TAPESTRY_MESH_RELAY */
+
+/* ── Directive frames (wire v5) ──────────────────────────────────────────── */
+/*
+ * The remote-BSE directive path: gossip_send_directive() signing/framing
+ * and gossip_poll_directive()'s receive filter chain (length, HMAC,
+ * version, addressee, type validity, per-src replay).  Same philosophy as
+ * the gossip tests above — real bytes through the loopback, nothing
+ * mocked.
+ *
+ * gossip.c's per-src replay table (s_dir_last_seq) is a file static with
+ * no reset hook, same as the relay ring buffer: every test here uses its
+ * OWN src id so the table cannot leak state between tests, and seqs
+ * within a test only ever need to be locally consistent.
+ */
+
+/* Distinctive values in every field — same rationale as sender_state(). */
+static tapestry_directive_frame_t directive(uint8_t src, uint8_t target,
+                                            uint32_t seq)
+{
+    tapestry_directive_frame_t d = {0};
+
+    d.src_id    = src;
+    d.target_id = target;
+    d.type      = 2u;             /* MOVE_TO_POINT                        */
+    d.x         = 12.25f;         /* exact in binary32                    */
+    d.y         = -3.5f;          /* signed                               */
+    d.z         = 6.25f;
+    d.spring_k  = 0.75f;
+    d.spacing   = 1.5f;
+    d.goal_id   = 0xBEEFu;
+    d.seq       = seq;
+    return d;
+}
+
+ZTEST(gossip_wire, test_directive_sizes_match_the_documented_wire_contract)
+{
+    zassert_equal(TAPESTRY_DIRECTIVE_FRAME_SIZE, 30u,
+                  "directive frame must stay 30 bytes (wire.h v5 documents "
+                  "'<BBBfffffHIB'); got %u", TAPESTRY_DIRECTIVE_FRAME_SIZE);
+
+    /* Same first/last-byte contract as the gossip frame: src_id first
+     * (transceiver_udp.c reads byte 0 for the header), version last (new
+     * fields are inserted before it, never after). */
+    tapestry_directive_frame_t f = {0};
+    const uint8_t *raw = (const uint8_t *)&f;
+
+    f.src_id = 0xABu;
+    zassert_equal(raw[0], 0xABu, "src_id must be the first byte on the wire");
+    f.version = 0xCDu;
+    zassert_equal(raw[TAPESTRY_DIRECTIVE_FRAME_SIZE - 1u], 0xCDu,
+                  "version must be the last byte on the wire");
+}
+
+ZTEST(gossip_wire, test_a_directive_round_trips_every_field)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(2, 3, 100u);
+
+    gossip_send_directive(&d);
+    zassert_true(gossip_poll_directive(&out, 3),
+                 "an addressed, first-contact directive must be accepted");
+
+    zassert_equal(out.src_id, 2u,        "src_id");
+    zassert_equal(out.target_id, 3u,     "target_id");
+    zassert_equal(out.type, 2u,          "type");
+    zassert_equal(out.x, 12.25f,         "x");
+    zassert_equal(out.y, -3.5f,          "y");
+    zassert_equal(out.z, 6.25f,          "z");
+    zassert_equal(out.spring_k, 0.75f,   "spring_k");
+    zassert_equal(out.spacing, 1.5f,     "spacing");
+    zassert_equal(out.goal_id, 0xBEEFu,  "goal_id");
+    zassert_equal(out.seq, 100u,         "seq");
+    zassert_equal(out.version, TAPESTRY_WIRE_VERSION,
+                  "gossip_send_directive must stamp the wire version");
+}
+
+ZTEST(gossip_wire, test_a_directive_for_another_element_is_dropped)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(4, 5, 1u);
+
+    gossip_send_directive(&d);
+    zassert_false(gossip_poll_directive(&out, 6),
+                  "a directive addressed to element 5 must not reach "
+                  "element 6");
+}
+
+ZTEST(gossip_wire, test_a_broadcast_directive_reaches_any_element)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(7, TAPESTRY_DIRECTIVE_TARGET_ALL,
+                                               1u);
+
+    gossip_send_directive(&d);
+    zassert_true(gossip_poll_directive(&out, 6),
+                 "a TARGET_ALL directive must be accepted by any element");
+}
+
+ZTEST(gossip_wire, test_a_replayed_or_reordered_directive_seq_is_dropped)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(8, 9, 50u);
+
+    gossip_send_directive(&d);
+    zassert_true(gossip_poll_directive(&out, 9), "seq 50: first contact");
+
+    d.seq = 50u;   /* exact replay of an accepted frame */
+    gossip_send_directive(&d);
+    zassert_false(gossip_poll_directive(&out, 9),
+                  "an equal seq is a replay and must be dropped");
+
+    d.seq = 49u;   /* reorder / stale retransmit */
+    gossip_send_directive(&d);
+    zassert_false(gossip_poll_directive(&out, 9),
+                  "a lower seq must be dropped");
+
+    d.seq = 51u;
+    gossip_send_directive(&d);
+    zassert_true(gossip_poll_directive(&out, 9),
+                 "a strictly greater seq must be accepted again");
+}
+
+ZTEST(gossip_wire, test_the_newest_queued_directive_wins_one_poll)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(10, 11, 1u);
+
+    d.x = 1.0f;
+    gossip_send_directive(&d);
+    d.seq = 2u;
+    d.x   = 2.0f;
+    gossip_send_directive(&d);
+
+    zassert_true(gossip_poll_directive(&out, 11), "both frames pending");
+    zassert_equal(out.x, 2.0f,
+                  "one poll over a backlog must surface the newest frame, "
+                  "not the first");
+    zassert_equal(out.seq, 2u, "and its seq");
+}
+
+ZTEST(gossip_wire, test_a_directive_with_an_unknown_type_is_dropped)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(12, 13, 1u);
+
+    d.type = TAPESTRY_DIRECTIVE_TYPE_MAX + 1u;
+    gossip_send_directive(&d);
+    zassert_false(gossip_poll_directive(&out, 13),
+                  "a directive vocabulary mismatch must fail closed");
+}
+
+ZTEST(gossip_wire, test_a_directive_from_an_untrackable_src_is_dropped)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(MAX_ELEMENTS, 14, 1u);
+
+    gossip_send_directive(&d);
+    zassert_false(gossip_poll_directive(&out, 14),
+                  "src ids without a replay-tracking slot must fail closed");
+}
+
+#ifndef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+/* Version filtering can only be probed on the plain build: on the auth
+ * build the corrupted frame is (correctly) rejected by the HMAC check
+ * first, so this asserts nothing about the version gate there. */
+ZTEST(gossip_wire, test_a_directive_version_mismatch_is_dropped)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(15, 16, 1u);
+
+    gossip_send_directive(&d);
+
+    tapestry_directive_frame_t *wire = (tapestry_directive_frame_t *)dir_last();
+    wire->version = TAPESTRY_WIRE_VERSION + 1u;
+
+    zassert_false(gossip_poll_directive(&out, 16),
+                  "a directive carrying another schema version must be "
+                  "dropped, not misinterpreted");
+}
+#endif /* !CONFIG_TAPESTRY_WIRE_AUTH_ENABLED */
+
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+
+ZTEST(gossip_wire, test_auth_rejects_a_tampered_directive)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(17, 18, 1u);
+
+    gossip_send_directive(&d);
+
+    /* Steer the commanded target after signing — the exact attack the tag
+     * exists to stop. */
+    tapestry_directive_frame_t *wire = (tapestry_directive_frame_t *)dir_last();
+    wire->x = 999.0f;
+
+    zassert_false(gossip_poll_directive(&out, 18),
+                  "a payload byte changed after signing must not verify");
+}
+
+ZTEST(gossip_wire, test_auth_rejects_an_untagged_directive)
+{
+    tapestry_directive_frame_t out = {0};
+    tapestry_directive_frame_t d   = directive(19, 20, 1u);
+
+    d.version = TAPESTRY_WIRE_VERSION;
+
+    /* Inject the bare 30-byte frame with no tag, as an attacker without
+     * the key would. */
+    loop_tx_directive((const uint8_t *)&d, sizeof(d));
+    zassert_false(gossip_poll_directive(&out, 20),
+                  "a frame without an auth tag must be dropped, not "
+                  "accepted as a short read");
+}
+
+#endif /* CONFIG_TAPESTRY_WIRE_AUTH_ENABLED */

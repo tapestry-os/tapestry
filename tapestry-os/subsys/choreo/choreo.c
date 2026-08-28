@@ -83,6 +83,55 @@ static uint8_t s_track_candidate_idx;
 static bool    s_track_candidate_valid;
 static uint32_t s_track_candidate_ms;
 
+/* ── Remote L6 directives (wire.h v5) ─────────────────────────────────────── */
+/*
+ * See choreo.h's remote-directive section for the design.  The local BSE
+ * is never paused while remote directives steer — bse_tick() runs every
+ * RUNNING tick either way, which is what makes fallback bumpless: the
+ * local directive is always current, never resumed from a freeze.
+ *
+ * s_remote_age_ms is the time since the last ACCEPTED frame (reset by
+ * choreo_remote_directive(), aged by choreo_tick()); s_remote_fresh_ms is
+ * the continuous-freshness streak that gates adoption.  Adoption is
+ * debounced (CHOREO_REMOTE_ADOPT_HOLD_MS); falling back is immediate —
+ * the same up/down asymmetry as quorum.
+ */
+static tapestry_bse_directive_t s_remote_dir;
+static uint16_t s_remote_goal_id;
+static uint8_t  s_remote_src;
+static bool     s_remote_seen;       /* any frame ever accepted           */
+static uint32_t s_remote_age_ms;     /* since last accepted frame         */
+static uint32_t s_remote_fresh_ms;   /* continuous freshness streak       */
+static bool     s_remote_adopted;
+
+static bool remote_fresh(void)
+{
+    return s_remote_seen && s_remote_age_ms < CHOREO_REMOTE_STALE_MS;
+}
+
+/* Age the remote stream one cycle and update adoption.  Runs every
+ * choreo_tick() regardless of lifecycle state — link freshness is a fact
+ * about the transport, not about the script. */
+static void remote_directive_tick(void)
+{
+    if (!s_remote_seen) {
+        return;
+    }
+    s_remote_age_ms += WM_CYCLE_MS;
+
+    if (!remote_fresh()) {
+        if (s_remote_adopted) {
+            s_remote_adopted = false;   /* immediate local fallback */
+        }
+        s_remote_fresh_ms = 0;
+        return;
+    }
+    s_remote_fresh_ms += WM_CYCLE_MS;
+    if (s_remote_fresh_ms >= CHOREO_REMOTE_ADOPT_HOLD_MS) {
+        s_remote_adopted = true;
+    }
+}
+
 /* ── Preemption stack ─────────────────────────────────────────────────────── */
 /*
  * choreo_preempt_goal() saves the goal + script engine state a normal
@@ -221,7 +270,30 @@ void choreo_init(element_id_t self_id)
     s_n_tracks = 0;
     script_clear();
     s_script_done = false;
+    s_remote_seen     = false;
+    s_remote_adopted  = false;
+    s_remote_age_ms   = 0;
+    s_remote_fresh_ms = 0;
     bse_init(self_id);
+}
+
+void choreo_remote_directive(const tapestry_bse_directive_t *d,
+                             uint16_t goal_id, uint8_t src_id)
+{
+    if (d == NULL) {
+        return;
+    }
+    s_remote_dir     = *d;
+    s_remote_goal_id = goal_id;
+    s_remote_src     = src_id;
+    s_remote_seen    = true;
+    s_remote_age_ms  = 0;
+}
+
+bool choreo_remote_active(void)
+{
+    return s_remote_adopted && remote_fresh() &&
+           s_state == CHOREO_STATE_RUNNING;
 }
 
 void choreo_register_scr(const scr_state_t *scr)
@@ -830,6 +902,8 @@ void choreo_publish_state(element_state_t *own_state)
 
 void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
 {
+    remote_directive_tick();
+
     switch (s_state) {
     case CHOREO_STATE_RUNNING:
         if (s_n_tracks > 0 && s_parked_depth == 0) {
@@ -883,6 +957,13 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
 
 const tapestry_bse_directive_t *choreo_get_directive(void)
 {
+    /* Remote steering only while adopted, fresh, and RUNNING — SUSPENDED
+     * (quorum lost) always steers locally: L5 is the safety authority and
+     * a remote host's view of a partitioned collective is exactly what
+     * cannot be trusted (choreo.h). */
+    if (choreo_remote_active()) {
+        return &s_remote_dir;
+    }
     return bse_get_directive();
 }
 

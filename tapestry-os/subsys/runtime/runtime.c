@@ -31,6 +31,7 @@ static uint32_t         s_election_count;
 static element_id_t     s_last_leader;
 static scr_abort_state_t s_last_abort_state;
 static bool              s_ready;
+static bool              s_last_remote_active;
 
 /* ── Lifecycle ───────────────────────────────────────────────────────────── */
 
@@ -68,6 +69,7 @@ int tapestry_runtime_init(const tapestry_runtime_config_t *cfg)
     s_election_count   = 0;
     s_last_leader      = ELEMENT_ID_INVALID;
     s_last_abort_state = SCR_ABORT_NONE;
+    s_last_remote_active = false;
     s_ready            = true;
 
     LOG_INF("runtime: element %u at (%.1f, %.1f) quorum=%u/%u",
@@ -88,6 +90,23 @@ void tapestry_runtime_tick(void)
     /* 1. Receive gossip */
     transport_drain(&s_wm, s_own.id);
 
+    /* 1b. Receive remote L6 directives (wire.h v5).  The frame has already
+     * cleared the full L3 filter chain (auth, version, addressee, type,
+     * replay — gossip.c); here it is only converted to a BSE directive and
+     * handed to L7, which owns adoption/staleness policy (choreo.h).  Must
+     * run before scr_tick so choreo_tick (the L5 on_tick hook) ages a
+     * frame received THIS cycle from zero, not from a stale carry-over. */
+    tapestry_directive_frame_t dirf;
+    if (transport_poll_directive(s_own.id, &dirf)) {
+        tapestry_bse_directive_t d = {
+            .type     = (tapestry_bse_directive_type_t)dirf.type,
+            .target   = { .x = dirf.x, .y = dirf.y, .z = dirf.z },
+            .spring_k = dirf.spring_k,
+            .spacing  = dirf.spacing,
+        };
+        choreo_remote_directive(&d, dirf.goal_id, dirf.src_id);
+    }
+
     /* 2. Age L4 entries */
     wm_tick(&s_wm, WM_CYCLE_MS);
 
@@ -96,6 +115,24 @@ void tapestry_runtime_tick(void)
 
     /* 4. Recompute L5 role and quorum; on_tick hook fires choreo_tick (L6) */
     scr_tick(&s_scr, &s_wm);
+
+    /* 4a. Steering-source transitions, logged on the edge only — choreo.c
+     * is deliberately OS-free (no logging), and hardware/Webots validation
+     * of the remote-BSE path is blind without this line.  Fallback is WRN:
+     * it is safe by design, but the operator should know the edge link
+     * degraded. */
+    bool remote_active = choreo_remote_active();
+
+    if (remote_active != s_last_remote_active) {
+        s_last_remote_active = remote_active;
+        if (remote_active) {
+            LOG_INF("remote BSE adopted — steering by remote directives "
+                    "(element %u)", (unsigned)s_own.id);
+        } else {
+            LOG_WRN("remote BSE stale/suspended — local BSE fallback "
+                    "(element %u)", (unsigned)s_own.id);
+        }
+    }
 
     /* 4b. Quorum-loss abort fires as a level signal held for as long as
      * quorum stays LOST (see scr.h), so this must catch the NONE/CLEARED

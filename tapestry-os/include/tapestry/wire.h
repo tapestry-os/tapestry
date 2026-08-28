@@ -24,6 +24,7 @@
  *   2  TAPESTRY_MSG_METRIC       — element → telemetry collector
  *   3  (reserved — simulation control; never used on hardware)
  *   4  TAPESTRY_MSG_SCR_METRIC   — element → telemetry collector (L5)
+ *   5  TAPESTRY_MSG_DIRECTIVE    — BSE host → element (remote L6, v5)
  *
  * BLE wire identification
  * ────────────────────────
@@ -115,8 +116,17 @@
  * in one byte would blur that line for no wire-budget reason (200-byte
  * single-PDU ceiling since BLE5 Extended Advertising, 43 of 200 bytes
  * used — no longer the tight fit v3's bump was solving for).
+ *
+ * v5: adds tapestry_directive_frame_t (TAPESTRY_MSG_DIRECTIVE) — a remote
+ * L6 BSE host commanding an element's per-tick directive over the wire.
+ * No existing frame's layout changed, so this bump is not guarding a
+ * translation error; it exists so a fleet is uniformly directive-aware or
+ * uniformly not.  A v4 element flying under a v5 BSE host would silently
+ * never see a directive and run its local BSE forever — behaviorally safe
+ * but operationally confusing; rejecting the whole mix at the gossip layer
+ * makes the mismatch visible at deploy time instead.
  */
-#define TAPESTRY_WIRE_VERSION   4u
+#define TAPESTRY_WIRE_VERSION   5u
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 
@@ -125,6 +135,7 @@ typedef enum {
     TAPESTRY_MSG_METRIC     = 2,
     /* 3: sim-only control — never transmitted by hardware elements */
     TAPESTRY_MSG_SCR_METRIC = 4,
+    TAPESTRY_MSG_DIRECTIVE  = 5,
 } tapestry_msg_type_t;
 
 /* ── Message header ──────────────────────────────────────────────────────── */
@@ -294,11 +305,94 @@ typedef struct {
 
 #define TAPESTRY_SCR_METRIC_FRAME_SIZE   10   /* sizeof(tapestry_scr_metric_frame_t) */
 
+/* ── Directive frame (v5) ────────────────────────────────────────────────── */
+/*
+ * Carries one per-element behavioral directive from a remote L6 BSE host
+ * (edge node, or an elected SCR_CAP_BSE_HOST element) to an element.  The
+ * element treats it as a REFINEMENT of its locally computed directive, not
+ * a replacement for its script: choreo.c only steers by a remote directive
+ * while remote directives stay fresh, and falls back to the local
+ * open-core BSE the moment they go stale — see choreo.h's remote-directive
+ * section for the staleness/re-adoption constants and the degraded-mode
+ * ladder.
+ *
+ * Python format: struct.Struct('<BBBfffffHIB')
+ * Size: 30 bytes
+ * Fields: src_id, target_id, type, x, y, z, spring_k, spacing, goal_id,
+ *         seq, version
+ *
+ * src_id: the BSE host's element id.  First byte of the frame, matching
+ *   the gossip frame's id-first convention.
+ *
+ * target_id: the element this directive addresses, or
+ *   TAPESTRY_DIRECTIVE_TARGET_ALL (0xFF, == ELEMENT_ID_INVALID — an id no
+ *   element can hold) to address every element.  Receivers drop frames
+ *   addressed to another element before any further processing.
+ *
+ * type: tapestry_bse_directive_type_t (bse.h) cast to uint8_t.  Receivers
+ *   drop frames whose type is not one of the four defined directives —
+ *   a directive vocabulary mismatch must fail closed, not steer.
+ *
+ * x/y/z: MOVE_TO_POINT target (same units as gossip positions).
+ * spring_k/spacing: MAINTAIN_SPRING parameters.  Unused fields are 0.
+ *
+ * goal_id: the L7 goal this directive serves (choreo_goal_t::id), echoed
+ *   so an element can attribute a directive to a goal in telemetry.
+ *   Opaque to the receiver's steering logic.
+ *
+ * seq: strictly monotonic per src_id.  Receivers accept a frame only if
+ *   its seq is strictly greater than the last accepted seq from that src
+ *   (first frame from a src is always accepted), which makes a replayed
+ *   authenticated frame inert.  SENDER REQUIREMENT: seq must be monotonic
+ *   across host restarts (e.g. derived from epoch milliseconds), because
+ *   receivers only reset their per-src tracking on their own reboot.
+ *
+ * version: TAPESTRY_WIRE_VERSION, last field — same rationale as the
+ *   gossip frame (media that advertise frames with no header wrapper).
+ *
+ * There is deliberately NO timestamp field: elements share no wall clock,
+ * so staleness is measured by the receiver from local arrival time
+ * (choreo.c's CHOREO_REMOTE_STALE_MS), never from sender-side time.
+ *
+ * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, TAPESTRY_WIRE_AUTH_TAG_SIZE
+ * additional bytes follow the frame on the wire (not counted here).
+ * SAFETY: an unauthenticated directive path must never fly on real
+ * hardware — directive injection is a full hijack of the collective's
+ * steering.  Builds without wire auth are for simulation only.
+ */
+typedef struct {
+    uint8_t  src_id;        /* BSE host element id                       */
+    uint8_t  target_id;     /* addressee, or TAPESTRY_DIRECTIVE_TARGET_ALL */
+    uint8_t  type;          /* tapestry_bse_directive_type_t             */
+    float    x;             /* MOVE_TO_POINT target                      */
+    float    y;
+    float    z;
+    float    spring_k;      /* MAINTAIN_SPRING stiffness                 */
+    float    spacing;       /* MAINTAIN_SPRING target distance           */
+    uint16_t goal_id;       /* L7 goal this directive serves (opaque)    */
+    uint32_t seq;           /* strictly monotonic per src_id — see above */
+    uint8_t  version;       /* TAPESTRY_WIRE_VERSION — last, like gossip */
+} __attribute__((packed)) tapestry_directive_frame_t;
+
+#define TAPESTRY_DIRECTIVE_FRAME_SIZE  ((uint16_t)sizeof(tapestry_directive_frame_t))  /* 30 */
+
+#define TAPESTRY_DIRECTIVE_TARGET_ALL  0xFFu   /* == ELEMENT_ID_INVALID */
+
+/* Highest valid `type` value — tracks tapestry_bse_directive_type_t
+ * (bse.h: IDLE=0 … MAINTAIN_SPRING=3) without L3 having to include an L6
+ * header.  Receivers drop frames whose type exceeds this (fail closed). */
+#define TAPESTRY_DIRECTIVE_TYPE_MAX    3u
+
+/* Full on-wire size: frame + optional HMAC auth tag */
+#define TAPESTRY_DIRECTIVE_WIRE_SIZE   \
+    ((uint16_t)(TAPESTRY_DIRECTIVE_FRAME_SIZE + TAPESTRY_WIRE_AUTH_TAG_SIZE))
+
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
 /*
  * Actual max of the two bodies that ever ride behind tapestry_msg_header_t
- * (TAPESTRY_SCR_METRIC_FRAME_SIZE is smaller than both and never
- * dominates) — not a hardcoded assumption about which one wins.  It used
+ * (TAPESTRY_SCR_METRIC_FRAME_SIZE and TAPESTRY_DIRECTIVE_WIRE_SIZE are
+ * smaller than both and never dominate) — not a hardcoded assumption
+ * about which one wins.  It used
  * to be hardcoded ("metric frame > gossip wire frame, so metric wins"),
  * which silently stopped being true once tapestry_gossip_frame_t grew
  * past the metric frame's 30 bytes (v3: z + orientation) and would have

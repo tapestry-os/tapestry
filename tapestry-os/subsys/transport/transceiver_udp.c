@@ -6,8 +6,11 @@
  *
  * tx: wraps the raw tapestry_gossip_frame_t payload in a tapestry_msg_header_t
  *     and broadcasts it to 255.255.255.255:TAPESTRY_GOSSIP_PORT.
- * rx: receives one UDP datagram per call, strips the header, and returns the
- *     raw gossip-frame bytes.  Returns 0 when no datagrams are pending.
+ * rx: reads datagrams until it can return one gossip payload (header
+ *     stripped) — directive datagrams found along the way are stashed for
+ *     rx_directive, other types skipped.  Returns 0 when none are pending.
+ * tx_directive/rx_directive: same pattern for tapestry_directive_frame_t
+ *     (TAPESTRY_MSG_DIRECTIVE, wire.h v5), sharing the gossip socket.
  *
  * Telemetry (L4/L5 metrics) is sent unicast to CONFIG_TAPESTRY_ORCH_IP via
  * a separate socket opened during init.  These are exposed as UDP-specific
@@ -34,10 +37,25 @@ static int gossip_sock = -1;
 static int metric_sock = -1;
 
 /* Reused buffers — single-threaded main loop, no locking needed.
- * Gossip buffers are sized for the full wire frame (frame + optional auth). */
+ * Gossip buffers are sized for the full wire frame (frame + optional auth);
+ * tx_buf is shared with directive tx, which is strictly smaller (wire.h's
+ * TAPESTRY_MAX_BODY_SIZE comment). */
 static uint8_t tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_WIRE_SIZE];
 static uint8_t rx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_WIRE_SIZE];
 static uint8_t metric_tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE];
+
+/* Directive datagrams (TAPESTRY_MSG_DIRECTIVE, v5) arrive on the gossip
+ * socket interleaved with gossip datagrams.  udp_rx() must not end
+ * gossip_drain()'s until-0 loop just because the next datagram happens to
+ * be a directive, so it stashes directives here for udp_rx_directive() and
+ * keeps reading.  Ring buffer; overflow drops the OLDEST entry — the
+ * consumer (gossip.c) applies newest-wins anyway, so the newest frame is
+ * the one worth keeping. */
+#define UDP_DIR_QUEUE_DEPTH 4
+static uint8_t  dir_q[UDP_DIR_QUEUE_DEPTH][TAPESTRY_DIRECTIVE_WIRE_SIZE];
+static uint16_t dir_q_len[UDP_DIR_QUEUE_DEPTH];
+static uint8_t  dir_q_head;
+static uint8_t  dir_q_count;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -114,48 +132,117 @@ static int udp_tx(const uint8_t *data, uint16_t len)
     return 0;
 }
 
+/* Stash one directive payload for udp_rx_directive(). */
+static void dir_q_push(const uint8_t *payload, uint16_t len)
+{
+    if (len < TAPESTRY_DIRECTIVE_FRAME_SIZE ||
+        len > TAPESTRY_DIRECTIVE_WIRE_SIZE) {
+        return;
+    }
+    if (dir_q_count == UDP_DIR_QUEUE_DEPTH) {
+        dir_q_head = (uint8_t)((dir_q_head + 1u) % UDP_DIR_QUEUE_DEPTH);
+        dir_q_count--;   /* overflow: drop the oldest (see the queue comment) */
+    }
+    uint8_t slot = (uint8_t)((dir_q_head + dir_q_count) % UDP_DIR_QUEUE_DEPTH);
+    memcpy(dir_q[slot], payload, len);
+    dir_q_len[slot] = len;
+    dir_q_count++;
+}
+
 static int udp_rx(uint8_t *buf, uint16_t max_len)
 {
     if (max_len < TAPESTRY_GOSSIP_WIRE_SIZE || gossip_sock < 0) {
         return -EINVAL;
     }
 
-    ssize_t len = zsock_recv(gossip_sock, rx_buf, sizeof(rx_buf),
-                             ZSOCK_MSG_DONTWAIT);
-    if (len < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+    /* Loop rather than one-datagram-per-call: a directive (or any other
+     * non-gossip datagram) interleaved in the socket queue must not end
+     * gossip_drain()'s until-0 loop while gossip datagrams sit behind it. */
+    for (;;) {
+        ssize_t len = zsock_recv(gossip_sock, rx_buf, sizeof(rx_buf),
+                                 ZSOCK_MSG_DONTWAIT);
+        if (len < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                LOG_WRN("gossip recv error: %d", errno);
+            }
             return 0;
         }
-        LOG_WRN("gossip recv error: %d", errno);
-        return 0;
-    }
 
-    if (len < (ssize_t)(TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_FRAME_SIZE)) {
-        return 0;
-    }
-
-    const tapestry_msg_header_t *hdr = (const tapestry_msg_header_t *)rx_buf;
-    if (hdr->type != TAPESTRY_MSG_GOSSIP) {
-        return 0;
-    }
-    if (hdr->version != TAPESTRY_WIRE_VERSION) {
-        /* A stale/mismatched peer — reject rather than risk misinterpreting
-         * bytes laid out under a different schema.  Rate-limited like the
-         * duplicate-ID log below: a peer running the wrong version stays
-         * wrong every cycle, not just once. */
-        static uint32_t mismatch_count;
-        if ((++mismatch_count % 20u) == 1u) {
-            LOG_WRN("gossip version mismatch: peer=%u wire=%u (%u frames)",
-                    hdr->src_id, hdr->version, mismatch_count);
+        if (len < (ssize_t)TAPESTRY_MSG_HEADER_SIZE) {
+            continue;
         }
+
+        const tapestry_msg_header_t *hdr = (const tapestry_msg_header_t *)rx_buf;
+        if (hdr->version != TAPESTRY_WIRE_VERSION) {
+            /* A stale/mismatched peer — reject rather than risk
+             * misinterpreting bytes laid out under a different schema.
+             * Rate-limited: a peer running the wrong version stays wrong
+             * every cycle, not just once. */
+            static uint32_t mismatch_count;
+            if ((++mismatch_count % 20u) == 1u) {
+                LOG_WRN("gossip version mismatch: peer=%u wire=%u (%u frames)",
+                        hdr->src_id, hdr->version, mismatch_count);
+            }
+            continue;
+        }
+
+        ssize_t payload_len = len - (ssize_t)TAPESTRY_MSG_HEADER_SIZE;
+
+        if (hdr->type == TAPESTRY_MSG_DIRECTIVE) {
+            dir_q_push(rx_buf + TAPESTRY_MSG_HEADER_SIZE,
+                       (uint16_t)payload_len);
+            continue;
+        }
+        if (hdr->type != TAPESTRY_MSG_GOSSIP ||
+            payload_len < (ssize_t)TAPESTRY_GOSSIP_FRAME_SIZE) {
+            continue;
+        }
+
+        /* Return however many payload bytes were actually received so
+         * gossip_drain can distinguish authenticated (GOSSIP_WIRE_SIZE)
+         * from plain frames. */
+        memcpy(buf, rx_buf + TAPESTRY_MSG_HEADER_SIZE, (size_t)payload_len);
+        return (int)payload_len;
+    }
+}
+
+static int udp_rx_directive(uint8_t *buf, uint16_t max_len)
+{
+    if (max_len < TAPESTRY_DIRECTIVE_WIRE_SIZE || gossip_sock < 0) {
+        return -EINVAL;
+    }
+    if (dir_q_count == 0) {
         return 0;
     }
+    uint16_t len = dir_q_len[dir_q_head];
+    memcpy(buf, dir_q[dir_q_head], len);
+    dir_q_head = (uint8_t)((dir_q_head + 1u) % UDP_DIR_QUEUE_DEPTH);
+    dir_q_count--;
+    return (int)len;
+}
 
-    /* Return however many payload bytes were actually received so gossip_drain
-     * can distinguish authenticated (GOSSIP_WIRE_SIZE) from plain frames. */
-    ssize_t payload_len = len - (ssize_t)TAPESTRY_MSG_HEADER_SIZE;
-    memcpy(buf, rx_buf + TAPESTRY_MSG_HEADER_SIZE, (size_t)payload_len);
-    return (int)payload_len;
+static int udp_tx_directive(const uint8_t *data, uint16_t len)
+{
+    if (len > TAPESTRY_DIRECTIVE_WIRE_SIZE || gossip_sock < 0) {
+        return -EINVAL;
+    }
+
+    const tapestry_directive_frame_t *frame =
+        (const tapestry_directive_frame_t *)data;
+
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
+    hdr->type        = TAPESTRY_MSG_DIRECTIVE;
+    hdr->src_id      = frame->src_id;
+    hdr->payload_len = len;
+    memcpy(tx_buf + TAPESTRY_MSG_HEADER_SIZE, data, len);
+
+    struct sockaddr_in dst;
+    fill_addr(&dst, CONFIG_TAPESTRY_GOSSIP_BCAST, CONFIG_TAPESTRY_GOSSIP_PORT);
+    zsock_sendto(gossip_sock, tx_buf,
+                 (size_t)(TAPESTRY_MSG_HEADER_SIZE + len), 0,
+                 (struct sockaddr *)&dst, sizeof(dst));
+    return 0;
 }
 
 static void udp_set_power(float level)
@@ -164,11 +251,13 @@ static void udp_set_power(float level)
 }
 
 const tapestry_transceiver_t transceiver_udp = {
-    .type      = TRANSCEIVER_TYPE_UDP,
-    .init      = udp_init,
-    .tx        = udp_tx,
-    .rx        = udp_rx,
-    .set_power = udp_set_power,
+    .type         = TRANSCEIVER_TYPE_UDP,
+    .init         = udp_init,
+    .tx           = udp_tx,
+    .rx           = udp_rx,
+    .set_power    = udp_set_power,
+    .tx_directive = udp_tx_directive,
+    .rx_directive = udp_rx_directive,
 };
 
 /* ── UDP-specific extensions (telemetry) ────────────────────────────────── */

@@ -19,6 +19,16 @@
  * limitations"): real UDP broadcast to 255.255.255.255 is unreliable
  * between sibling processes on macOS loopback, so this sends unicast to a
  * small fixed set of local peer ports instead of broadcasting.
+ *
+ * Directive frames (wire.h v5, tx_directive/rx_directive): unlike
+ * transceiver_udp.c, this transport carries no tapestry_msg_header_t at
+ * all — one gossip frame's bytes ARE the datagram, with peers
+ * disambiguated purely by which fixed port sent them. A directive frame
+ * therefore cannot share the gossip socket (nothing distinguishes a
+ * 30-byte directive from a stray short gossip read); it gets its own
+ * socket on DIRECTIVE_PORT_OFFSET above each element's gossip port
+ * instead — the sim-scale equivalent of the Zephyr transceiver's
+ * TAPESTRY_MSG_DIRECTIVE type tag.
  */
 
 #ifndef TAPESTRY_TRANSCEIVER_UDP_POSIX_H
@@ -41,5 +51,10 @@ extern const tapestry_transceiver_t transceiver_udp_posix;
  * base_port and n_elements for this to form a complete mesh.
  */
 void udp_posix_configure(uint8_t element_id, uint8_t n_elements, uint16_t base_port);
+
+/* Added to base_port for the directive socket's port range — see the
+ * header comment above.  Chosen well clear of any plausible n_elements
+ * (gossip ports occupy base_port .. base_port + n_elements - 1). */
+#define TAPESTRY_UDP_POSIX_DIRECTIVE_PORT_OFFSET 1000u
 
 #endif /* TAPESTRY_TRANSCEIVER_UDP_POSIX_H */

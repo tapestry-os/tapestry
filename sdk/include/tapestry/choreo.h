@@ -646,8 +646,69 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr);
  *
  * Valid after the first choreo_tick() in RUNNING state.  Never returns NULL.
  * The directive is recomputed each tick; do not cache across cycles.
+ *
+ * Source selection (remote directives, wire.h v5): while a remote L6 BSE's
+ * directives are ADOPTED (see choreo_remote_directive() below), this
+ * returns the latest remote directive instead of the local BSE's — but
+ * only in CHOREO_STATE_RUNNING.  In every other state, and whenever the
+ * remote stream is stale or not yet adopted, it returns the local BSE
+ * directive exactly as before the remote path existed.
  */
 const tapestry_bse_directive_t *choreo_get_directive(void);
+
+/* ── Remote L6 directives (wire.h v5) ────────────────────────────────────── */
+/*
+ * A remote BSE host (edge node, or an elected SCR_CAP_BSE_HOST element)
+ * can stream per-element directives over the wire.  The element treats
+ * them as a refinement of — never a replacement for — its own locally
+ * computed behavior:
+ *
+ *   - The local BSE keeps ticking and the script keeps advancing the whole
+ *     time, so falling back is bumpless by construction: the local
+ *     directive is always current, never resumed from a freeze.
+ *   - Remote directives steer the output only after the stream has been
+ *     continuously fresh for CHOREO_REMOTE_ADOPT_HOLD_MS (the same
+ *     stability-before-acting lesson as TAPESTRY_BSE_ANCHOR_HOLD_MS and
+ *     CHOREO_MEMBERSHIP_HOLD_MS: a flapping edge link must not thrash the
+ *     steering source).  This hold applies to first adoption and every
+ *     re-adoption after a stale period alike.
+ *   - A remote directive older than CHOREO_REMOTE_STALE_MS stops steering
+ *     immediately (fall back to local is instant; only adoption is
+ *     debounced — asymmetric on purpose, like quorum up/down).
+ *   - SUSPENDED (quorum lost) always steers locally: L5 remains the
+ *     safety authority, and a remote host's view of a partitioned
+ *     collective is exactly what cannot be trusted.
+ *
+ * Staleness is aged in choreo_tick() (WM_CYCLE_MS per call), measured from
+ * the arrival of the last accepted frame — never from sender-side time
+ * (elements share no wall clock; see wire.h).
+ */
+
+#ifndef CHOREO_REMOTE_STALE_MS
+#define CHOREO_REMOTE_STALE_MS       1500u   /* == WM_STALE_THRESHOLD_MS lesson */
+#endif
+#ifndef CHOREO_REMOTE_ADOPT_HOLD_MS
+#define CHOREO_REMOTE_ADOPT_HOLD_MS  2000u   /* == CHOREO_MEMBERSHIP_HOLD_MS   */
+#endif
+
+/*
+ * choreo_remote_directive — Feed one received remote directive in.
+ *
+ * Called by the runtime bridge (runtime.c) after transport_poll_directive()
+ * accepts a frame; d is the frame's payload converted to a BSE directive,
+ * goal_id/src_id are carried for telemetry attribution.  Resets the
+ * staleness clock.  Never steers the output by itself — adoption is
+ * decided in choreo_tick() per the rules above.
+ */
+void choreo_remote_directive(const tapestry_bse_directive_t *d,
+                             uint16_t goal_id, uint8_t src_id);
+
+/*
+ * choreo_remote_active — True while choreo_get_directive() is returning
+ * remote directives (adopted, fresh, and state is RUNNING).  For
+ * telemetry and tests.
+ */
+bool choreo_remote_active(void);
 
 /*
  * choreo_current_indicator — The active step's declared indicator effect

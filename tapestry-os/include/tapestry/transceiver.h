@@ -59,6 +59,16 @@ typedef struct {
 
     /* Set normalized [0.0, 1.0] transmit power.  No-op if unsupported. */
     void (*set_power)(float level);
+
+    /* Directive frames (wire.h v5, TAPESTRY_MSG_DIRECTIVE) — same tx/rx
+     * contract as above but for raw tapestry_directive_frame_t bytes.
+     * OPTIONAL: NULL means this medium does not carry directives (BLE and
+     * syslink today — the remote-BSE path is UDP/sim-only until the
+     * directive path is validated there; see gossip.c).  gossip.c
+     * NULL-checks before every call, so existing backends compile
+     * unchanged with these members zero-initialized. */
+    int (*tx_directive)(const uint8_t *data, uint16_t len);
+    int (*rx_directive)(uint8_t *buf, uint16_t max_len);
 } tapestry_transceiver_t;
 
 #endif /* TAPESTRY_TRANSCEIVER_H */

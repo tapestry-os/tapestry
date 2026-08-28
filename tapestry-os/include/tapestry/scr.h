@@ -93,6 +93,14 @@ typedef uint8_t scr_capability_t;
  */
 #define SCR_CAP_BONDING      ((scr_capability_t)0x08)  /* physical bonding/docking */
 #define SCR_CAP_ABS_POSITION ((scr_capability_t)0x10)  /* lighthouse/GPS/mocap etc */
+/*
+ * BSE_HOST: this element has the compute class (linux-arm64 shepherd, edge
+ * box) to run a full remote L6 BSE and could be elected to the role.  Like
+ * BONDING/ABS_POSITION it is invisible to follower-role election.  Phase 0
+ * (wire v5) defines only the flag; election of the hosting role and host
+ * failover are a later stage — nothing in this repo reads it yet.
+ */
+#define SCR_CAP_BSE_HOST     ((scr_capability_t)0x20)  /* can host remote L6 BSE */
 
 /* ── Swarm roles ──────────────────────────────────────────────────────────── */
 /*

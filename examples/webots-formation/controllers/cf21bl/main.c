@@ -5,14 +5,18 @@
  * Webots counterpart to examples/cf21bl-formation's Choreo mode: the exact
  * same generated choreo_script.h (from cf21bl-formation's own
  * change-partners.choreo.toml, via sdk/tools/choreoc.py) drives the same
- * L4/L6/L7 stack (world_model.c/bse.c/choreo.c, unmodified) and the same
- * L3 gossip framing (gossip.c, unmodified — see ../common/zephyr_shim/).
- * Only L1 (this file's flight-state machine + substrate_webots.c, both
- * cf21bl-specific) is new to this substrate; L3's transceiver
+ * L4/L6/L7 stack (world_model.c/bse.c/choreo.c) and the same L3 gossip
+ * framing (gossip.c — see ../common/zephyr_shim/); none of those files
+ * have any Webots- or POSIX-specific code in them, they are simply built
+ * from this substrate's own Makefile instead of Zephyr's. Only L1 (this
+ * file's flight-state machine + substrate_webots.c, both cf21bl-specific)
+ * is new to this substrate; L3's transceiver
  * (../common/transceiver_udp_posix.c) is shared across every substrate in
- * this example. See ../../README.md for the full architecture, the
- * "Porting to a different element" section for what a new substrate needs to
- * write, and the deliberate scope cuts noted inline below.
+ * this example — including, as of wire.h v5, a directive rx/tx path (see
+ * that file) that mirrors this loop's remote-directive polling below. See
+ * ../../README.md for the full architecture, the "Porting to a different
+ * element" section for what a new substrate needs to write, and the
+ * deliberate scope cuts noted inline below.
  *
  * One controller process per drone (Webots' standard multi-robot model,
  * same as one OS process per physical element on real hardware). Element
@@ -183,6 +187,7 @@ int main(int argc, char **argv)
     uint32_t        mission_elapsed_ms = 0;   /* counts up once FLYING starts */
     bool            log_quorum_up   = false;
     int             last_step       = -2;
+    bool            last_remote_active = false;   /* edge-triggered log below */
 
     int    timestep      = (int)wb_robot_get_basic_time_step();
     double coord_accum_ms = 0.0;
@@ -200,6 +205,26 @@ int main(int argc, char **argv)
 
         /* ── Coordination tick (WM_CYCLE_MS cadence) ─────────────────── */
         gossip_drain(&wm, element_id);
+
+        /* Remote L6 directives (wire.h v5) — the licensed-tier failover
+         * path's element side. Fed in before wm_tick/scr_tick/choreo_tick,
+         * same ordering as tapestry-os/subsys/runtime/runtime.c's step 1b,
+         * so choreo_tick (called below, inside FLIGHT_FLYING) ages a frame
+         * received THIS cycle from zero. This example links gossip.c
+         * directly rather than transport.c (see sources.mk), so it calls
+         * gossip_poll_directive() itself instead of going through
+         * transport_poll_directive(). */
+        tapestry_directive_frame_t dirf;
+        if (gossip_poll_directive(&dirf, element_id)) {
+            tapestry_bse_directive_t d = {
+                .type     = (tapestry_bse_directive_type_t)dirf.type,
+                .target   = { .x = dirf.x, .y = dirf.y, .z = dirf.z },
+                .spring_k = dirf.spring_k,
+                .spacing  = dirf.spacing,
+            };
+            choreo_remote_directive(&d, dirf.goal_id, dirf.src_id);
+        }
+
         wm_tick(&wm, WM_CYCLE_MS);
 
         float px, py, pz;
@@ -281,6 +306,17 @@ int main(int argc, char **argv)
             log_quorum_up = quorum_up;
 
             choreo_tick(&wm, &scr);
+
+            /* Steering-source transition, logged on the edge only — same
+             * rationale as runtime.c's step 4a: choreo.c stays OS-free
+             * (no logging), and this is otherwise invisible in a demo. */
+            bool remote_active = choreo_remote_active();
+            if (remote_active != last_remote_active) {
+                last_remote_active = remote_active;
+                printf("id=%u remote BSE %s\n", (unsigned)element_id,
+                       remote_active ? "adopted — steering by remote directives"
+                                     : "stale/suspended — local BSE fallback");
+            }
 
             /* HARD_RT gossip on the quorum-loss edge. Not delayed by
              * QUORUM_UP_MS despite scr's held view above: loss is always

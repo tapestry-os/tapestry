@@ -44,6 +44,7 @@ TARGETS = [
     REPO_ROOT / "tapestry-csm-sim" / "orchestrator" / "protocol.py",
     REPO_ROOT / "tapestry-scr-sim" / "orchestrator" / "protocol.py",
     REPO_ROOT / "tapestry-scr-hw" / "telemetry" / "protocol.py",
+    REPO_ROOT / "sdk" / "tools" / "directive_probe.py",
 ]
 
 BEGIN_MARKER = "# === BEGIN GENERATED WIRE PROTOCOL (tools/gen_wire_protocol.py — DO NOT EDIT) ==="
@@ -70,6 +71,7 @@ STRUCTS = [
     ("tapestry_gossip_frame_t",     "GOSSIP_FMT"),
     ("tapestry_metric_frame_t",     "METRIC_FMT"),
     ("tapestry_scr_metric_frame_t", "SCR_METRIC_FMT"),
+    ("tapestry_directive_frame_t",  "DIRECTIVE_FMT"),
 ]
 
 

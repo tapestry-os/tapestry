@@ -2082,4 +2082,190 @@ ZTEST(choreo_script, test_current_indicator_is_none_for_a_bare_goal_not_a_script
                     "a bare goal has no step to annotate");
 }
 
+/* ── Remote L6 directives (wire.h v5): adoption, fallback, re-adoption ────── */
+/*
+ * The degraded-mode ladder's element side (choreo.h's remote-directive
+ * section).  The remote BSE host is emulated by feeding
+ * choreo_remote_directive() in the same order runtime.c does (frame
+ * arrives BEFORE choreo_tick each cycle).  The local script is a single
+ * long HOLD at (0,0), so the local BSE's directive is MOVE_TO_POINT to
+ * the captured station — distinguishable from the remote target by
+ * coordinates alone, which is what lets these tests watch the steering
+ * source switch without peeking at internals.
+ */
+
+#define REMOTE_ADOPT_TICKS  (CHOREO_REMOTE_ADOPT_HOLD_MS / WM_CYCLE_MS)
+#define REMOTE_STALE_TICKS  (CHOREO_REMOTE_STALE_MS / WM_CYCLE_MS)
+
+static const choreo_step_t remote_hold_script[] = {
+    { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 600000 },
+};
+
+/* One runtime cycle with a fresh remote frame: feed, then tick. */
+static void remote_feed_tick(const scr_state_t *scr, float tx, float ty)
+{
+    tapestry_bse_directive_t rd = {
+        .type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+        .target = { .x = tx, .y = ty },
+    };
+    choreo_remote_directive(&rd, 0x77u, 9u);
+    choreo_tick(&wm, scr);
+}
+
+ZTEST(choreo_script, test_remote_directive_adopts_only_after_stability_hold)
+{
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(remote_hold_script, 1), 0,
+                  "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    /* One tick short of the hold: still steering locally (HOLD station). */
+    for (unsigned i = 0; i < REMOTE_ADOPT_TICKS - 1u; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+        zassert_false(choreo_remote_active(),
+                      "tick %u: adoption must wait out the stability hold", i);
+        zassert_within(choreo_get_directive()->target.x, 0.0f, 0.001f,
+                       "tick %u: still the local HOLD station", i);
+    }
+
+    /* The hold elapses — remote steers from this cycle on. */
+    remote_feed_tick(&scr, 7.0f, 8.0f);
+    zassert_true(choreo_remote_active(), "adopted after the hold");
+    zassert_within(choreo_get_directive()->target.x, 7.0f, 0.001f,
+                   "remote target must steer once adopted");
+    zassert_within(choreo_get_directive()->target.y, 8.0f, 0.001f,
+                   "remote target must steer once adopted");
+}
+
+ZTEST(choreo_script, test_remote_staleness_falls_back_to_local_bumplessly)
+{
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(remote_hold_script, 1), 0,
+                  "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    for (unsigned i = 0; i < REMOTE_ADOPT_TICKS; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+    }
+    zassert_true(choreo_remote_active(), "adopted");
+
+    /* The stream dies.  Remote keeps steering until CHOREO_REMOTE_STALE_MS
+     * from the last frame, then falls back the same tick — and the local
+     * BSE has been ticking the whole time, so the fallback directive is
+     * the CURRENT station-keep, not a thawed stale one. */
+    for (unsigned i = 0; i < REMOTE_STALE_TICKS - 2u; i++) {
+        choreo_tick(&wm, &scr);
+        zassert_true(choreo_remote_active(),
+                     "tick %u after loss: last frame still fresh", i);
+    }
+    choreo_tick(&wm, &scr);
+    zassert_false(choreo_remote_active(),
+                  "stale stream must stop steering immediately");
+    zassert_equal(choreo_get_directive()->type,
+                  TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "local BSE directive current on the fallback tick");
+    zassert_within(choreo_get_directive()->target.x, 0.0f, 0.001f,
+                   "fallback steers to the live local HOLD station");
+}
+
+ZTEST(choreo_script, test_remote_readoption_is_debounced_like_first_adoption)
+{
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(remote_hold_script, 1), 0,
+                  "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    for (unsigned i = 0; i < REMOTE_ADOPT_TICKS; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+    }
+    zassert_true(choreo_remote_active(), "adopted");
+
+    /* Outage long enough to go stale. */
+    for (unsigned i = 0; i < REMOTE_STALE_TICKS + 2u; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_false(choreo_remote_active(), "stale after the outage");
+
+    /* The stream returns: a flapping link must NOT steer again instantly —
+     * the full stability hold applies to re-adoption too. */
+    for (unsigned i = 0; i < REMOTE_ADOPT_TICKS - 1u; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+        zassert_false(choreo_remote_active(),
+                      "tick %u after return: still debouncing", i);
+    }
+    remote_feed_tick(&scr, 7.0f, 8.0f);
+    zassert_true(choreo_remote_active(), "re-adopted after the full hold");
+}
+
+ZTEST(choreo_script, test_remote_never_steers_while_suspended)
+{
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(remote_hold_script, 1), 0,
+                  "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    for (unsigned i = 0; i < REMOTE_ADOPT_TICKS; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+    }
+    zassert_true(choreo_remote_active(), "adopted");
+
+    /* Quorum loss: L5 is the safety authority — a perfectly fresh remote
+     * stream must not steer a SUSPENDED element (a remote host's view of a
+     * partitioned collective is exactly what cannot be trusted). */
+    scr.quorum_state = SCR_QUORUM_LOST;
+    for (unsigned i = 0; i < 5u; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+        zassert_false(choreo_remote_active(),
+                      "tick %u: SUSPENDED must steer locally", i);
+        zassert_within(choreo_get_directive()->target.x, 0.0f, 0.001f,
+                       "tick %u: local HOLD station while suspended", i);
+    }
+
+    /* Recovery: the stream stayed fresh and adopted throughout, so remote
+     * steering resumes with quorum — no second debounce for a link that
+     * never actually flapped. */
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    remote_feed_tick(&scr, 7.0f, 8.0f);
+    zassert_true(choreo_remote_active(), "steers again on quorum recovery");
+    zassert_within(choreo_get_directive()->target.x, 7.0f, 0.001f,
+                   "remote target after recovery");
+}
+
+ZTEST(choreo_script, test_remote_directive_cannot_activate_an_idle_element)
+{
+    /* No goal, no script — a directive stream must not wake a parked
+     * element into motion.  The quiescence directive stands. */
+    choreo_init(0);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+
+    for (unsigned i = 0; i < REMOTE_ADOPT_TICKS * 2u; i++) {
+        remote_feed_tick(&scr, 7.0f, 8.0f);
+        zassert_false(choreo_remote_active(),
+                      "tick %u: IDLE never adopts remote steering", i);
+        zassert_equal(choreo_get_directive()->type,
+                      TAPESTRY_BSE_DIRECTIVE_IDLE,
+                      "tick %u: quiescence directive must stand", i);
+    }
+}
+
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

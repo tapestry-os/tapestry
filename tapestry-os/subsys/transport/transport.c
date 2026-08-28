@@ -134,6 +134,12 @@ int transport_drain(world_model_t *wm, element_id_t own_id)
     return n;
 }
 
+bool transport_poll_directive(element_id_t own_id,
+                              tapestry_directive_frame_t *out)
+{
+    return gossip_poll_directive(out, own_id);
+}
+
 /* ── transport_negotiate_id ──────────────────────────────────────────────── */
 
 static uint32_t hw_nonce(void)

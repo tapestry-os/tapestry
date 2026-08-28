@@ -372,6 +372,129 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
     return total;
 }
 
+/* ── Directive frames (wire.h v5) ────────────────────────────────────────── */
+/*
+ * Receive-side filtering all happens here, in order: length, HMAC (when
+ * enabled), version, addressee, type validity, then per-src replay.  A
+ * frame must clear every gate before it can influence anything — the
+ * consumer (choreo.c via runtime.c) only ever sees frames that passed.
+ *
+ * Replay defense: seq must be STRICTLY greater than the last accepted seq
+ * from that src (first contact always accepted).  The table resets only on
+ * element reboot; wire.h places the burden of restart-monotonic seqs on
+ * the sender.
+ */
+
+static uint32_t s_dir_last_seq[MAX_ELEMENTS];
+static bool     s_dir_seq_seen[MAX_ELEMENTS];
+
+void gossip_send_directive(const tapestry_directive_frame_t *d)
+{
+    tapestry_directive_frame_t f = *d;
+    f.version = TAPESTRY_WIRE_VERSION;
+
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+    uint8_t wire[TAPESTRY_DIRECTIVE_WIRE_SIZE];
+    memcpy(wire, &f, sizeof(f));
+    if (!hmac4_sign(wire, sizeof(f), wire + sizeof(f))) {
+        /* Same reasoning as tx_frame(): an unauthenticated directive would
+         * be rejected by every peer and mask a broken key as loss. */
+        LOG_ERR("directive not sent — HMAC tag could not be computed");
+        return;
+    }
+    const uint8_t *out     = wire;
+    uint16_t       out_len = TAPESTRY_DIRECTIVE_WIRE_SIZE;
+#else
+    const uint8_t *out     = (const uint8_t *)&f;
+    uint16_t       out_len = (uint16_t)sizeof(f);
+#endif
+
+    for (int i = 0; i < g_n; i++) {
+        if (g_transceivers[i]->tx_directive != NULL) {
+            g_transceivers[i]->tx_directive(out, out_len);
+        }
+    }
+}
+
+bool gossip_poll_directive(tapestry_directive_frame_t *out,
+                           element_id_t own_id)
+{
+    uint8_t buf[TAPESTRY_DIRECTIVE_WIRE_SIZE];
+    bool    accepted = false;
+
+    for (int i = 0; i < g_n; i++) {
+        if (g_transceivers[i]->rx_directive == NULL) {
+            continue;
+        }
+        int len;
+        while ((len = g_transceivers[i]->rx_directive(buf, sizeof(buf))) > 0) {
+            if (len < (int)sizeof(tapestry_directive_frame_t)) {
+                continue;
+            }
+
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+            if (len < (int)TAPESTRY_DIRECTIVE_WIRE_SIZE) {
+                LOG_WRN("short directive (len=%d) — auth tag missing, dropped",
+                        len);
+                continue;
+            }
+            if (!hmac4_verify(buf, sizeof(tapestry_directive_frame_t),
+                              buf + sizeof(tapestry_directive_frame_t))) {
+                LOG_WRN("directive HMAC mismatch — frame dropped");
+                continue;
+            }
+#endif
+
+            const tapestry_directive_frame_t *d =
+                (const tapestry_directive_frame_t *)buf;
+
+            if (d->version != TAPESTRY_WIRE_VERSION) {
+                static uint32_t mismatch_count;
+                if ((++mismatch_count % 20u) == 1u) {
+                    LOG_WRN("directive version mismatch: src=%u wire=%u "
+                            "(%u frames)", d->src_id, d->version,
+                            mismatch_count);
+                }
+                continue;
+            }
+            if (d->target_id != own_id &&
+                d->target_id != TAPESTRY_DIRECTIVE_TARGET_ALL) {
+                continue;
+            }
+            if (d->type > TAPESTRY_DIRECTIVE_TYPE_MAX) {
+                /* Vocabulary mismatch fails closed (wire.h). */
+                LOG_WRN("unknown directive type %u from src %u — dropped",
+                        d->type, d->src_id);
+                continue;
+            }
+            if (d->src_id >= MAX_ELEMENTS) {
+                /* No replay-tracking slot exists for this src — fail
+                 * closed rather than accept an untrackable sender. */
+                LOG_WRN("directive src %u out of range — dropped", d->src_id);
+                continue;
+            }
+            if (s_dir_seq_seen[d->src_id] &&
+                d->seq <= s_dir_last_seq[d->src_id]) {
+                LOG_WRN("directive replay/reorder from src %u "
+                        "(seq %u <= %u) — dropped", d->src_id,
+                        d->seq, s_dir_last_seq[d->src_id]);
+                continue;
+            }
+            s_dir_seq_seen[d->src_id] = true;
+            s_dir_last_seq[d->src_id] = d->seq;
+
+            /* Newest-wins within a poll: later frames overwrite earlier
+             * ones (per src, seq ordering above guarantees later == newer;
+             * across srcs the caller is expected to have one BSE host —
+             * elected-host arbitration is a later stage). */
+            *out     = *d;
+            accepted = true;
+        }
+    }
+
+    return accepted;
+}
+
 /* ── Auto-ID discovery primitives ────────────────────────────────────────── */
 
 void gossip_send_discovery(uint32_t nonce)

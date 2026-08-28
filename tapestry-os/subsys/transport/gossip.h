@@ -12,6 +12,7 @@
 
 #include <tapestry/transceiver.h>
 #include <tapestry/csm.h>
+#include <tapestry/wire.h>
 
 /* Register the active transceiver set.  Must be called before gossip_send or
  * gossip_drain.  The array must remain valid for the lifetime of the program
@@ -39,6 +40,24 @@ int gossip_drain(world_model_t *wm, element_id_t own_id);
  * re-advertising to reduce collision probability on dense networks.
  * Call once per cycle, immediately after gossip_drain completes. */
 void gossip_relay_flush(void);
+
+/* ── Directive frames (wire.h v5) ────────────────────────────────────────── */
+
+/* Sign (when CONFIG_TAPESTRY_WIRE_AUTH_ENABLED) and transmit one directive
+ * frame via every transceiver that supports directives (tx_directive !=
+ * NULL — UDP only today).  d->version is overwritten with
+ * TAPESTRY_WIRE_VERSION; every other field is the caller's.  Element
+ * firmware never calls this; it exists for the remote BSE host role and
+ * for the wire tests, so the sign/verify pair lives in one place. */
+void gossip_send_directive(const tapestry_directive_frame_t *d);
+
+/* Drain all pending directive frames from every transceiver, apply the
+ * full receive filter chain (length, HMAC, version, addressee, type
+ * validity, per-src replay — see gossip.c), and write the newest accepted
+ * frame to *out.  Returns true if any frame was accepted this call; *out
+ * is untouched when none was. */
+bool gossip_poll_directive(tapestry_directive_frame_t *out,
+                           element_id_t own_id);
 
 /* ── Auto-ID discovery (boot window only) ────────────────────────────────── */
 /* Medium-agnostic primitives behind transport_negotiate_id().  A discovery

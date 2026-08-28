@@ -59,6 +59,18 @@ void transport_send(const element_state_t *own_state, uint8_t qos_tier);
  * Returns the total number of frames processed across all transports. */
 int transport_drain(world_model_t *wm, element_id_t own_id);
 
+/* ── Remote directives (wire.h v5) ───────────────────────────────────────── */
+
+/* Drain pending directive frames from every transport and write the newest
+ * one that survives the full receive filter chain (HMAC when enabled,
+ * version, addressee = own_id or broadcast, type validity, per-src replay
+ * — see gossip.c) to *out.  Returns true when a new directive was accepted
+ * this call; *out is untouched otherwise.  Call once per runtime cycle,
+ * after transport_drain().  Media without directive support (BLE, syslink
+ * today) simply contribute nothing. */
+bool transport_poll_directive(element_id_t own_id,
+                              tapestry_directive_frame_t *out);
+
 /* ── Auto-ID discovery (boot window only) ────────────────────────────────── */
 
 /*
