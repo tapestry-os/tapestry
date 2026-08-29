@@ -281,11 +281,6 @@ motor power again. The planned fix is to replace dead-reckoning distance with
 RSSI-based proximity from the BLE scan callbacks (`transceiver_ble.c` already
 receives `rssi` per peer).
 
-Note the grid's own spacing is tight against the repulsion backstop:
-`form-grid.choreo.toml`'s `radius = 25` puts adjacent vertices 200 mm apart
-against a `DEMO_TRACK_MIN_SEP` of 160 mm, only 1.25x. Widen the radius before
-reading much into settling behaviour at the vertices.
-
 **FORM's `abs_position` capability claim is weaker than its usual meaning.**
 `SCR_CAP_ABS_POSITION` (declared in `main.c`'s `scr_init()` call, and
 implicitly required by FORM's default `frame = "absolute"`) normally means

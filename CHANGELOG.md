@@ -5,6 +5,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Remote L6 directive path over the wire** (`TAPESTRY_MSG_DIRECTIVE`, wire
+  v5) — an edge/cloud BSE host (or an elected `SCR_CAP_BSE_HOST` element)
+  can now stream per-element directives that steer an element directly,
+  instead of every element only ever running its own local BSE. The local
+  BSE and script keep ticking the whole time regardless, so falling back
+  is bumpless by construction — never a resume-from-freeze. Bumps
+  `TAPESTRY_WIRE_VERSION` to 5.
+
+### Fixed
+- **`HOLD` baked in tracker overshoot no longer a permanent station offset.**
+  `HOLD` now inherits the prior intent's own achieved `MOVE_TO_POINT` goal point
+  when one exists, rather than the live position at the moment it took
+  over.
+- **A cutebot booting in isolation (no peers yet negotiated) recovers.**
+  The self-healing renegotiation retry already validated in
+  `cf21bl-formation` (`transport_negotiate_id_retry()`) is now shared via
+  `transport.c`, so cutebot gets it too.
+- **`choreo_collective_achieved()` had no track filter.** It iterated
+  every active peer with no `current_track` comparison, so on a
+  multi-track script a peer working a *different* track could block a
+  `scope = "all"` step on this one. `bse.c`'s `collect_participants()`
+  already filters the collective centroid by `current_track`; the
+  achievement predicate now applies the same filter. Latent until now —
+  no shipped script uses tracks yet.
+- **`form-grid`'s vertex spacing changed to align with Demo spacing**
+  `radius` is now 50 (400 mm, 2.5x the floor) in line with `formation.c`'s
+  current `DEMO_TARGET_SPACING`.
+
 ## [1.0.0] - 2026-08-27
 
 ### Added

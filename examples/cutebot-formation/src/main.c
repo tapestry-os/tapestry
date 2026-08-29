@@ -117,7 +117,29 @@ int main(void)
     }
 
     int n_total;
-    const element_id_t element_id = transport_negotiate_id(&n_total);
+    element_id_t element_id = transport_negotiate_id(&n_total);
+
+    if (n_total < 2) {
+        /* Auto-ID heard nobody. Since hex files are flashed to USB mass
+         * storage sequentially, staggered reboots are the NORMAL case
+         * here, not a rare fault — without recovery this robot would sit
+         * isolated permanently (red headlights, no motion, Choreo frozen
+         * on quorum loss) until power-cycled by hand. See transport_
+         * negotiate_id_retry()'s doc for the two ways this resolves; no
+         * solo-allowed escape hatch here (unlike cf21bl-formation) since a
+         * grid formation with one missing robot is a visibly different
+         * demo, not a silent degradation worth shipping quietly. */
+        LOG_ERR("id=%u auto-ID heard NO peers — grounded self-healing "
+                "recovery (renegotiates until a peer is found)",
+                (unsigned)element_id);
+        substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);
+
+        element_id = transport_negotiate_id_retry(element_id, &n_total);
+
+        LOG_WRN("id=%u recovered — n_total=%d, proceeding",
+                (unsigned)element_id, n_total);
+        substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+    }
 
     float sx, sy, shead;
     compute_start_pos(element_id, n_total, &sx, &sy, &shead);

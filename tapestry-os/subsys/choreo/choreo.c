@@ -554,6 +554,16 @@ bool choreo_collective_achieved(const world_model_t *wm)
         if (e->is_self || !e->is_active) {
             continue;
         }
+        /* Track-filtered to match bse.c's collect_participants() (§7,
+         * wire v4): a peer on a DIFFERENT track is running a different
+         * collective activity and must not block this one's scope=all
+         * step. choreo_current_track() defaults to 0, matching every
+         * peer's gossiped current_track on a script with no tracks, so
+         * this is a no-op filter for every existing (non-tracked)
+         * caller. */
+        if (e->state.current_track != choreo_current_track()) {
+            continue;
+        }
         if (!e->state.goal_achieved) {
             return false;
         }

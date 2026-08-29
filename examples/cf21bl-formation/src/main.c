@@ -344,118 +344,19 @@ int main(void)
          * after a failed negotiation is how duplicate-ID flights happen
          * (both drones alone-in-their-own-mind at id=0, mutually
          * invisible, hovering until the backstop — 2026-07-19 flight 4).
-         * Ground as a SELF-HEALING radio-diagnostic station instead:
-         * gossip + listen, re-log the retained window outcome and the
-         * duplicate-ID evidence every 2 s, and recover WITHOUT a
-         * power-cycle by either
-         *   (a) renegotiating at a jittered interval — if the peer is
-         *       meanwhile gossiping (grounded like us, or flying), its
-         *       claimed ID resolves the collision (run 8: gossip flowed
-         *       at ~35% while both sat deaf-mute at id=0), or
-         *   (b) seeing a fresh peer directly (IDs already differ).
+         * Recover WITHOUT a power-cycle instead — see transport_negotiate_
+         * id_retry()'s doc for the two ways this resolves.
          * Deliberate solo flights: -DCONFIG_DEMO_ALLOW_SOLO=y. */
         LOG_ERR("id=%u auto-ID heard NO peers — NOT ARMING; grounded "
                 "self-healing diagnostic mode (renegotiates until a peer "
                 "is found)", (unsigned)element_id);
-
-        element_state_t diag_state = { 0 };
-        diag_state.id          = element_id;
-        diag_state.orientation = orientation_identity();  /* grounded, on the
-                                                            * ground — no
-                                                            * attitude to report */
-        world_model_t diag_wm;
-        wm_init(&diag_wm, element_id, &diag_state, 0.0f);
-
-        uint32_t diag_gossip_ms = DEMO_GOSSIP_MS;
-        uint32_t diag_log_ms    = 0;
-        uint32_t reneg_in_ms    = 15000u + (k_cycle_get_32() % 30000u);
         substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);
 
-        for (bool recovered = false; !recovered; k_msleep(WM_CYCLE_MS)) {
-            transport_drain(&diag_wm, element_id);
-            wm_tick(&diag_wm, WM_CYCLE_MS);
+        element_id = transport_negotiate_id_retry(element_id, &n_total);
 
-            lh2_position_t dp;
-            if (cf21bl_lighthouse_is_valid() &&
-                cf21bl_lighthouse_get_position(&dp) == 0) {
-                diag_state.position.x = dp.x;
-                diag_state.position.y = dp.y;
-            }
-            wm_update_self(&diag_wm, &diag_state);
-
-            int fresh = 0, active = 0;
-            for (int i = 0; i < MAX_ELEMENTS; i++) {
-                const wm_entry_t *e = &diag_wm.entries[i];
-                if (e->is_active && !e->is_self) {
-                    active++;
-                    if (!e->is_stale) { fresh++; }
-                }
-            }
-
-            if (fresh > 0) {
-                /* A distinct-ID peer is visible — radio and identities are
-                 * fine; adopt the visible collective size and proceed. */
-                n_total = 1 + active;
-                LOG_WRN("id=%u recovered: peer VISIBLE (fresh=%d) — "
-                        "n_total=%d, proceeding to flight prep",
-                        (unsigned)element_id, fresh, n_total);
-                substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
-                recovered = true;
-                continue;
-            }
-
-            diag_log_ms += WM_CYCLE_MS;
-            if (diag_log_ms >= 2000u) {
-                diag_log_ms = 0;
-                uint32_t btx, nonces, running;
-                transport_get_negotiation_stats(&btx, &nonces, &running);
-                uint32_t dup = gossip_own_id_frames();
-                if (dup > 0u) {
-                    LOG_ERR("id=%u GROUNDED-DIAG: DUPLICATE ID — %u frames "
-                            "from another element also claiming id=%u; "
-                            "renegotiating in %u s",
-                            (unsigned)element_id, dup,
-                            (unsigned)element_id, reneg_in_ms / 1000u);
-                } else {
-                    LOG_INF("id=%u GROUNDED-DIAG: peers fresh=0 active=%d "
-                            "window(beacons=%u nonces=%u running=%u) "
-                            "own_id_frames=0",
-                            (unsigned)element_id, active,
-                            btx, nonces, running);
-                }
-            }
-
-            diag_gossip_ms += WM_CYCLE_MS;
-            if (diag_gossip_ms >= DEMO_GOSSIP_MS) {
-                diag_gossip_ms = 0;
-                diag_state.update_seq++;
-                transport_send(&diag_state, TAPESTRY_QOS_SOFT_RT);
-            }
-
-            if (reneg_in_ms <= WM_CYCLE_MS) {
-                LOG_INF("id=%u re-running auto-ID negotiation ...",
-                        (unsigned)element_id);
-                int nt;
-                element_id_t nid = transport_negotiate_id(&nt);
-                if (nt >= 2) {
-                    element_id    = nid;
-                    n_total       = nt;
-                    diag_state.id = nid;
-                    LOG_WRN("id=%u recovered via renegotiation: n_total=%d, "
-                            "proceeding to flight prep",
-                            (unsigned)element_id, n_total);
-                    substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
-                    recovered = true;
-                } else {
-                    reneg_in_ms = 15000u + (k_cycle_get_32() % 30000u);
-                    LOG_INF("id=%u still alone after renegotiation — next "
-                            "retry in %u s", (unsigned)element_id,
-                            reneg_in_ms / 1000u);
-                }
-            } else {
-                reneg_in_ms -= WM_CYCLE_MS;
-            }
-        }
+        LOG_WRN("id=%u recovered — n_total=%d, proceeding to flight prep",
+                (unsigned)element_id, n_total);
+        substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
     }
 #endif /* !CONFIG_DEMO_ALLOW_SOLO */
 #else

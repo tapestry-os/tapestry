@@ -26,9 +26,14 @@ hold = { duration = "5s", requires = ["locomotion"] }
 # element count, so the layout adapts to however many elements are
 # actually fresh right now (see bse.c's TAPESTRY_BSE_SHAPE_GRID case) —
 # 4 elements gives a clean 2x2; a dropped element reflows the rest into a
-# smaller near-square rather than leaving a gap.  25-unit cell spacing
-# matches formation.c's old spring-demo DEMO_TARGET_SPACING, so grid
-# density is visually consistent with the L4-only demo this replaces.
+# smaller near-square rather than leaving a gap.  radius is reused
+# directly as cell spacing for this shape (1:1, not center-to-vertex —
+# see bse.c), so 50-unit spacing here matches formation.c's current
+# spring-demo DEMO_TARGET_SPACING (50.0f), keeping grid density
+# consistent with the L4-only demo this replaces.  50 units = 400 mm is
+# 2.5x DEMO_TRACK_MIN_SEP (160 mm) — comfortably clear of the emergency
+# repulsion floor at the intended, fully-settled vertex positions,
+# unlike the former radius=25 (200 mm, only 1.25x).
 # Advances once every fresh element has settled within eps of its own
 # grid vertex for the settle time (scope="all" — gossiped/aggregated, see
 # choreo_collective_achieved()); the timeout is the robustness net if
@@ -50,7 +55,7 @@ hold = { duration = "5s", requires = ["locomotion"] }
 [steps.form]
 target   = [50.0, 50.0, 0.0]
 shape    = "grid"
-radius   = 25.0
+radius   = 50.0
 until    = "achieved"
 scope    = "all"
 timeout  = "45s"

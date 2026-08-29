@@ -27,7 +27,7 @@ static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {
 
     { .goal = { .type = CHOREO_GOAL_FORM,
                 .target = { 50.0f, 50.0f, 0.0f },
-                .radius = 25.0f,
+                .radius = 50.0f,
                 .shape = TAPESTRY_BSE_SHAPE_GRID,
                 .required_caps = CHOREO_CAP_LOCOMOTION | CHOREO_CAP_ABS_POSITION,
                 .achieve_eps = 5.0f,

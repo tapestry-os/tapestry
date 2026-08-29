@@ -281,6 +281,105 @@ void transport_get_negotiation_stats(uint32_t *beacons_tx,
     *ids_running  = s_neg.ids_running;
 }
 
+/* ── Isolated-boot self-healing recovery ─────────────────────────────────── */
+/*
+ * See transport.h for the full contract.  Lifted from cf21bl-formation's
+ * main.c (the only place this existed before) so cutebot-formation — which
+ * had NO recovery at all, staying isolated permanently until power-cycled —
+ * gets it too, without a second copy to drift out of sync with the first.
+ */
+element_id_t transport_negotiate_id_retry(element_id_t isolated_id,
+                                          int *n_total_out)
+{
+    element_state_t diag_state = {0};
+
+    diag_state.id          = isolated_id;
+    diag_state.orientation = orientation_identity();
+
+    world_model_t diag_wm;
+    wm_init(&diag_wm, isolated_id, &diag_state, 0.0f);
+
+    uint32_t gossip_accum_ms = GOSSIP_INTERVAL_MS;   /* send immediately */
+    uint32_t log_accum_ms    = 0;
+    uint32_t reneg_in_ms     = 15000u + (k_cycle_get_32() % 30000u);
+
+    for (;;) {
+        transport_drain(&diag_wm, isolated_id);
+        wm_tick(&diag_wm, WM_CYCLE_MS);
+        wm_update_self(&diag_wm, &diag_state);
+
+        int fresh = 0, active = 0;
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &diag_wm.entries[i];
+            if (e->is_active && !e->is_self) {
+                active++;
+                if (!e->is_stale) { fresh++; }
+            }
+        }
+
+        if (fresh > 0) {
+            /* A distinct-ID peer is visible — radio and identities are
+             * fine; adopt the visible collective size. */
+            *n_total_out = 1 + active;
+            LOG_WRN("id=%u recovered: peer VISIBLE (fresh=%d) — n_total=%d",
+                    (unsigned)isolated_id, fresh, *n_total_out);
+            return isolated_id;
+        }
+
+        log_accum_ms += WM_CYCLE_MS;
+        if (log_accum_ms >= 2000u) {
+            log_accum_ms = 0;
+            uint32_t btx, nonces, running;
+            transport_get_negotiation_stats(&btx, &nonces, &running);
+            uint32_t dup = gossip_own_id_frames();
+            if (dup > 0u) {
+                LOG_ERR("id=%u GROUNDED-DIAG: DUPLICATE ID — %u frames "
+                        "from another element also claiming id=%u; "
+                        "renegotiating in %u s",
+                        (unsigned)isolated_id, dup,
+                        (unsigned)isolated_id, reneg_in_ms / 1000u);
+            } else {
+                LOG_INF("id=%u GROUNDED-DIAG: peers fresh=0 active=%d "
+                        "window(beacons=%u nonces=%u running=%u) "
+                        "own_id_frames=0",
+                        (unsigned)isolated_id, active, btx, nonces, running);
+            }
+        }
+
+        gossip_accum_ms += WM_CYCLE_MS;
+        if (gossip_accum_ms >= GOSSIP_INTERVAL_MS) {
+            gossip_accum_ms = 0;
+            diag_state.update_seq++;
+            transport_send(&diag_state, TAPESTRY_QOS_SOFT_RT);
+        }
+
+        if (reneg_in_ms <= WM_CYCLE_MS) {
+            LOG_INF("id=%u re-running auto-ID negotiation ...",
+                    (unsigned)isolated_id);
+            int nt;
+            element_id_t nid = transport_negotiate_id(&nt);
+            if (nt >= 2) {
+                LOG_WRN("id=%u recovered via renegotiation: n_total=%d",
+                        (unsigned)nid, nt);
+                *n_total_out = nt;
+                return nid;
+            }
+            /* Still isolated — same as the flight-validated original,
+             * isolated_id/diag_state.id are deliberately NOT reassigned
+             * to nid here even though negotiation just re-ran: keep
+             * gossiping under the SAME identity across repeated failed
+             * attempts rather than churning it every retry. */
+            reneg_in_ms = 15000u + (k_cycle_get_32() % 30000u);
+            LOG_INF("id=%u still alone after renegotiation — next retry "
+                    "in %u s", (unsigned)isolated_id, reneg_in_ms / 1000u);
+        } else {
+            reneg_in_ms -= WM_CYCLE_MS;
+        }
+
+        k_msleep(WM_CYCLE_MS);
+    }
+}
+
 /* ── Auto-ID lower-level primitives ─────────────────────────────────────── */
 
 void transport_advertise_nonce(uint32_t nonce)

@@ -101,6 +101,51 @@ void transport_get_negotiation_stats(uint32_t *beacons_tx,
                                      uint32_t *nonces_heard,
                                      uint32_t *ids_running);
 
+/*
+ * transport_negotiate_id_retry — self-healing recovery when transport_
+ * negotiate_id() came back isolated (*n_total < 2 — heard no peers in its
+ * boot window).
+ *
+ * transport.c has no opinion on whether flying/operating solo is
+ * acceptable — that is application policy (e.g. a "-DCONFIG_DEMO_ALLOW_
+ * SOLO=y" escape hatch). Call this only once the caller has decided
+ * solo is NOT acceptable and isolation must instead be recovered from
+ * without a power cycle. Blocks (k_msleep-paced, WM_CYCLE_MS per
+ * iteration) until recovery, by whichever comes first:
+ *
+ *   (a) a peer's gossip becomes directly visible (e.g. a peer that
+ *       negotiated fine the whole time, or one recovering from this same
+ *       loop under its own renegotiated id); or
+ *   (b) re-running transport_negotiate_id() at a jittered 15-45 s
+ *       interval resolves to n_total >= 2 (e.g. a peer isolated at the
+ *       same moment has since renegotiated and is now gossiping under a
+ *       real id — auto-ID's rank-by-nonce assignment can differ between
+ *       runs, which is exactly what lets two mutually-isolated units
+ *       resolve each other this way).
+ *
+ * Gossips isolated_id's own state at GOSSIP_INTERVAL_MS throughout, so a
+ * peer stuck in the same recovery loop can see this element too, and
+ * logs a diagnostic line every 2 s (duplicate-ID evidence via
+ * gossip_own_id_frames(), or the retained negotiation-window stats) so a
+ * grounded unit's radio health is visible without a debugger attached.
+ * Reported position stays at the zero-init default throughout — this is
+ * diagnostic gossip only, position plays no part in the recovery
+ * decision, and transport.c has no platform-specific way to sample a
+ * live one. Prints no entry-state log line itself (phrasing like
+ * "grounded"/"not arming" is platform-specific); the caller logs that
+ * before calling.
+ *
+ * isolated_id: the id transport_negotiate_id() returned that this call
+ * is recovering from.
+ *
+ * Returns the resolved element id (renegotiated, or unchanged if a peer
+ * was seen directly under our original id) and writes the recovered
+ * collective size to *n_total_out (always >= 2 on return — this
+ * function does not return while still isolated).
+ */
+element_id_t transport_negotiate_id_retry(element_id_t isolated_id,
+                                          int *n_total_out);
+
 /* Lower-level auto-ID primitives — use transport_negotiate_id() in preference.
  * Retained for testing and alternative boot sequences. */
 
