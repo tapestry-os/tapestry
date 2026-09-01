@@ -165,6 +165,33 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, CONFIG_CF21BL_STABILIZER_LOG_LEVEL);
 #define CF21BL_POS_KI_CLAMP_M  0.30f
 #define CF21BL_POS_OLIM_DEG    10.0f   /* max angle correction from position loop */
 #define CF21BL_POS_OLIM_RAD    (CF21BL_POS_OLIM_DEG * (float)M_PI / 180.0f)
+
+/* ── Fix-loss braking ─────────────────────────────────────────────────────
+ * With no active correction on fix loss, whatever horizontal velocity
+ * existed at the instant the fix dropped just continues — no P/I term can
+ * run without a live position, but the loop's own D term only needs a
+ * velocity, and the lighthouse driver already computes one every tick.
+ * 2026-09-01 flight 49: 1.56 m of real drift in ~5.3 s blind, breaching the
+ * 2.0 m geofence — with FIX_LOSS_GRACE_MS raised to 10 s (see main.c), an
+ * uncorrected coast has room to travel several meters before the grace
+ * timer or a lucky reacquisition catches it.
+ *
+ * This reuses CF21BL_POS_KD unchanged — the same, already flight-validated
+ * damping gain the live loop applies, continuing to act on the last
+ * velocity actually measured rather than a new, untested constant — as a
+ * short open-loop pulse: ramped linearly from the captured velocity down
+ * to zero over CF21BL_BRAKE_MS, so trust in the snapshot decays as it
+ * ages, then pure level for whatever remains of the outage.  Clamped by
+ * the position loop's own CF21BL_POS_OLIM_RAD regardless of how large (or
+ * how wrong) the captured velocity turns out to be.
+ *
+ * Best-effort, not exact: there is nothing to close the loop on once
+ * blind, so this is a single calibrated pulse, not a controller.  800 ms
+ * covers a full stop from a typical DEMO_MAX_SPEED_MPS-scale (0.3 m/s)
+ * velocity with margin (θ≈KD·v0≈2.4° → accel≈g·sinθ≈0.41 m/s² →
+ * time-to-stop≈0.3/0.41≈0.7 s), while staying a small fraction of the 10 s
+ * grace period. */
+#define CF21BL_BRAKE_MS        800u
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
 /* Yaw heading hold (CONFIG_CF21BL_YAW_HOLD) — stock runs a yaw attitude PID
@@ -193,6 +220,25 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, CONFIG_CF21BL_STABILIZER_LOG_LEVEL);
  * compensation active this value is battery-independent; without it,
  * expect ~±0.05 of residual depending on charge state. */
 #define CF21BL_ALT_SP_OFFSET   1.0f    /* linear.z=0 → 1 m above home               */
+
+/* Idle sentinel: linear.z at or below this means "application wants motors
+ * off", as opposed to "application is commanding a low altitude".
+ *
+ * This was an unnamed -0.9f literal at four sites.  With
+ * CF21BL_ALT_SP_OFFSET = 1.0, linear.z = -0.9 is a COMMANDED ALTITUDE OF
+ * 0.10 m — so a landing that walked its target down through 0.10 m tripped
+ * the sentinel and cut thrust while the airframe, which lags the target,
+ * was still above it.  The drone then fell the remainder.  (2026-07-19
+ * flight 10 fixed the disarm half of this — see LAND_TOUCHDOWN_Z_M in
+ * examples/cf21bl-formation/src/main.c — but left the thrust half, because
+ * that gate only decides when to DECLARE the landing done; by the time it
+ * is evaluated the motors have already been idle for ~0.27 s.)
+ *
+ * -0.98 keeps the dead band (2 cm) narrow enough that any real descent
+ * target stays on the closed-loop side of it, while still absorbing float
+ * imprecision around an intended exact -1.0.  Applications that want the
+ * motors off send exactly -1.0, which the default setpoint already is. */
+#define CF21BL_IDLE_SP_Z      (-0.98f)
 #define CF21BL_HOVER_T         0.46f
 #define CF21BL_T_FLOOR         0.10f   /* min collective mid-flight (≈1262 µs — now a
                                         * real spinning floor; pre-remap 0.10 mapped
@@ -304,15 +350,53 @@ LOG_MODULE_REGISTER(cf21bl_stabilizer, CONFIG_CF21BL_STABILIZER_LOG_LEVEL);
 
 /* ── Forced landing (critical battery / stale setpoints) ───────────────────── */
 
+/* Defensive numeric floor for the descent target below — see the block
+ * comment further down for why it is not the touchdown criterion.
+ * Deliberately a standalone figure, not CONFIG_CF21BL_POS_MAX_M: that
+ * Kconfig only exists under CF21BL_LIGHTHOUSE_POS_HOLD, and this floor
+ * must also make sense for the altitude-hold-only consumers of this file
+ * (altitude-hold-tether, altitude-hold-bench, motor-test) that build
+ * without it. */
+#define CF21BL_LAND_ABS_FLOOR_M    (-5.0f)
+
 /* With CONFIG_CF21BL_ALTITUDE_HOLD, a forced landing walks the altitude
- * target down from the measured alt_est at CF21BL_LAND_RATE_MPS, holds it at
- * ground level for CF21BL_LAND_SETTLE_MS so the drone is actually down
- * (the target ramp always outruns the airframe a little), and only then cuts
- * the motors.  Cutting on a fixed clock — the first implementation — killed
- * the motors while still airborne, because the setpoint reached the idle
- * sentinel long before the drone reached the ground. */
-#define CF21BL_LAND_RATE_MPS       0.3f
-#define CF21BL_LAND_SETTLE_MS      2000
+ * target down from the measured alt_est at CF21BL_LAND_RATE_MPS and cuts
+ * the motors only once the MEASURED altitude has stopped decreasing, held
+ * for CF21BL_LAND_SETTLE_MS.  Cutting on a fixed clock — the first
+ * implementation — killed the motors while still airborne, because the
+ * setpoint reached the idle sentinel long before the drone reached the
+ * ground.
+ *
+ * Touchdown is deliberately NOT "target_alt reached the ground-relative
+ * altitude the descent started from" (0, on the assumption the floor is
+ * flat and level with wherever the drone happened to take off).  A
+ * platform, a step, a slope, a rug edge, or a takeoff point that was not
+ * itself at floor level all break that assumption in either direction —
+ * short (declares landed while still airborne over a valley) or long
+ * (never declares landed at all over a rise, since the target races on
+ * past ground level toward a "0" that isn't there, until
+ * CF21BL_LAND_SETTLE_MS forces the issue on a stale error rather than a
+ * genuine settle).  Instead this walks the target down UNCONDITIONALLY —
+ * the terrain under the airframe decides where it stops, not a value
+ * computed before the descent began — and calls it ground when the walk
+ * keeps commanding a lower altitude but alt_est stops following: over a
+ * rolling CF21BL_LAND_STALL_WINDOW_MS window, less than
+ * CF21BL_LAND_STALL_EPS_M of actual descent means something solid is
+ * under the airframe, whatever height that turns out to be.  A window
+ * that DOES show real descent resets the settle clock, so a brief
+ * startup lag (target and alt_est both stationary for the first window,
+ * before the ramp has had time to act) self-corrects on the next window
+ * rather than needing special-cased at the start.
+ *
+ * CF21BL_LAND_STALL_EPS_M is a noise floor, not a physical constant —
+ * baro/accel noise and ground-effect turbulence at low altitude both eat
+ * into the margin between "genuinely still descending" and "resting."
+ * 2 cm / 300 ms (≈0.067 m/s) is comfortably under the 0.3 m/s commanded
+ * rate but is a bench-tuning starting point, not a validated figure. */
+#define CF21BL_LAND_RATE_MPS         0.3f
+#define CF21BL_LAND_SETTLE_MS        2000
+#define CF21BL_LAND_STALL_WINDOW_MS  300u
+#define CF21BL_LAND_STALL_EPS_M      0.02f
 
 /* Without altitude hold there is no altitude estimate, so fall back to
  * ramping the collective to idle over this window (crude, but the only
@@ -424,10 +508,19 @@ static int  g_tumble_count;  /* consecutive below-threshold samples            *
  * away (link recovered → the application's commands apply again); a
  * critical-battery trigger never clears, so the drone stays down. */
 static bool    g_landed;
+/* Set by cf21bl_stabilizer_request_land() — an application asking for the
+ * same closed-loop descent the stale-setpoint and critical-battery paths
+ * already use, instead of walking its own altitude target down and hoping
+ * the idle sentinel lands it. */
+static volatile bool g_land_requested;
 /* Descent state — g_land_t0_ms == 0 means "no landing in progress". */
 static int64_t g_land_t0_ms;
 static float   g_land_alt0;
 static int64_t g_land_ground_ms;
+/* Rolling stall-detection sample: alt_est and its timestamp at the start
+ * of the current CF21BL_LAND_STALL_WINDOW_MS window. */
+static float   g_land_alt_ref;
+static int64_t g_land_ref_ms;
 #endif
 
 /* ── PID instances ──────────────────────────────────────────────────────────── */
@@ -460,12 +553,28 @@ static float    g_pos_home_x;
 static float    g_pos_home_y;
 static float    g_pos_home_z;
 static bool     g_pos_home_set;
+/* "LH2 fix lost" is logged once per OUTAGE.  This used to be latched by
+ * clearing g_pos_home_set, which had a much larger side effect than the
+ * log throttle it was standing in for — see the fix-lost branch below. */
+static bool     g_lh_lost_logged;
 static float    g_pos_ix;        /* position integrator, body frame, rad */
 static float    g_pos_iy;
 static float    g_yaw_now_deg;   /* last Mahony yaw (previous 1 kHz tick) —
                                   * pos-hold runs before this tick's
                                   * filter_update; 1 ms staleness is
                                   * irrelevant at these dynamics */
+/* Body-frame velocity at the most recent VALID fix — kept updated every
+ * live tick (see the position-hold block below) so a snapshot is already
+ * on hand the instant the fix drops; recomputing it after the fact would
+ * need the very velocity reading that just stopped arriving. */
+static float    g_last_vx_b;
+static float    g_last_vy_b;
+/* Fix-loss brake-pulse state (see CF21BL_BRAKE_MS above) — captured once
+ * per outage from g_last_v{x,y}_b.  g_brake_t0_ms == 0 means no pulse
+ * pending or in progress. */
+static float    g_brake_vx0;
+static float    g_brake_vy0;
+static int64_t  g_brake_t0_ms;
 #endif
 
 #ifdef CONFIG_CF21BL_ALTITUDE_HOLD
@@ -542,7 +651,7 @@ static void stabilizer_fn(void *a, void *b, void *c)
 #endif
 
 #if CONFIG_CF21BL_SP_STALE_MS > 0
-        if (sp_age_ms > CF21BL_SP_STALE_MS && sp.linear.z > -0.9f) {
+        if (sp_age_ms > CF21BL_SP_STALE_MS && sp.linear.z > CF21BL_IDLE_SP_Z) {
             static int stale_log_div;
             if (++stale_log_div >= 200) {   /* log at ~5 Hz, not 1 kHz */
                 stale_log_div = 0;
@@ -568,8 +677,19 @@ static void stabilizer_fn(void *a, void *b, void *c)
         }
 #endif
 
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+        /* Application-requested landing.  Unlike the two failure triggers
+         * below, the lateral setpoint is deliberately left alone: the
+         * application is still commanding WHERE to come down (this demo
+         * holds its latched land-in-place point), and only the vertical
+         * profile is handed over. */
+        if (g_land_requested && sp.linear.z > CF21BL_IDLE_SP_Z) {
+            force_land = true;
+        }
+#endif
+
 #ifdef CONFIG_CF21BL_PM
-        if (cf21bl_pm_battery_critical() && sp.linear.z > -0.9f) {
+        if (cf21bl_pm_battery_critical() && sp.linear.z > CF21BL_IDLE_SP_Z) {
             static bool crit_logged;
             if (!crit_logged) {
                 crit_logged = true;
@@ -662,7 +782,7 @@ static void stabilizer_fn(void *a, void *b, void *c)
         lh2_position_t lhpos  = { 0 };
         bool           lh_ok  = (cf21bl_lighthouse_get_position(&lhpos) == 0);
 
-        if (lh_ok && sp.linear.z > -0.9f) {
+        if (lh_ok && sp.linear.z > CF21BL_IDLE_SP_Z) {
 
             if (!g_pos_home_set) {
                 g_pos_home_x   = lhpos.x;
@@ -670,6 +790,7 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 g_pos_home_z   = lhpos.z;
                 g_pos_home_set = true;
             }
+            g_lh_lost_logged = false;   /* re-arm the once-per-outage warning */
 
             /* Liftoff detection for the Mahony two-stage accel gain: keep
              * full gain through arm/spin-up/ramp (vibration disturbances
@@ -721,6 +842,12 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 float ey_b = -spsi * ex      + cpsi * ey;
                 float vx_b =  cpsi * lhvel.x + spsi * lhvel.y;
                 float vy_b = -spsi * lhvel.x + cpsi * lhvel.y;
+
+                /* Kept current every live tick — see the fix-loss braking
+                 * block comment above for why this needs to already be a
+                 * tick old rather than computed after the fact. */
+                g_last_vx_b = vx_b;
+                g_last_vy_b = vy_b;
 
                 /* Rate-capped trim winding (see CF21BL_POS_KI_CLAMP_M) */
                 float exi = ex_b, eyi = ey_b;
@@ -785,13 +912,85 @@ static void stabilizer_fn(void *a, void *b, void *c)
                 }
             }
         } else if (g_pos_home_set && !lh_ok) {
-            /* Fix lost mid-flight: log once and allow angle-mode fallback.
+            /* Fix lost mid-flight: log once, brake, then hold level.
+             *
+             * With CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD (required to reach
+             * this branch — see the Kconfig `depends on`)
+             * CF21BL_MAX_FWD_TILT_DEG is hardwired to 0.0f below, so
+             * sp.linear.x/y contribute no tilt either — there is no
+             * velocity feedforward path to "fall back" to in this
+             * configuration.  roll_sp_deg/pitch_sp_deg resolve to whatever
+             * sp.angular.x/y alone commands (0 for every caller in this
+             * tree) PLUS pos_pitch/roll_correction_deg, which this branch
+             * now sets for CF21BL_BRAKE_MS after the loss (see that
+             * constant's block comment) rather than leaving at their
+             * 0.0f init the whole outage.  Past the pulse it IS pure
+             * level — stop accelerating and coast on drag, not steer
+             * using a last-known heading — which is what an earlier
+             * version of this branch did unconditionally, and what an
+             * even earlier version of this log line called "feedforward"
+             * without actually doing it.  A pulse alone does not make
+             * this an active hold: there is still no position or velocity
+             * feedback once blind, only a best-effort correction for the
+             * velocity that existed at the moment the fix dropped.
+             *
              * The integrator is kept: the trim is body-frame level bias,
              * not home-relative, so it stays valid across re-acquisition
              * (and holding the learned tilt during the outage beats
-             * reverting to the biased level). */
-            LOG_WRN("LH2 fix lost, falling back to angle mode feedforward");
-            g_pos_home_set = false;
+             * reverting to the biased level).
+             *
+             * g_pos_home_set is deliberately NOT cleared here.  It used to
+             * be — as the once-per-outage latch for the warning above —
+             * and the side effect was severe: home was re-captured by the
+             * block above on the NEXT valid fix, i.e. re-latched to
+             * wherever the drone had drifted to during the outage.  Since
+             * the whole position loop is home-relative (ex/ey below), that
+             * silently re-origined the control frame on every dropout, and
+             * every commanded position afterwards inherited the offset.
+             * cf21bl_stabilizer_get_pos_home() feeds the demo's
+             * return-to-home too, so a drone could fly "home" to a point
+             * it had never taken off from (2026-08-31 flight 42: RTH ~0.4 m
+             * off, after a single dropout during the altitude ramp).
+             *
+             * Home is a point in the lighthouse WORLD frame, and that frame
+             * does not move when the fix drops — the reference stays valid
+             * across an outage by construction.  It is released when the
+             * drone returns to idle (see the is_idle block below), so the
+             * next takeoff captures a fresh one. */
+            if (!g_lh_lost_logged) {
+                g_brake_vx0   = g_last_vx_b;
+                g_brake_vy0   = g_last_vy_b;
+                g_brake_t0_ms = k_uptime_get();
+                LOG_WRN("LH2 fix lost — braking (vx=%.2f vy=%.2f m/s) then "
+                        "holding level", (double)g_brake_vx0,
+                        (double)g_brake_vy0);
+                g_lh_lost_logged = true;
+            }
+
+            /* See CF21BL_BRAKE_MS above: a short, decaying, D-term-only
+             * pulse from the captured velocity, then pure level (0,0) —
+             * pos_pitch/roll_correction_deg are already 0.0f from their
+             * declaration above and this simply leaves them there once
+             * the pulse completes. */
+            if (g_brake_t0_ms != 0) {
+                int64_t elapsed = k_uptime_get() - g_brake_t0_ms;
+                if (elapsed < (int64_t)CF21BL_BRAKE_MS) {
+                    float decay = 1.0f - (float)elapsed / (float)CF21BL_BRAKE_MS;
+                    float cx_rad = -CF21BL_POS_KD * (g_brake_vx0 * decay);
+                    float cy_rad = -CF21BL_POS_KD * (g_brake_vy0 * decay);
+                    if (cx_rad >  CF21BL_POS_OLIM_RAD) { cx_rad =  CF21BL_POS_OLIM_RAD; }
+                    if (cx_rad < -CF21BL_POS_OLIM_RAD) { cx_rad = -CF21BL_POS_OLIM_RAD; }
+                    if (cy_rad >  CF21BL_POS_OLIM_RAD) { cy_rad =  CF21BL_POS_OLIM_RAD; }
+                    if (cy_rad < -CF21BL_POS_OLIM_RAD) { cy_rad = -CF21BL_POS_OLIM_RAD; }
+                    /* Same negation as the live position loop's D term —
+                     * see the "Axis sign convention" / 2026-07-06 comment
+                     * near the top of this section. */
+                    pos_pitch_correction_deg = -cx_rad * (180.0f / (float)M_PI);
+                    pos_roll_correction_deg  = -cy_rad * (180.0f / (float)M_PI);
+                } else {
+                    g_brake_t0_ms = 0;   /* pulse complete — pure level for the rest */
+                }
+            }
         }
 #endif /* CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD */
 
@@ -882,7 +1081,7 @@ static void stabilizer_fn(void *a, void *b, void *c)
                                    yaw_rate_sp,   sample.gyro_rps[2],
                                    CF21BL_LOOP_DT);
 
-        bool is_idle = (sp.linear.z < -0.9f);
+        bool is_idle = (sp.linear.z < CF21BL_IDLE_SP_Z);
         if (is_idle) {
             /* Idle: motors must sit at pure minimum, not react to tilt/noise
              * while armed-but-grounded. Zero the commanded correction and
@@ -911,6 +1110,16 @@ static void stabilizer_fn(void *a, void *b, void *c)
              * the level reference re-converges before the next takeoff. */
             g_airborne = false;
             cf21bl_imu_set_airborne(false);
+#ifdef CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
+            /* Release the home reference here — at the takeoff/landing
+             * boundary — rather than on a fix dropout (see the fix-lost
+             * branch above).  The next non-idle tick with a valid fix
+             * captures a fresh home, which is the behavior the original
+             * code intended; what it actually did was re-capture mid-air. */
+            g_pos_home_set   = false;
+            g_lh_lost_logged = false;
+            g_brake_t0_ms    = 0;   /* discard any pulse mid-flight left running */
+#endif
 #ifdef CONFIG_CF21BL_YAW_HOLD
             /* Re-seed the heading target at the current yaw so takeoff never
              * starts with a stale heading error. */
@@ -1024,30 +1233,57 @@ static void stabilizer_fn(void *a, void *b, void *c)
 
             /* ── Forced landing: closed-loop descent to touchdown ─────────
              * Walk the target down from the altitude measured at trigger
-             * time, hold it at ground level for CF21BL_LAND_SETTLE_MS so
-             * the airframe (which lags the target) is actually down, then
-             * latch g_landed — the loop top forces idle from the next
-             * iteration on. */
+             * time, UNCONDITIONALLY — see the CF21BL_LAND_* block comment
+             * above for why this no longer stops at a ground-relative
+             * altitude of 0.  Latch g_landed once alt_est has stopped
+             * following the descending target for CF21BL_LAND_SETTLE_MS —
+             * the loop top forces idle from the next iteration on. */
             if (force_land && !g_landed) {
                 int64_t now_ms = k_uptime_get();
                 if (g_land_t0_ms == 0) {
                     g_land_t0_ms     = now_ms;
                     g_land_alt0      = (alt_est > 0.0f) ? alt_est : 0.0f;
                     g_land_ground_ms = 0;
+                    g_land_alt_ref   = g_land_alt0;
+                    g_land_ref_ms    = now_ms;
                     LOG_WRN("forced landing: descending from %.2f m",
                             (double)g_land_alt0);
                 }
                 float down = CF21BL_LAND_RATE_MPS
                              * (float)(now_ms - g_land_t0_ms) / 1000.0f;
                 target_alt = g_land_alt0 - down;
-                if (target_alt <= 0.0f) {
-                    target_alt = 0.0f;
-                    if (g_land_ground_ms == 0) {
-                        g_land_ground_ms = now_ms;
-                    } else if (now_ms - g_land_ground_ms > CF21BL_LAND_SETTLE_MS) {
-                        g_landed = true;
-                        LOG_WRN("forced landing: touchdown — motors off");
+                /* Defensive floor only, not the touchdown criterion below —
+                 * keeps the target from running away to an absurd value if
+                 * the stall check somehow never latches.  main.c's own
+                 * LAND_FORCE_DISARM_MS backstop (an independent, measured-
+                 * lighthouse check) covers that case regardless of what
+                 * happens here. */
+                if (target_alt < CF21BL_LAND_ABS_FLOOR_M) {
+                    target_alt = CF21BL_LAND_ABS_FLOOR_M;
+                }
+
+                if (now_ms - g_land_ref_ms >= (int64_t)CF21BL_LAND_STALL_WINDOW_MS) {
+                    float descended = g_land_alt_ref - alt_est;
+                    bool  stalled    = descended < CF21BL_LAND_STALL_EPS_M;
+                    g_land_alt_ref = alt_est;
+                    g_land_ref_ms  = now_ms;
+
+                    if (stalled) {
+                        if (g_land_ground_ms == 0) {
+                            g_land_ground_ms = now_ms;
+                        }
+                    } else {
+                        /* Real descent this window — not resting on
+                         * anything yet, whatever a prior window thought. */
+                        g_land_ground_ms = 0;
                     }
+                }
+
+                if (g_land_ground_ms != 0 &&
+                    now_ms - g_land_ground_ms > CF21BL_LAND_SETTLE_MS) {
+                    g_landed = true;
+                    LOG_WRN("forced landing: touchdown — motors off "
+                            "(alt %.2f m)", (double)alt_est);
                 }
             } else if (!force_land) {
                 g_land_t0_ms = 0;   /* trigger cleared before touchdown */
@@ -1234,6 +1470,26 @@ void cf21bl_stabilizer_set_setpoint(const substrate_twist_t *sp)
     g_sp_last_ms = k_uptime_get();
 #endif
     k_spin_unlock(&g_sp_lock, key);
+}
+
+void cf21bl_stabilizer_request_land(bool active)
+{
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+    g_land_requested = active;
+#else
+    /* No closed-loop altitude to walk down — see the header comment.
+     * g_land_requested only exists under CONFIG_CF21BL_ALTITUDE_HOLD. */
+    (void)active;
+#endif
+}
+
+bool cf21bl_stabilizer_is_landed(void)
+{
+#ifdef CONFIG_CF21BL_ALTITUDE_HOLD
+    return g_landed;
+#else
+    return false;
+#endif
 }
 
 bool cf21bl_stabilizer_get_pos_home(float *x, float *y)

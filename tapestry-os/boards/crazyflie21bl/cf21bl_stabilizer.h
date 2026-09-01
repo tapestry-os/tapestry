@@ -94,10 +94,44 @@ void cf21bl_stabilizer_set_setpoint(const substrate_twist_t *sp);
  * one (e.g. a multi-drone formation converging on shared world coordinates):
  *   sp.linear.x = (target_x - home_x) / CONFIG_CF21BL_POS_MAX_M, clamped.
  * Returns false (leaves *x and *y untouched) when CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD
- * is not built in, or no home has been captured yet (no fix seen since boot
- * or since the last fix loss — home re-captures at the next fix).
+ * is not built in, or no home has been captured yet (no fix seen since the
+ * drone last left idle).  Home is HELD across a mid-flight fix dropout —
+ * the lighthouse world frame does not move when the fix drops, and
+ * re-capturing on re-acquisition silently re-origined the whole
+ * home-relative position loop; it is released on the return to idle, so
+ * the next takeoff captures a fresh one.
  */
 bool cf21bl_stabilizer_get_pos_home(float *x, float *y);
+
+/*
+ * cf21bl_stabilizer_request_land — hand the vertical profile to the
+ * stabilizer's closed-loop descent (the same one the stale-setpoint and
+ * critical-battery paths use): walk the altitude target down from the
+ * MEASURED altitude, hold it at ground level until the airframe has
+ * settled, and only then cut the motors.
+ *
+ * Use this instead of walking linear.z down yourself.  A self-managed ramp
+ * has to cross the idle sentinel to reach zero, which cuts thrust at a
+ * commanded 0.02 m while the airframe still lags above it; this path cuts
+ * on settle, not on the target reaching a number.  Keep sending a normal
+ * (non-idle) linear.z while it runs — the descent overrides the altitude
+ * target internally — and keep commanding linear.x/y if you want to land
+ * on a particular spot, since this deliberately does not touch them.
+ *
+ * Clearing the request before touchdown abandons the descent and returns
+ * control to the application, matching the watchdog paths' semantics.
+ * No-op without CONFIG_CF21BL_ALTITUDE_HOLD (there is no closed-loop
+ * altitude to walk down); callers must keep their own fallback for that
+ * configuration.
+ */
+void cf21bl_stabilizer_request_land(bool active);
+
+/*
+ * cf21bl_stabilizer_is_landed — true once a requested (or forced) descent
+ * has settled on the ground and latched the motors off.  Always false
+ * without CONFIG_CF21BL_ALTITUDE_HOLD.
+ */
+bool cf21bl_stabilizer_is_landed(void);
 
 #ifdef __cplusplus
 }

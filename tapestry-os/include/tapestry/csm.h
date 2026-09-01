@@ -127,6 +127,24 @@ static inline orientation_t orientation_identity(void)
 #define ELEMENT_HEALTH_LOW_BATTERY  0x01u  /* energy_level below 20%             */
 #define ELEMENT_HEALTH_SENSOR_FAULT 0x02u  /* On-board sensor reporting failure  */
 #define ELEMENT_HEALTH_DEGRADED     0x04u  /* Reduced capability (hot, throttled)*/
+/* No position fix yet: this element's gossiped position is the zero-init
+ * PLACEHOLDER, not a measurement.  Receivers must exclude such an element
+ * from anything that reasons about where it physically is — separation
+ * checks, repulsion, station snapshots.  (2026-08-31 flight 41: a drone
+ * still waiting for its lighthouse fix gossiped (0,0,0); its partner,
+ * sitting 1.1 m away, measured a 0.31 m "separation violation" against
+ * the phantom at the origin.)  Cleared for good on the first real fix.
+ * Additive bit — health_flags is already on the wire (gossip.c), so this
+ * needs no TAPESTRY_WIRE_VERSION bump and older receivers just ignore it. */
+#define ELEMENT_HEALTH_NO_POSITION  0x08u  /* Position is a placeholder      */
+/* This element HAD a fix and lost it mid-flight: the gossiped position is
+ * its last real measurement, held (not zeroed) while it waits out a
+ * lighthouse dropout, not a live one.  Distinct from NO_POSITION (never
+ * measured, currently (0,0,0)) — a NO_POSITION entry is excluded from
+ * separation and repulsion outright; a POSITION_STALE entry is a genuine
+ * airframe at a real last-known point and stays visible to both, the same
+ * as any other stale-but-active peer.  Cleared on the next fix. */
+#define ELEMENT_HEALTH_POSITION_STALE 0x10u  /* Held position, fix down now */
 
 /* ── Element state ───────────────────────────────────────────────────────── */
 /*

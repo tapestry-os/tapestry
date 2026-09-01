@@ -173,21 +173,60 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
 #define ALT_RAMP_START_M     0.15f
 #define ALT_RAMP_RATE_MPS    0.10f
 
-/* Individual landing ramp (walk the altitude target down, settle, disarm). */
-#define LAND_RATE_MPS        0.30f
+/* Individual landing.
+ *
+ * The descent itself belongs to cf21bl_stabilizer_request_land(): it walks
+ * the altitude target down from the MEASURED altitude and cuts only after
+ * the airframe has settled on the ground.  This file used to walk its own
+ * target down at LAND_RATE_MPS instead, which cut thrust at a commanded
+ * 0.10 m — the stabilizer's idle sentinel, see CF21BL_IDLE_SP_Z — while
+ * the airframe was still above it, and the drone dropped the rest.  The
+ * 2026-07-19 flight 10 fix addressed the DISARM half of that (the gate
+ * below) but not the thrust half, because by the time this gate runs the
+ * motors have already been idle for a quarter second.
+ *
+ * LAND_HOLD_CMD_M is what we keep commanding on linear.z while the
+ * stabilizer owns the profile: any value comfortably clear of the idle
+ * sentinel works, since the descent overrides the altitude target
+ * internally — it only has to not read as "motors off".
+ *
+ * The gate below is now a BACKSTOP, not the primary mechanism: normally
+ * cf21bl_stabilizer_is_landed() reports the settle first.  It stays
+ * because the stabilizer's settle uses its own fused altitude estimate,
+ * and an independent measured-lighthouse check plus LAND_FORCE_DISARM_MS
+ * is cheap insurance against that estimate being biased high. */
+#define LAND_HOLD_CMD_M      0.30f
 #define LAND_SETTLE_MS       2000
-/* Touchdown gate: the walked-down TARGET reaching zero says nothing about
- * the airframe (2026-07-19 flight 10: a drone cut its motors mid-air, the
- * long-flagged disarm-on-target bug).  Require the measured lighthouse
- * altitude to agree before the settle timer runs; if the fix is invalid
- * (or z is biased high) LAND_FORCE_DISARM_MS bounds the wait — by then
- * the zero-target thrust has had ample time to put the airframe down. */
 #define LAND_TOUCHDOWN_Z_M   0.08f
 #define LAND_FORCE_DISARM_MS 10000
 
-/* Sustained lighthouse fix loss before an individual landing — brief blips
- * just zero X/Y and hold; see the flight_state_t machine below. */
-#define FIX_LOSS_GRACE_MS    2000
+/* Sustained lighthouse fix loss before an individual landing.  The drone
+ * brakes (cf21bl_stabilizer.c — see CF21BL_BRAKE_MS there) and then holds
+ * level and in place for up to this long, waiting for the fix to return,
+ * rather than landing on the first dropout — see the FLIGHT_FLYING
+ * !fix_valid case below.
+ *
+ * 10 s, up from an original 2 s: the 2 s figure predated two changes that
+ * made a longer wait safe rather than merely tolerated.  (1) A dropout no
+ * longer re-origins the home reference on re-acquisition (see
+ * cf21bl_stabilizer.c's g_pos_home_set handling) — waiting out a longer
+ * outage used to mean baking in more drift once it re-latched; now the
+ * frame the drone resumes into is the same one it left.  (2) The position
+ * gossiped during the outage is now flagged
+ * (ELEMENT_HEALTH_POSITION_STALE) rather than presented as current, so
+ * peers reasoning about this drone during a long dropout know it is a
+ * held last-known point, not a fresh one — separation and repulsion still
+ * measure against it (see peer_has_position() in formation.c), same as
+ * any other stale-but-active peer.
+ *
+ * A third change closes the gap those two didn't: cf21bl_stabilizer.c's
+ * brake pulse is best-effort and open-loop — nothing confirms it actually
+ * arrested the drone's motion, because confirming that needs the very
+ * position reading that just stopped arriving.  This constant bounds how
+ * long a coast is TOLERATED regardless of whether the brake worked; the
+ * coast-budget backstop below bounds how FAR one can go before waiting is
+ * no longer safe, independent of this timer. */
+#define FIX_LOSS_GRACE_MS    10000
 
 /* Geofence: distance from the lighthouse origin (NOT this drone's home —
  * the origin is the one frame shared by every drone).  TUNE to the room's
@@ -270,6 +309,9 @@ typedef enum {
     LAND_REASON_GEOFENCE,   /* strayed past GEOFENCE_RADIUS_M              */
 } land_reason_t;
 
+#ifdef CONFIG_DEMO_MODE_CHOREO
+/* Only the choreo status line reports why a flight ended; showcase
+ * mode has no such field, so this would be an unused static there. */
 static const char *land_reason_name(land_reason_t r)
 {
     switch (r) {
@@ -280,6 +322,7 @@ static const char *land_reason_name(land_reason_t r)
     default:                   return "";
     }
 }
+#endif
 
 static const char *flight_state_name(flight_state_t s)
 {
@@ -538,10 +581,16 @@ int main(void)
      * always gave, now applied to any Choreo-commanded altitude change,
      * not just takeoff. */
     float          z_setpoint_m = ALT_BASE_M;
-    float          landing_alt_m = 0.0f;
+#ifdef CONFIG_PWM
+    bool           land_requested = false;   /* stabilizer descent engaged */
+#endif
     land_reason_t  land_reason   = LAND_REASON_NONE;
     uint32_t       mission_t0_ms = k_uptime_get_32();
     uint32_t       fix_lost_since_ms = 0;
+    /* Origin-relative distance at the START of the current outage — see
+     * the coast-budget backstop in the FLIGHT_FLYING !fix_valid case
+     * below.  Meaningless while fix_lost_since_ms == 0. */
+    float          fix_lost_origin_dist_m = 0.0f;
     uint32_t       land_settle_ms = 0;
     /* z: NOT a live baro reading — cf21bl_stabilizer.c exposes no altitude
      * accessor today. Tracks alt_cmd_m every tick (the commanded/ramping
@@ -598,8 +647,8 @@ int main(void)
          * CHANGE mid-mission is approached gently too, the same safety
          * property FLIGHT_RAMPING always gave takeoff. Excluded once
          * FLIGHT_LANDING starts: that state runs its own separate
-         * ramp-down (landing_alt_m/LAND_RATE_MPS) and must not fight this
-         * one. */
+         * closed-loop descent (cf21bl_stabilizer_request_land()) and must
+         * not fight it. */
         if (state == FLIGHT_RAMPING || state == FLIGHT_FLYING) {
             if (alt_cmd_m < z_setpoint_m) {
                 alt_cmd_m += ALT_RAMP_RATE_MPS * LOOP_DT_S;
@@ -614,6 +663,27 @@ int main(void)
         if (have_pos) {
             own_state.position = own_pos_m;
         }
+        /* Until the first fix, own_state.position is still the zero-init
+         * placeholder from element_state_t own_state = { 0 } — and we
+         * gossip regardless, because discovery and auto-ID recovery depend
+         * on peers hearing us before anyone has a fix.  Say so on the wire
+         * instead of going silent, so receivers can exclude the phantom
+         * without losing us as a peer (see ELEMENT_HEALTH_NO_POSITION).
+         *
+         * A fix lost mid-flight is a different claim: own_pos_m holds its
+         * last real measurement (not zeroed — see the FLIGHT_FLYING
+         * !fix_valid case below) and we keep gossiping it, both so peers
+         * keep seeing us as present (the flight-12 deadlock this file's
+         * "keep gossiping after landing" comment describes further down)
+         * and because a real last-known position is still worth having for
+         * separation.  ELEMENT_HEALTH_POSITION_STALE says the position is
+         * held, not current, without asking receivers to drop us. */
+        uint8_t health = ELEMENT_HEALTH_OK;
+        if (!have_pos) {
+            health |= ELEMENT_HEALTH_NO_POSITION;
+        } else if (!fix_valid) {
+            health |= ELEMENT_HEALTH_POSITION_STALE;
+        }
 #ifdef CONFIG_CF21BL_PM
         float vbat = cf21bl_pm_vbat();
         if (vbat > 0.0f) {
@@ -622,23 +692,35 @@ int main(void)
             if (pct > 1.0f) { pct = 1.0f; }
             own_state.energy_level = (uint8_t)(pct * 100.0f);
         }
-        own_state.health_flags = cf21bl_pm_battery_low()
-                                  ? ELEMENT_HEALTH_LOW_BATTERY
-                                  : ELEMENT_HEALTH_OK;
+        if (cf21bl_pm_battery_low()) {
+            health |= ELEMENT_HEALTH_LOW_BATTERY;
+        }
 #endif
+        own_state.health_flags = health;
         wm_update_self(&wm, &own_state);
 
         substrate_twist_t sp = { 0 };
 #ifdef CONFIG_DEMO_MODE_CHOREO
         bool log_quorum_up = false;   /* debounced quorum, set in FLYING */
-        /* Nearest fresh peer, surfaced in the 1 Hz status line below.
+        /* Nearest peer, surfaced in the 1 Hz status line below.
          * It used to live only in formation.c's per-tick DBG trace, so
          * throttling or quieting that module took the separation margin
          * with it — and the margin is exactly what you want when a flight
          * runs near DEMO_MIN_SEP_M (flight 16 spent its swap at 0.53 m
          * against a 0.50 m floor and nothing in the default log said so).
-         * -1 means "no fresh peer": separation UNKNOWN, not known-safe. */
-        float log_min_dist_m = -1.0f;
+         * -1 now means "no ACTIVE peer at all" — separation genuinely
+         * UNKNOWN, not merely unrefreshed; log_sep says whether the
+         * reported distance came from a fresh measurement or from a stale
+         * entry's last-known position (see demo_sep_t). */
+        float      log_min_dist_m   = -1.0f;
+        demo_sep_t log_sep          = { .stale = false, .age_ms = 0 };
+        /* False when no separation measurement was taken this tick at all —
+         * distinct from "measured, found nothing".  Without it the status
+         * line printed a bare min_d=-1.00 in states that never ran a scan
+         * (fix lost, RAMPING, LANDED), which reads identically to the one
+         * case -1.00 is supposed to mean: every peer expired.  See the '?'
+         * marker at the status line below. */
+        bool       log_sep_measured = false;
 #endif
 
         switch (state) {
@@ -656,24 +738,77 @@ int main(void)
 
         case FLIGHT_FLYING: {
             if (!fix_valid) {
+                uint32_t blind_ms;
                 if (fix_lost_since_ms == 0) {
                     fix_lost_since_ms = k_uptime_get_32();
+                    fix_lost_origin_dist_m =
+                        sqrtf(own_pos_m.x * own_pos_m.x
+                              + own_pos_m.y * own_pos_m.y);
                     LOG_WRN("id=%u lighthouse fix lost (age %u ms) — "
-                            "holding, X/Y zeroed", (unsigned)element_id,
+                            "braking, then holding level in place, "
+                            "gossiping last-known position (flagged "
+                            "stale)", (unsigned)element_id,
                             cf21bl_lighthouse_fix_age_ms());
                 }
-                if (k_uptime_get_32() - fix_lost_since_ms > FIX_LOSS_GRACE_MS) {
+                blind_ms = k_uptime_get_32() - fix_lost_since_ms;
+
+                /* Coast-budget backstop.  cf21bl_stabilizer.c now brakes
+                 * on fix loss (CF21BL_BRAKE_MS there), but it is best-
+                 * effort and open-loop — main.c has no way to confirm it
+                 * actually arrested the drone's motion, since confirming
+                 * that needs the very position reading that just stopped
+                 * arriving.  So bound the worst case independently of
+                 * whether braking worked: assume the drone COULD be
+                 * coasting at the demo's own top commanded speed, aimed
+                 * straight away from the origin, for the entire blind
+                 * duration so far, and land the instant that projection
+                 * would put it past the geofence — well before waiting
+                 * out the full FIX_LOSS_GRACE_MS.  Deliberately
+                 * pessimistic (most outages end well inside this bound,
+                 * and braking should mean the true coast speed is far
+                 * below DEMO_MAX_SPEED_MPS after the first
+                 * CF21BL_BRAKE_MS or so) rather than tracking real drift,
+                 * which needs a position this branch by definition does
+                 * not have.  (2026-09-01 flight 49: a real coast averaged
+                 * almost exactly DEMO_MAX_SPEED_MPS over ~5.3 s blind,
+                 * breaching the 2.0 m geofence — this bound would have
+                 * caught it at ~2.6 s from a starting distance of 1.22 m.) */
+                float coast_budget_m =
+                    GEOFENCE_RADIUS_M - fix_lost_origin_dist_m
+                    - DEMO_MAX_SPEED_MPS * ((float)blind_ms * 0.001f);
+                if (coast_budget_m <= 0.0f) {
+                    LOG_ERR("id=%u fix lost %u ms from %.2f m out — a "
+                            "coast at top speed could reach the geofence — "
+                            "landing independently", (unsigned)element_id,
+                            blind_ms, (double)fix_lost_origin_dist_m);
+                    state = FLIGHT_LANDING;
+                    land_reason = LAND_REASON_FIXLOSS;
+                    land_hold_valid = false;   /* no fix — no position to hold */
+                    sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
+                    break;
+                }
+
+                if (blind_ms > FIX_LOSS_GRACE_MS) {
                     LOG_ERR("id=%u fix lost > %d ms — landing independently",
                             (unsigned)element_id, FIX_LOSS_GRACE_MS);
                     state = FLIGHT_LANDING;
                     land_reason = LAND_REASON_FIXLOSS;
                     land_hold_valid = false;   /* no fix — no position to hold */
-                    landing_alt_m = alt_cmd_m;
-                    sp.linear.z = alt_cmd_m - 1.0f;
+                    sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
                     break;
                 }
-                /* Zero X/Y so the stabilizer's fix-lost fallback (velocity
-                 * feedforward) doesn't inherit a stale position-style value. */
+                /* Zero X/Y.  With CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD (this
+                 * build) there is no velocity feedforward for a zeroed
+                 * linear.x/y to inherit — the stabilizer's own fix-lost
+                 * path applies a short braking pulse from the last known
+                 * velocity and then drops the position correction to
+                 * zero (see CF21BL_BRAKE_MS in cf21bl_stabilizer.c),
+                 * i.e. level attitude, no commanded lean: stop
+                 * accelerating rather than continuing to steer, with a
+                 * best-effort attempt to cancel existing motion first
+                 * instead of riding it out on drag alone.  Setting these
+                 * explicitly is still correct defense in depth against a
+                 * stale caller-side value. */
                 sp.linear.x = 0.0f;
                 sp.linear.y = 0.0f;
                 sp.linear.z = alt_cmd_m - 1.0f;
@@ -701,8 +836,7 @@ int main(void)
                 land_hold_x = own_pos_m.x;
                 land_hold_y = own_pos_m.y;
                 land_hold_valid = true;
-                landing_alt_m = alt_cmd_m;
-                sp.linear.z = alt_cmd_m - 1.0f;
+                sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
                 break;
             }
 
@@ -715,8 +849,7 @@ int main(void)
                 land_hold_x = own_pos_m.x;
                 land_hold_y = own_pos_m.y;
                 land_hold_valid = true;
-                landing_alt_m = alt_cmd_m;
-                sp.linear.z = alt_cmd_m - 1.0f;
+                sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
                 break;
             }
 
@@ -794,15 +927,34 @@ int main(void)
                      * ground level while still translating home — this
                      * demo's own landing sequence already lands in place
                      * once quiescent, so RTH only needs to move laterally. */
+                    /* Home is where WE took off, which after an EXCHANGE
+                     * is where the PARTNER now is.  RTH ends in a landing,
+                     * so aiming at an occupied spot is a collision, not a
+                     * close pass — and the emergency repulsion cannot save
+                     * it, because the goal point itself is the problem.
+                     * Nudge the destination clear before submitting it. */
+                    float rth_x = home_x, rth_y = home_y;
+                    bool  moved = demo_deconflict_point(&wm, &rth_x, &rth_y);
+
                     choreo_goal_t rth = {
                         .type   = CHOREO_GOAL_CONVERGE,
-                        .target = { home_x, home_y, own_pos_m.z },
+                        .target = { rth_x, rth_y, own_pos_m.z },
                     };
                     int rc = choreo_preempt_goal(&rth);
-                    LOG_WRN("id=%u battery low — preempting to "
-                            "return-to-home (%.2f, %.2f), rc=%d",
-                            (unsigned)element_id, (double)home_x,
-                            (double)home_y, rc);
+                    if (moved) {
+                        LOG_WRN("id=%u battery low — preempting to "
+                                "return-to-home (%.2f, %.2f), rc=%d "
+                                "[deconflicted from home (%.2f, %.2f): a "
+                                "peer is parked there]",
+                                (unsigned)element_id, (double)rth_x,
+                                (double)rth_y, rc, (double)home_x,
+                                (double)home_y);
+                    } else {
+                        LOG_WRN("id=%u battery low — preempting to "
+                                "return-to-home (%.2f, %.2f), rc=%d",
+                                (unsigned)element_id, (double)rth_x,
+                                (double)rth_y, rc);
+                    }
                 }
             }
             was_battery_low = battery_low;
@@ -879,12 +1031,12 @@ int main(void)
                 land_hold_x = own_pos_m.x;
                 land_hold_y = own_pos_m.y;
                 land_hold_valid = true;
-                landing_alt_m = alt_cmd_m;
-                sp.linear.z = alt_cmd_m - 1.0f;
+                sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
                 break;
             }
 
-            float min_dist_m = -1.0f;
+            float      min_dist_m = -1.0f;
+            demo_sep_t sep        = { .stale = false, .age_ms = 0 };
             const tapestry_bse_directive_t *dir = choreo_get_directive();
             /* Per-goal quorum at the tracking layer too: a HOLD directive
              * references only this drone's own station, so it is tracked
@@ -902,16 +1054,27 @@ int main(void)
                 dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
                 min_dist_m = demo_choreo_track(&wm, &own_pos_m, &target,
                                                dir->target.x, dir->target.y,
-                                               WM_CYCLE_MS, element_id);
+                                               WM_CYCLE_MS, element_id, &sep);
                 z_setpoint_m = dir->target.z;
+            } else {
+                /* Quorum LOST on a peer-referential goal (choreo SUSPENDED)
+                 * or directive HOLD (exchange awaiting its snapshot) —
+                 * target frozen where it is; the stabilizer keeps station
+                 * on it.  Separation is still measured directly: the
+                 * airframe is airborne and a peer can close on it whether
+                 * or not this drone is tracking anything, and reporting
+                 * UNKNOWN here purely because no drive ran would leave the
+                 * same blind spot the drives just had. */
+                min_dist_m = demo_min_separation(&wm, &own_pos_m, &sep);
             }
-            /* else: quorum LOST on a peer-referential goal (choreo
-             * SUSPENDED) or directive HOLD (exchange awaiting its
-             * snapshot) — target frozen where it is; the stabilizer keeps
-             * station on it. */
+
+            log_min_dist_m   = min_dist_m;
+            log_sep          = sep;
+            log_sep_measured = true;   /* both branches above measured */
 #else /* DEMO_MODE_SHOWCASE */
+            demo_sep_t sep = { .stale = false, .age_ms = 0 };
             float min_dist_m = demo_compute_drive(&wm, &own_pos_m, &target, WM_CYCLE_MS,
-                                                  element_id);
+                                                  element_id, &sep);
 #ifdef CONFIG_DEMO_HOLD_STATION
             /* Pinned member: the drive above still ran (its min_dist_m
              * feeds the separation warning below, and its LOG_DBG keeps
@@ -921,31 +1084,48 @@ int main(void)
             demo_setpoint_init(&target, seed_x, seed_y);
 #endif
 #endif /* CONFIG_DEMO_MODE_CHOREO */
-            log_min_dist_m = min_dist_m;
             if (min_dist_m >= 0.0f && min_dist_m < DEMO_MIN_SEP_M) {
                 static int sep_log_div;
                 if (++sep_log_div >= 20) {   /* ~2 Hz at WM_CYCLE_MS=100 */
                     sep_log_div = 0;
-                    LOG_WRN("id=%u separation violation: nearest peer %.2f m "
-                            "(min %.2f m)", (unsigned)element_id,
-                            (double)min_dist_m, (double)DEMO_MIN_SEP_M);
+                    if (sep.stale) {
+                        /* Same severity as a confirmed violation — a
+                         * two-second-old position is the best evidence
+                         * available and "probably too close" is still too
+                         * close — but worded so a log reader can never
+                         * mistake it for a fresh measurement.  The forces
+                         * did NOT react to this peer (repulsion stays on
+                         * fresh peers only), which is exactly why the
+                         * warning matters. */
+                        LOG_WRN("id=%u separation violation (last known, "
+                                "%ums stale): nearest peer %.2f m (min %.2f m)",
+                                (unsigned)element_id, (unsigned)sep.age_ms,
+                                (double)min_dist_m, (double)DEMO_MIN_SEP_M);
+                    } else {
+                        LOG_WRN("id=%u separation violation: nearest peer %.2f m "
+                                "(min %.2f m)", (unsigned)element_id,
+                                (double)min_dist_m, (double)DEMO_MIN_SEP_M);
+                    }
                 }
             } else if (min_dist_m < 0.0f) {
-                /* No fresh peer to measure against: separation is UNKNOWN,
-                 * not known-safe, and this branch used to pass silently.
-                 * It is reached routinely at the end of a show — the first
-                 * finisher lands and goes gossip-silent (the FLIGHT_LANDED
-                 * gate at the send site), its entry expires, and whoever is
-                 * still airborne flies out its remaining seconds with the
-                 * check above inert over a partner it can no longer see
-                 * (2026-08-24 flight 15: ~6 s of it).  Logging does not
-                 * restore the check — that needs last-known peer positions
-                 * carried through staleness, a larger change — but it stops
-                 * the blind window being invisible in the flight log. */
+                /* No ACTIVE peer at all to measure against: separation is
+                 * UNKNOWN, not known-safe.  This used to be reached
+                 * whenever no peer was FRESH, which was ~57% of flight 25's
+                 * status samples (27/45 and 24/45) — more than half the
+                 * flight with the check above inert.  Now that stale
+                 * entries carry their last-known position into the
+                 * measurement, reaching here means every peer has passed
+                 * WM_EXPIRE_THRESHOLD_MS (5 s of silence, presumed gone),
+                 * which is the end-of-show case this warning was written
+                 * for: the first finisher lands and goes gossip-silent (the
+                 * FLIGHT_LANDED gate at the send site) while a partner
+                 * flies out its remaining seconds (2026-08-24 flight 15:
+                 * ~6 s of it).  Rare now, and genuinely blind when it
+                 * happens. */
                 static int sep_blind_div;
                 if (++sep_blind_div >= 50) {   /* ~0.2 Hz at WM_CYCLE_MS=100 */
                     sep_blind_div = 0;
-                    LOG_WRN("id=%u separation UNKNOWN — no fresh peer in view",
+                    LOG_WRN("id=%u separation UNKNOWN — no active peer in view",
                             (unsigned)element_id);
                 }
             }
@@ -967,8 +1147,33 @@ int main(void)
         }
 
         case FLIGHT_LANDING:
-            landing_alt_m -= LAND_RATE_MPS * LOOP_DT_S;
-            if (landing_alt_m < 0.0f) { landing_alt_m = 0.0f; }
+#ifdef CONFIG_DEMO_MODE_CHOREO
+            /* Descending is not the same as blind: own position is still
+             * valid while the fix holds, peers still gossip, and a partner
+             * drifting overhead during the descent is exactly the sort of
+             * thing the flight log should be able to show afterwards.  No
+             * warning is raised from here — that stays a FLYING concern —
+             * this only keeps min_d honest instead of reporting -1.00 for
+             * the whole descent. */
+            if (fix_valid) {
+                demo_sep_t land_sep;
+                log_min_dist_m   = demo_min_separation(&wm, &own_pos_m,
+                                                       &land_sep);
+                log_sep          = land_sep;
+                log_sep_measured = true;
+            }
+#endif
+#ifdef CONFIG_PWM
+            /* Hand the vertical profile to the stabilizer's closed-loop
+             * descent on the first LANDING tick.  It walks the target down
+             * from the measured altitude and cuts on ground settle, so
+             * nothing here needs to (or may) drive linear.z toward the
+             * idle sentinel — doing that is what dropped the airframe. */
+            if (!land_requested) {
+                land_requested = true;
+                cf21bl_stabilizer_request_land(true);
+            }
+#endif
             sp.linear.x = 0.0f;
             sp.linear.y = 0.0f;
 #ifdef CONFIG_PWM
@@ -984,13 +1189,25 @@ int main(void)
                 }
             }
 #endif
-            sp.linear.z = landing_alt_m - 1.0f;
-            if (landing_alt_m <= 0.02f) {
-                /* Touchdown gate (see LAND_TOUCHDOWN_Z_M): only run the
-                 * settle timer once the MEASURED altitude agrees the
-                 * airframe is down; a lagging altitude loop no longer gets
-                 * its motors cut mid-air.  land_zero_ms bounds the wait
-                 * when the fix is unavailable or z-biased. */
+            /* Deliberately NOT walked toward -1.0: this must stay clear of
+             * the idle sentinel for the whole descent, or the stabilizer
+             * reads it as "motors off" and the closed-loop landing above
+             * never gets to finish. */
+            sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
+
+            {
+                /* Primary: the stabilizer settled the airframe on the
+                 * ground and latched its motors off. */
+                bool settled = false;
+#ifdef CONFIG_PWM
+                settled = cf21bl_stabilizer_is_landed();
+#endif
+                /* Backstop (see the LAND_* block comment): an independent
+                 * measured-lighthouse touchdown check, bounded by
+                 * LAND_FORCE_DISARM_MS so a missing or z-biased fix cannot
+                 * hold the drone in LANDING forever.  This is also the
+                 * whole gate on builds without CONFIG_CF21BL_ALTITUDE_HOLD,
+                 * where there is no closed-loop descent to defer to. */
                 static uint32_t land_zero_ms;
                 land_zero_ms += WM_CYCLE_MS;
 
@@ -1005,14 +1222,15 @@ int main(void)
                 } else {
                     land_settle_ms = 0;
                 }
-                if (land_settle_ms >= LAND_SETTLE_MS) {
+
+                if (settled || land_settle_ms >= LAND_SETTLE_MS) {
                     state = FLIGHT_LANDED;
-                    LOG_INF("id=%u landed — disarming (z gate %s)",
+                    LOG_INF("id=%u landed — disarming (%s)",
                             (unsigned)element_id,
-                            down ? "confirmed" : "timed out");
+                            settled ? "stabilizer settle"
+                                    : (down ? "z gate confirmed"
+                                            : "z gate timed out"));
                 }
-            } else {
-                land_settle_ms = 0;
             }
             break;
 
@@ -1025,7 +1243,15 @@ int main(void)
         }
 
         substrate_move(&sp);
+#ifdef CONFIG_DEMO_MODE_CHOREO
         demo_set_leds(&wm, choreo_current_indicator());
+#else
+        /* Showcase mode links no choreo.c and does not include choreo.h —
+         * SUBSTRATE_SIGNAL_NONE is the "no script indicator override"
+         * value, i.e. exactly the quorum/freshness heuristic this mode had
+         * before per-step indicators existed. */
+        demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
+#endif
 
         static uint32_t log_accum;
         log_accum += WM_CYCLE_MS;
@@ -1042,16 +1268,34 @@ int main(void)
 #ifdef CONFIG_DEMO_MODE_CHOREO
             /* q=H/L is the DEBOUNCED quorum; (susp) = choreo SUSPENDED.
              * Flight 2 hid the flicker story because neither was logged. */
-            /* min_d=-1.00 means no fresh peer: separation UNKNOWN, not
-             * known-safe.  why= is absent while still flying. */
+            /* min_d provenance, as a one-character suffix:
+             *   (none)  fresh measurement against a fresh peer
+             *   *       nearest peer was stale — last-known position, no
+             *           repulsion acted on it
+             *   ?       not measured this tick (own fix lost, or a state
+             *           that runs no drive) — separation unknown because
+             *           WE are unlocated, which is not the same claim as
+             *           min_d=-1.00 with no suffix: that one means the scan
+             *           ran and every peer had expired.
+             *
+             * step=-1 is ambiguous on its own — the script deactivates both
+             * when it completes and when choreo_preempt_goal() parks it —
+             * so a preempting goal (battery RTH) is called out explicitly.
+             * Flight 42 lost its "preempting to return-to-home" WRN to
+             * console splicing and the 1 Hz line showed a drone flying
+             * 1.5 m across the arena at step=-1 with no stated reason.
+             * why= is absent while still flying. */
+            const char *sep_mark = !log_sep_measured ? "?"
+                                 : (log_sep.stale    ? "*" : "");
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
-                    "cmd_z=%.2f min_d=%.2f step=%d q=%c%s%s%s",
+                    "cmd_z=%.2f min_d=%.2f%s step=%d%s q=%c%s%s%s",
                     (unsigned)element_id, flight_state_name(state), fresh, active,
                     (double)own_pos_m.x, (double)own_pos_m.y,
                     (double)target.x, (double)target.y,
                     (double)alt_cmd_m, (double)sp.linear.z,
-                    (double)log_min_dist_m,
+                    (double)log_min_dist_m, sep_mark,
                     choreo_script_step(),
+                    choreo_is_preempted() ? "(preempt)" : "",
                     log_quorum_up ? 'H' : 'L',
                     choreo_goal_status() == CHOREO_STATE_SUSPENDED ? "(susp)" : "",
                     choreo_goal_achieved() ? " achieved" : "",

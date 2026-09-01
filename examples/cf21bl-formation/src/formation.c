@@ -8,6 +8,7 @@
 #include "formation.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <zephyr/logging/log.h>
 
 LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
@@ -38,13 +39,70 @@ void demo_setpoint_init(demo_setpoint_t *sp, float x, float y)
     sp->moving = false;
 }
 
+/* A peer worth measuring against or steering by: active, not ourselves,
+ * and actually localized.  ELEMENT_HEALTH_NO_POSITION means the element is
+ * gossiping its zero-init placeholder because it has no fix yet — see the
+ * flag's comment in csm.h for the flight-41 phantom-at-the-origin this
+ * excludes.  Applied to the distance scan and to both force loops: a
+ * position nobody has measured is not something to warn about OR steer by. */
+static bool peer_has_position(const wm_entry_t *e)
+{
+    return e->is_active && !e->is_self &&
+           (e->state.health_flags & ELEMENT_HEALTH_NO_POSITION) == 0;
+}
+
+/* See formation.h.  This is deliberately the ONLY place the two drive
+ * functions get their min_dist from: their force loops still skip stale
+ * peers, so leaving the bookkeeping inside those loops is exactly what
+ * made the check inert.
+ *
+ * 3D distance, matching the force loops' metric — see the block comment in
+ * demo_compute_drive for why z is folded in here too. */
+float demo_min_separation(const world_model_t *wm,
+                          const position_t *own_pos_m,
+                          demo_sep_t *sep)
+{
+    float      min_dist_m = -1.0f;
+    demo_sep_t s          = { .stale = false, .age_ms = 0 };
+
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (!peer_has_position(e)) {
+            continue;
+        }
+
+        float dx   = e->state.position.x - own_pos_m->x;
+        float dy   = e->state.position.y - own_pos_m->y;
+        float dz   = e->state.position.z - own_pos_m->z;
+        float dist = sqrtf(dx * dx + dy * dy + dz * dz);
+
+        if (min_dist_m < 0.0f || dist < min_dist_m) {
+            min_dist_m = dist;
+            s.stale    = e->is_stale;
+            s.age_ms   = e->age_ms;
+        }
+    }
+
+    if (sep != NULL) {
+        *sep = s;
+    }
+    return min_dist_m;
+}
+
 float demo_compute_drive(const world_model_t *wm,
                           const position_t *own_pos_m,
                           demo_setpoint_t *target,
                           uint32_t dt_ms,
-                          element_id_t own_id)
+                          element_id_t own_id,
+                          demo_sep_t *sep_out)
 {
     float dt = (float)dt_ms * 0.001f;
+
+    /* Measured FIRST, ahead of the hold-on-stale return below: freezing the
+     * drive is the right response to a stale peer, but riding that freeze
+     * out with no idea how close the peer was is the blind spot this
+     * measurement exists to close (the old code returned -1.0f here). */
+    float min_dist_m = demo_min_separation(wm, own_pos_m, sep_out);
 
     /* Hold in place if any active peer is stale — the spring field would
      * otherwise be computed against a peer position we no longer trust. */
@@ -52,14 +110,13 @@ float demo_compute_drive(const world_model_t *wm,
         const wm_entry_t *e = &wm->entries[i];
         if (e->is_active && !e->is_self && e->is_stale) {
             target->moving = false;
-            return -1.0f;
+            return min_dist_m;
         }
     }
 
     float fx          = 0.0f;
     float fy          = 0.0f;
     int   peer_count  = 0;
-    float min_dist_m  = -1.0f;
     float peer_sum_x  = 0.0f;   /* for the formation centroid */
     float peer_sum_y  = 0.0f;
     float pair_dx     = 0.0f;   /* bearing to the (single) fresh peer — only
@@ -68,7 +125,7 @@ float demo_compute_drive(const world_model_t *wm,
 
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
-        if (!e->is_active || e->is_self || e->is_stale) {
+        if (!peer_has_position(e) || e->is_stale) {
             continue;
         }
 
@@ -97,10 +154,6 @@ float demo_compute_drive(const world_model_t *wm,
 
         pair_dx = dx;
         pair_dy = dy;
-
-        if (min_dist_m < 0.0f || dist < min_dist_m) {
-            min_dist_m = dist;
-        }
 
         if (dist_xy < 0.01f) {
             continue;   /* coincident horizontally — push direction undefined */
@@ -224,6 +277,62 @@ float demo_compute_drive(const world_model_t *wm,
     return min_dist_m;
 }
 
+bool demo_deconflict_point(const world_model_t *wm, float *x, float *y)
+{
+    bool moved = false;
+
+    /* Horizontal-only, deliberately: this places a LANDING/return point on
+     * the floor, and z is a separately-held loop that a landed peer is not
+     * on anyway.  (The in-flight separation metric folds in z; see
+     * demo_min_separation.  Different question, different geometry.)
+     *
+     * A bounded relaxation, not iterated to convergence: clearing one peer
+     * can push the point inside another's floor, but in a crowded arena
+     * there may be no clear point at all, and returning a spot 0.4 m from a
+     * peer beats spinning here.  Four passes settles the 2-3 element case. */
+    for (int pass = 0; pass < 4; pass++) {
+        bool clear = true;
+
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &wm->entries[i];
+            if (!peer_has_position(e)) {
+                continue;
+            }
+
+            float dx = *x - e->state.position.x;
+            float dy = *y - e->state.position.y;
+            float d  = sqrtf(dx * dx + dy * dy);
+            if (d >= DEMO_MIN_SEP_M) {
+                continue;
+            }
+
+            /* Point sits on top of the peer: every direction is equally
+             * good, so pick a deterministic one rather than dividing by
+             * ~zero. */
+            if (d < 0.01f) {
+                dx = 1.0f;
+                dy = 0.0f;
+                d  = 1.0f;
+            }
+
+            *x    = e->state.position.x + dx / d * DEMO_MIN_SEP_M;
+            *y    = e->state.position.y + dy / d * DEMO_MIN_SEP_M;
+            clear = false;
+            moved = true;
+        }
+
+        if (clear) {
+            break;
+        }
+    }
+
+    if (moved) {
+        *x = clampf(*x, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
+        *y = clampf(*y, -DEMO_ARENA_LIMIT_M, DEMO_ARENA_LIMIT_M);
+    }
+    return moved;
+}
+
 /* ── Choreo tracking (see formation.h) ───────────────────────────────────── */
 
 float demo_choreo_track(const world_model_t *wm,
@@ -231,20 +340,28 @@ float demo_choreo_track(const world_model_t *wm,
                         demo_setpoint_t *target,
                         float cmd_x, float cmd_y,
                         uint32_t dt_ms,
-                        element_id_t own_id)
+                        element_id_t own_id,
+                        demo_sep_t *sep_out)
 {
     float dt = (float)dt_ms * 0.001f;
 
-    /* Emergency repulsion + minimum-distance bookkeeping over fresh peers.
-     * Same constants and force convention as the spring field, but no
-     * attraction term — the L6 directive owns where we are going. */
-    float fx         = 0.0f;
-    float fy         = 0.0f;
-    float min_dist_m = -1.0f;
+    /* Separation is measured over every ACTIVE peer (stale included);
+     * emergency repulsion below is applied for FRESH peers only.  That
+     * split is the whole point of this function's share of the fix: unlike
+     * demo_compute_drive there is no hold-on-stale freeze here, so a peer
+     * sitting in the stale-but-not-expired band used to mean flying with
+     * the DEMO_MIN_SEP_M check switched off entirely. */
+    float min_dist_m = demo_min_separation(wm, own_pos_m, sep_out);
+
+    /* Emergency repulsion over fresh peers.  Same constants and force
+     * convention as the spring field, but no attraction term — the L6
+     * directive owns where we are going. */
+    float fx = 0.0f;
+    float fy = 0.0f;
 
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
-        if (!e->is_active || e->is_self || e->is_stale) {
+        if (!peer_has_position(e) || e->is_stale) {
             continue;
         }
 
@@ -256,9 +373,6 @@ float demo_choreo_track(const world_model_t *wm,
         float dist    = sqrtf(dx * dx + dy * dy + dz * dz);
         float dist_xy = sqrtf(dx * dx + dy * dy);
 
-        if (min_dist_m < 0.0f || dist < min_dist_m) {
-            min_dist_m = dist;
-        }
         if (dist_xy < 0.01f) {
             continue;   /* coincident horizontally — push direction undefined */
         }

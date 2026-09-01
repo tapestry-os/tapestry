@@ -100,7 +100,9 @@
  * seeds the rotation in either direction, both of which are correct.
  * Transient radio-contention staleness blips cannot falsely trigger the
  * pair phase: any active-but-stale peer freezes the whole drive
- * (hold-in-place check at the top of demo_compute_drive), so peer_count
+ * (hold-in-place check near the top of demo_compute_drive — it now sits
+ * just after the separation scan, which must run first so the frozen
+ * drive still reports how close the stale peer was), so peer_count
  * only drops to 1 after a peer is fully expired
  * (WM_EXPIRE_THRESHOLD_MS = genuinely gone). */
 #define DEMO_ALIGN_ROT_RADPS  0.25f
@@ -151,19 +153,72 @@ typedef struct {
 
 void demo_setpoint_init(demo_setpoint_t *sp, float x, float y);
 
+/* ── Separation provenance ───────────────────────────────────────────────────
+ *
+ * Both drive functions below measure their minimum peer distance over every
+ * ACTIVE peer, stale entries included.  is_stale only means "no gossip for
+ * WM_STALE_THRESHOLD_MS (1500 ms)" — it does NOT mean "no data": the entry
+ * keeps its last-known position until WM_EXPIRE_THRESHOLD_MS (5000 ms)
+ * retires it.  Throwing that 1.5–5 s band away left the DEMO_MIN_SEP_M
+ * check completely inert for ~57% of flight 25's status samples (27/45 and
+ * 24/45), and a 2 s-old position is a far better answer to "are we about to
+ * collide" than no answer at all.
+ *
+ * The FORCES still act on fresh peers only — a stale position is fine to
+ * warn about, not fine to steer by — so a returned distance can no longer
+ * be assumed to be a live measurement.  Rather than overload the float
+ * (whose -1.0f already means "no data at all"), that distinction is carried
+ * out here: callers that treat a violation as actionable need to know
+ * whether they are looking at a measurement or at a memory.
+ */
+typedef struct {
+    bool     stale;    /* nearest contributor was stale-but-active         */
+    uint32_t age_ms;   /* that contributor's wm_entry_t.age_ms (0 if none) */
+} demo_sep_t;
+
+/* Distance (meters, 3D) to the nearest ACTIVE peer, stale entries included
+ * — the measurement both drive functions below report, exposed on its own
+ * for callers that need the separation number on a tick where no drive
+ * ran (main.c's choreo SUSPENDED / HOLD-directive path freezes the target
+ * but the airframe is still flying, and a peer can still close on it).
+ * Returns -1.0f only when no peer is active at all.  *sep (may be NULL)
+ * receives the nearest contributor's provenance. */
+float demo_min_separation(const world_model_t *wm,
+                          const position_t *own_pos_m,
+                          demo_sep_t *sep);
+
+/* Push (*x, *y) — a point this drone intends to fly to and LAND on — out
+ * to DEMO_MIN_SEP_M from every active, localized peer.  Returns true if the
+ * point had to move.  Horizontal-only: it is a floor placement.
+ *
+ * The case this exists for is return-to-home.  RTH aims at a stored takeoff
+ * point with no knowledge of what has happened in the arena since, and
+ * after an EXCHANGE that point is exactly where the partner now is
+ * (2026-08-31 flight 42: a battery-preempted RTH flew to within 0.24 m of a
+ * partner already sitting on the floor there, logging min_d 0.39 m against
+ * a 0.50 m floor).  This is a one-shot correction taken when the goal is
+ * submitted, not a tracking loop — the in-flight repulsion in
+ * demo_choreo_track remains the continuous defense. */
+bool demo_deconflict_point(const world_model_t *wm, float *x, float *y);
+
 /* Advance *target toward the spring-field equilibrium by dt_ms, using
  * REAL peer positions from wm and this drone's REAL position (own_pos_m,
  * meters) for the force calculation.  Also returns the minimum distance
- * observed to any fresh peer this call (for main.c's separation warning),
- * or -1.0f if no fresh peers were found.  own_id is only used to tag the
- * LOG_DBG line — with multiple drones sharing one radio channel (no
- * per-drone channel plan yet), interleaved console output is otherwise
- * impossible to attribute to a specific drone. */
+ * observed to any ACTIVE peer this call (for main.c's separation warning),
+ * or -1.0f only when no peer is active at all; *sep_out (may be NULL)
+ * says whether that nearest peer was stale and how old its position is —
+ * see demo_sep_t.  The measurement is taken BEFORE the hold-on-stale early
+ * return below, so a frozen drive still reports how close its stale peer
+ * was.  own_id is only used to tag the LOG_DBG line — with multiple drones
+ * sharing one radio channel (no per-drone channel plan yet), interleaved
+ * console output is otherwise impossible to attribute to a specific
+ * drone. */
 float demo_compute_drive(const world_model_t *wm,
                           const position_t *own_pos_m,
                           demo_setpoint_t *target,
                           uint32_t dt_ms,
-                          element_id_t own_id);
+                          element_id_t own_id,
+                          demo_sep_t *sep_out);
 
 /* Choreo tracking (CONFIG_DEMO_MODE_CHOREO): advance *target toward the L6
  * directive point (cmd_x, cmd_y) at up to DEMO_MAX_SPEED_MPS, keeping the
@@ -173,14 +228,19 @@ float demo_compute_drive(const world_model_t *wm,
  * here is a backstop, not the primary separation mechanism.  Unlike
  * demo_compute_drive there is no hold-on-stale check: staleness handling
  * belongs to the caller's quorum mapping (stale peers → choreo SUSPENDED →
- * target frozen).  Returns the minimum fresh-peer distance seen (-1 if no
- * fresh peers). */
+ * target frozen).  Returns the minimum ACTIVE-peer distance seen (-1 only
+ * when no peer is active at all), with *sep_out (may be NULL) reporting
+ * whether that nearest peer was stale — see demo_sep_t.  This mode is the
+ * reason that split exists: demo_choreo_track never freezes, so before it
+ * measured stale peers it could fly fully blind on separation for as long
+ * as a peer sat in the stale-but-not-expired band. */
 float demo_choreo_track(const world_model_t *wm,
                         const position_t *own_pos_m,
                         demo_setpoint_t *target,
                         float cmd_x, float cmd_y,
                         uint32_t dt_ms,
-                        element_id_t own_id);
+                        element_id_t own_id,
+                        demo_sep_t *sep_out);
 
 /* ── Signal feedback (LED) ────────────────────────────────────────────────── */
 

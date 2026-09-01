@@ -15,6 +15,156 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `TAPESTRY_WIRE_VERSION` to 5.
 
 ### Fixed
+- **`cf21bl-formation`'s `DEMO_MIN_SEP_M` separation check was inert whenever
+  no peer was fresh.** `demo_compute_drive()` and `demo_choreo_track()` both
+  skipped every `is_stale` entry when computing `min_dist_m`, returning
+  `-1.0f` ("no data") — but `is_stale` only means "no gossip in
+  `WM_STALE_THRESHOLD_MS` (1500 ms)", while the entry keeps its last-known
+  position until `WM_EXPIRE_THRESHOLD_MS` (5000 ms). Flight 25 spent ~57%
+  of its status samples (27/45 and 24/45) at `min_d = -1.00`, i.e. with no
+  separation checking at all. Distance is now measured over every *active*
+  peer via the new `demo_min_separation()`; the repulsion **force** still
+  acts on fresh peers only (a stale position is fine to warn about, not to
+  steer by). Both drives gained a `demo_sep_t *sep_out` parameter carrying
+  the nearest contributor's staleness and age, so a violation measured off
+  a remembered position logs as `separation violation (last known, Nms
+  stale)` rather than being mistaken for a confirmed close pass, and the
+  1 Hz status line marks such a distance `min_d=0.42*`. `min_d = -1.00` and
+  `separation UNKNOWN` now mean every peer has actually expired. The
+  choreo `SUSPENDED`/`HOLD`-directive path, which runs no drive at all,
+  measures separation directly for the same reason.
+- **A fix-loss "hold" was a coast, not a hover — closed with active
+  braking plus an independent distance backstop.** `cf21bl-formation`
+  flight 49 (2026-09-01): occluding one drone's lighthouse beacon
+  mid-arc produced 1.56 m of real drift in ~5.3 s blind, breaching the
+  2.0 m geofence. With no velocity sensor once the fix drops, the prior
+  session's "stop leaning, ride out on drag" fallback was, in practice,
+  "continue at whatever velocity existed the instant the fix died,
+  decaying only on drag" — negligible at these speeds — and the same
+  session's extension of `FIX_LOSS_GRACE_MS` to 10 s (from 2 s) gave that
+  coast up to 3 m of room instead of ~0.6 m.
+  `cf21bl_stabilizer.c` now applies a short, open-loop braking pulse on
+  fix loss: the position loop's own `CF21BL_POS_KD` damping gain
+  (already flight-validated, not a new untested constant), fed the
+  body-frame velocity captured at the instant the fix dropped, ramped
+  linearly to zero over `CF21BL_BRAKE_MS` (800 ms) and clamped by the
+  existing `CF21BL_POS_OLIM_RAD`. Best-effort by construction — there is
+  nothing to close the loop on once blind — so `main.c` no longer trusts
+  it alone: a new coast-budget backstop lands independently the instant
+  a coast at the demo's own top speed (`DEMO_MAX_SPEED_MPS`), sustained
+  for the whole blind duration so far and aimed straight away from the
+  origin, would breach the geofence — deliberately pessimistic, and
+  bounded by distance from the ORIGIN-RELATIVE position at the moment
+  the fix was lost rather than by time alone, so a drone that goes blind
+  already near the geofence edge gets a correspondingly shorter grace
+  than one that goes blind near the origin. Would have caught the
+  flight-49 drift at ~2.6 s in, landed in place, well short of the
+  breach. Not flight-tested yet — this needs a bench and then a
+  controlled-occlusion check before trusting it on a real script.
+- **The landing assumed flat ground at the takeoff altitude.**
+  `cf21bl_stabilizer.c`'s forced-landing descent walked its target down to
+  a fixed ground-relative altitude of 0 and declared touchdown there — on
+  a platform, a step, a slope, or a takeoff point that was not itself at
+  floor level, that either cuts thrust while still airborne (a rise) or
+  never fires at all until the outer `LAND_FORCE_DISARM_MS` backstop
+  forces it on a stale error (a valley). Touchdown is now "commanding a
+  lower altitude no longer produces one": the target keeps walking down
+  unconditionally, and a rolling `CF21BL_LAND_STALL_WINDOW_MS` window
+  checks the MEASURED altitude for continued descent — under
+  `CF21BL_LAND_STALL_EPS_M` and it is likely resting on something,
+  whatever height that turns out to be, held for `CF21BL_LAND_SETTLE_MS`
+  before latching. A window that shows real descent resets the settle
+  clock, so ordinary controller lag at the start of a descent
+  self-corrects rather than needing to be special-cased. Both stall
+  constants are bench-tuning starting points, not validated figures —
+  ground-effect turbulence and sensor noise near the floor are the real
+  unknowns here, not the algorithm.
+- **Fix-loss hold extended from 2 s to 10 s, backed by an honest wire
+  signal instead of a bare timer.** A dropout was already handled as
+  "stop and hover, wait for the fix" — `sp.linear.x/y` zero, and with
+  `CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD` the stabilizer's own fix-lost path
+  already drops its position correction to zero on the identical
+  condition, so the fallback was already level attitude with no commanded
+  lean, not the "velocity feedforward" its own log line claimed (fixed;
+  that path is dead code whenever `LIGHTHOUSE_POS_HOLD` is on, which
+  Kconfig requires for `CF21BL_ANGLE_MODE` anyway). `own_pos_m` was
+  already held, not zeroed, and kept being gossiped through the outage —
+  but as an ordinary-looking position, indistinguishable from a live one
+  to any receiver. The new `ELEMENT_HEALTH_POSITION_STALE` flag (distinct
+  from `ELEMENT_HEALTH_NO_POSITION`: this is a real last-known
+  measurement, not a placeholder — it stays visible to separation,
+  repulsion, and RTH deconfliction, the same as any other stale-but-active
+  peer) now says so on the wire. `FIX_LOSS_GRACE_MS` moves to 10 s on the
+  strength of that signal plus the home-across-dropout fix above: neither
+  a longer wait re-origining the control frame nor a stale position
+  passing as fresh is possible any more, so extending the hold no longer
+  trades safety for patience. No compile-time override was added — the
+  constant is just raised.
+- **The landing cut thrust in mid-air.** `cf21bl_stabilizer.c` treated
+  `linear.z < -0.9` as "application wants motors off", but with
+  `CF21BL_ALT_SP_OFFSET = 1.0` that value is a *commanded altitude of
+  0.10 m* — so `cf21bl-formation`'s landing, which walked its own altitude
+  target down at 0.30 m/s, tripped the sentinel at 0.10 m while the
+  airframe still lagged above it and dropped the rest of the way. The
+  2026-07-19 flight 10 fix addressed the disarm half of this (the measured
+  touchdown gate) but not the thrust half: by the time that gate runs, the
+  motors have been idle for ~0.27 s. The sentinel is now the named
+  `CF21BL_IDLE_SP_Z` at -0.98 (a 2 cm dead band, not 10 cm), and the demo
+  hands its descent to the new `cf21bl_stabilizer_request_land()` — the
+  same closed-loop profile the stale-setpoint and critical-battery paths
+  already used, which walks the target down from the MEASURED altitude and
+  cuts on ground settle rather than on the target reaching a number.
+  Landing is gated on `cf21bl_stabilizer_is_landed()`, with the measured
+  lighthouse check and `LAND_FORCE_DISARM_MS` retained as an independent
+  backstop and as the whole gate on builds without
+  `CONFIG_CF21BL_ALTITUDE_HOLD`. Narrowing the sentinel also keeps
+  lighthouse position hold engaged down to 0.02 m instead of dropping out
+  at 0.10 m, so the airframe no longer slides during the final descent.
+- **A lighthouse fix dropout silently re-origined the position control
+  frame.** `cf21bl_stabilizer.c` cleared `g_pos_home_set` on fix loss — as
+  the once-per-outage latch for its "LH2 fix lost" warning — which made the
+  capture block above it re-latch `home` to wherever the drone had drifted
+  to on the next valid fix. The whole position loop is home-relative
+  (`ex = (g_pos_home_x + sp_x) - lhpos.x`), so every commanded position
+  after a dropout inherited that offset, and
+  `cf21bl_stabilizer_get_pos_home()` handed the same wrong point to the
+  demo's return-to-home. Home is a point in the lighthouse world frame and
+  that frame does not move when the fix drops: it is now held across an
+  outage and released on return to idle, i.e. at the takeoff/landing
+  boundary. The warning keeps its once-per-outage throttle via a separate
+  flag. 
+- **Return-to-home could aim at a spot a peer was parked on.** The
+  battery-preempt RTH goal targets this drone's own takeoff point, which
+  after an `exchange` step is exactly where the partner is — and RTH ends
+  in a landing, so the goal point itself was the collision, somewhere the
+  in-flight repulsion cannot help. `demo_deconflict_point()` now pushes the
+  destination clear of every active, localized peer before the goal is
+  submitted, and the preempt log line says when it did. 
+- **An element with no position fix gossiped a placeholder that peers
+  measured against.** `own_state.position` is zero-init until the first
+  fix, and gossip is deliberately unconditional (discovery and auto-ID
+  recovery depend on being heard before anyone is localized). Such an
+  element now advertises the new `ELEMENT_HEALTH_NO_POSITION` flag, and
+  `formation.c` excludes those entries from the separation scan, both force
+  loops, and landing-point deconfliction. Additive bit on an already-wire-
+  visible field — no `TAPESTRY_WIRE_VERSION` bump. 
+- **The 1 Hz status line could not say why it was showing what it showed.**
+  Two ambiguities, both of which cost a flight's worth of diagnosis:
+  `min_d=-1.00` was printed both when the scan ran and found no live peer
+  and when no scan ran at all (own fix lost, `RAMPING`, `LANDED`) — the
+  latter now carries a `?` suffix, alongside the existing `*` for a stale
+  contributor; and `step=-1` means both "script complete" and "script
+  parked by a preempting goal", so a preempted element now prints
+  `step=-1(preempt)`. `FLIGHT_LANDING` also measures separation now
+  instead of reporting `-1.00` for the whole descent.
+- **`CONFIG_DEMO_MODE_SHOWCASE=y` did not compile.** `cf21bl-formation`'s
+  legacy showcase mode had two unguarded choreo-mode-only references in
+  `main.c`: `log_min_dist_m` (declared inside `#ifdef
+  CONFIG_DEMO_MODE_CHOREO`, assigned outside it) and
+  `choreo_current_indicator()` (whose header is only included in choreo
+  mode). Both are now guarded; showcase links again, with
+  `SUBSTRATE_SIGNAL_NONE` as its indicator — the same
+  quorum/freshness LED heuristic it had before per-step indicators existed.
 - **`HOLD` baked in tracker overshoot no longer a permanent station offset.**
   `HOLD` now inherits the prior intent's own achieved `MOVE_TO_POINT` goal point
   when one exists, rather than the live position at the moment it took

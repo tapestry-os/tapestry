@@ -16,6 +16,9 @@
  *                               preceding chaos until physically restrained
  *   - hold-on-stale           → transient radio-contention staleness must
  *                               freeze the drive, not distort the field
+ *   - separation through       → skipping stale entries left the
+ *     staleness                 DEMO_MIN_SEP_M check inert for ~57% of
+ *                               flight 25's status samples
  *
  * The multi-agent tests use a perfect-tracking closed loop (each body
  * teleports onto its own target every cycle) — crude, but it exercises the
@@ -51,9 +54,44 @@ static void wm_set_peer(int slot, float x, float y, bool stale)
     wm.entries[slot].is_active        = true;
     wm.entries[slot].is_self          = false;
     wm.entries[slot].is_stale         = stale;
+    /* is_stale and age_ms are set together by wm_tick(); the separation
+     * provenance (demo_sep_t.age_ms) reads the latter, so a fixture that
+     * set only the flag would report every stale peer as 0 ms old. */
+    wm.entries[slot].age_ms           = stale ? WM_STALE_THRESHOLD_MS + 500
+                                              : GOSSIP_INTERVAL_MS;
     wm.entries[slot].state.id         = (element_id_t)slot;
     wm.entries[slot].state.position.x = x;
     wm.entries[slot].state.position.y = y;
+    /* A gossip update replaces the peer's whole state (gossip.c copies
+     * health_flags off the frame), so this fixture must too — otherwise a
+     * slot can never shed ELEMENT_HEALTH_NO_POSITION once it has it. */
+    wm.entries[slot].state.health_flags = ELEMENT_HEALTH_OK;
+}
+
+/* A peer that is gossiping but has no lighthouse fix yet: its position
+ * field is the zero-init placeholder, not a measurement. */
+static void wm_set_peer_unlocalized(int slot, bool stale)
+{
+    wm_set_peer(slot, 0.0f, 0.0f, stale);
+    wm.entries[slot].state.health_flags = ELEMENT_HEALTH_NO_POSITION;
+}
+
+/* A peer whose local fix dropped mid-flight: its position is a real
+ * last-known measurement, not a placeholder — unlike wm_set_peer_unlocalized
+ * above, this must stay visible to separation, repulsion, and
+ * deconfliction. */
+static void wm_set_peer_position_stale(int slot, float x, float y, bool stale)
+{
+    wm_set_peer(slot, x, y, stale);
+    wm.entries[slot].state.health_flags = ELEMENT_HEALTH_POSITION_STALE;
+}
+
+/* A peer past WM_EXPIRE_THRESHOLD_MS: the world model has given up on it,
+ * so its last-known position is no longer usable for anything. */
+static void wm_expire_peer(int slot)
+{
+    wm.entries[slot].is_active = false;
+    wm.entries[slot].age_ms    = WM_EXPIRE_THRESHOLD_MS + 500;
 }
 
 static float dist2d(float ax, float ay, float bx, float by)
@@ -70,8 +108,8 @@ ZTEST(formation_field, test_no_peers_returns_no_distance)
     demo_setpoint_t tgt;
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
-    float d = demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
-    zassert_true(d < 0.0f, "no fresh peers must report min_d = -1");
+    float d = demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, NULL);
+    zassert_true(d < 0.0f, "no active peers must report min_d = -1");
 }
 
 ZTEST(formation_field, test_hold_on_stale_freezes_target)
@@ -84,10 +122,18 @@ ZTEST(formation_field, test_hold_on_stale_freezes_target)
     demo_setpoint_t tgt;
     demo_setpoint_init(&tgt, 0.2f, 0.2f);
 
-    float d = demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
-    zassert_true(d < 0.0f, "stale peer must report min_d = -1");
+    demo_sep_t sep;
+    float d = demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, &sep);
     zassert_within(tgt.x, 0.2f, EPS, "target x moved during stale hold");
     zassert_within(tgt.y, 0.2f, EPS, "target y moved during stale hold");
+    /* The freeze is unchanged, but it must no longer swallow the
+     * separation measurement: the stale peer at (0.3, 0.3) is the nearest
+     * thing to us and is what the hold is protecting against. */
+    zassert_within(d, sqrtf(0.18f), EPS,
+                   "frozen drive must still report the stale peer's distance");
+    zassert_true(sep.stale, "provenance must flag the stale contributor");
+    zassert_equal(sep.age_ms, WM_STALE_THRESHOLD_MS + 500,
+                  "provenance must carry the entry's age");
 }
 
 ZTEST(formation_field, test_spring_repels_when_too_close)
@@ -99,7 +145,7 @@ ZTEST(formation_field, test_spring_repels_when_too_close)
     demo_setpoint_t tgt;
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
-    (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
+    (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, NULL);
     zassert_true(tgt.x < 0.0f, "target must flee away from a too-close peer");
 }
 
@@ -112,7 +158,7 @@ ZTEST(formation_field, test_spring_attracts_when_too_far)
     demo_setpoint_t tgt;
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
-    (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
+    (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, NULL);
     zassert_true(tgt.x > 0.0f, "target must move toward a too-distant peer");
 }
 
@@ -126,7 +172,7 @@ ZTEST(formation_field, test_min_dist_reported)
     demo_setpoint_t tgt;
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
-    float d = demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
+    float d = demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, NULL);
     zassert_within(d, 0.2f, EPS, "min_d must be the closest fresh peer");
 }
 
@@ -144,7 +190,7 @@ ZTEST(formation_field, test_target_leash_bounds_detachment)
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
     for (int i = 0; i < 600; i++) {        /* 60 s of continuous fleeing */
-        (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
+        (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, NULL);
         float detach = dist2d(tgt.x, tgt.y, own.x, own.y);
         zassert_true(detach <= DEMO_TARGET_LEASH_M + EPS,
                      "target detached %.2f m from body (leash %.2f) at i=%d",
@@ -162,7 +208,7 @@ ZTEST(formation_field, test_solo_target_glides_home)
 
     float prev = dist2d(tgt.x, tgt.y, own.x, own.y);
     for (int i = 0; i < 100; i++) {         /* 10 s */
-        (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0);
+        (void)demo_compute_drive(&wm, &own, &tgt, DT_MS, 0, NULL);
         float d = dist2d(tgt.x, tgt.y, own.x, own.y);
         zassert_true(d <= prev + EPS, "solo glide must be monotonic");
         prev = d;
@@ -191,7 +237,7 @@ static void sim_step(sim_drone_t *d, int n)
             }
         }
         (void)demo_compute_drive(&wm, &d[i].pos, &d[i].tgt, DT_MS,
-                                 (element_id_t)i);
+                                 (element_id_t)i, NULL);
     }
     for (int i = 0; i < n; i++) {
         d[i].pos.x = d[i].tgt.x;
@@ -313,7 +359,7 @@ ZTEST(formation_field, test_choreo_track_converges_onto_cmd)
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
     for (int i = 0; i < 100; i++) {         /* 10 s at 0.3 m/s: plenty */
-        (void)demo_choreo_track(&wm, &own, &tgt, 0.5f, 0.2f, DT_MS, 0);
+        (void)demo_choreo_track(&wm, &own, &tgt, 0.5f, 0.2f, DT_MS, 0, NULL);
         own = (position_t){ tgt.x, tgt.y }; /* perfect tracking (leash) */
     }
     zassert_within(tgt.x, 0.5f, 0.01f, "target x did not converge (%.3f)",
@@ -331,7 +377,7 @@ ZTEST(formation_field, test_choreo_track_repulsion_and_min_dist)
     demo_setpoint_t tgt;
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
-    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0);
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, NULL);
     zassert_within(d, 0.25f, EPS, "min_d must report the close peer");
     zassert_true(tgt.x < 0.0f,
                  "target must be pushed away from a too-close peer");
@@ -345,11 +391,311 @@ ZTEST(formation_field, test_choreo_track_leash_bounds_target)
     demo_setpoint_init(&tgt, 0.0f, 0.0f);
 
     for (int i = 0; i < 200; i++) {         /* chase an unreachable cmd */
-        (void)demo_choreo_track(&wm, &own, &tgt, 2.5f, 0.0f, DT_MS, 0);
+        (void)demo_choreo_track(&wm, &own, &tgt, 2.5f, 0.0f, DT_MS, 0, NULL);
         float detach = dist2d(tgt.x, tgt.y, own.x, own.y);
         zassert_true(detach <= DEMO_TARGET_LEASH_M + EPS,
                      "target detached %.2f m > leash", (double)detach);
     }
+}
+
+/* ── Regression: separation measured through staleness ────────────────────
+ *
+ * Flight 25 flew ~57% of its status samples (27/45 and 24/45) with
+ * min_d = -1.00 — the DEMO_MIN_SEP_M check switched off — because both
+ * drive functions skipped every is_stale entry when computing min_dist.
+ * is_stale means "no gossip in WM_STALE_THRESHOLD_MS", not "no data": the
+ * entry holds its last-known position until WM_EXPIRE_THRESHOLD_MS.  These
+ * tests pin the two halves of the fix: the distance IS measured through
+ * that 1.5–5 s band, and the forces still are NOT.
+ */
+
+ZTEST(formation_field, test_stale_peer_still_measured_not_steered_by)
+{
+    wm_reset();
+    wm_set_peer(1, 0.25f, 0.0f, true);      /* inside DEMO_MIN_SEP_M, stale */
+
+    position_t own = { 0.0f, 0.0f };
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+    demo_sep_t sep;
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, &sep);
+
+    zassert_within(d, 0.25f, EPS,
+                   "stale peer's last-known position must still be measured");
+    zassert_true(sep.stale, "measurement must be flagged as last-known");
+    zassert_equal(sep.age_ms, WM_STALE_THRESHOLD_MS + 500,
+                  "provenance must carry the entry's age for the log line");
+    /* ...but the repulsion force stays on fresh peers only: a stale
+     * position is fine to warn about, not fine to steer by.  The fresh
+     * counterpart of this fixture (test_choreo_track_repulsion_and_min_dist)
+     * asserts tgt.x < 0. */
+    zassert_within(tgt.x, 0.0f, EPS,
+                   "a stale peer must not push the target (%.3f)",
+                   (double)tgt.x);
+    zassert_within(tgt.y, 0.0f, EPS, "a stale peer must not push the target");
+}
+
+ZTEST(formation_field, test_expired_peer_reports_unknown)
+{
+    wm_reset();
+    wm_set_peer(1, 0.25f, 0.0f, true);
+    wm_expire_peer(1);                      /* past WM_EXPIRE_THRESHOLD_MS */
+
+    position_t own = { 0.0f, 0.0f };
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+    demo_sep_t sep;
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, &sep);
+
+    zassert_true(d < 0.0f,
+                 "an expired peer is genuinely gone: min_d must be -1 (%.2f)",
+                 (double)d);
+    zassert_false(sep.stale, "no contributor means no staleness claim");
+}
+
+ZTEST(formation_field, test_nearest_contributor_decides_provenance)
+{
+    position_t own = { 0.0f, 0.0f };
+    demo_setpoint_t tgt;
+    demo_sep_t sep;
+
+    /* Fresh peer nearer than a stale one → a live measurement. */
+    wm_reset();
+    wm_set_peer(1, 0.30f, 0.0f, false);
+    wm_set_peer(2, 0.90f, 0.0f, true);
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, &sep);
+    zassert_within(d, 0.30f, EPS, "nearest peer must win regardless of age");
+    zassert_false(sep.stale, "nearest contributor was fresh");
+
+    /* Stale peer nearer than a fresh one → the distance is the stale one's
+     * and must say so, or main.c would log a confirmed close pass against
+     * a position nothing has refreshed in seconds. */
+    wm_reset();
+    wm_set_peer(1, 0.90f, 0.0f, false);
+    wm_set_peer(2, 0.30f, 0.0f, true);
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+    d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, &sep);
+    zassert_within(d, 0.30f, EPS, "nearest peer must win regardless of age");
+    zassert_true(sep.stale, "nearest contributor was stale");
+}
+
+ZTEST(formation_field, test_min_separation_standalone)
+{
+    /* main.c's frozen-target path (choreo SUSPENDED, or a HOLD directive
+     * awaiting its snapshot) runs no drive at all, but the airframe is
+     * still airborne — it calls this entry point directly so that tick
+     * reports a real number instead of UNKNOWN. */
+    wm_reset();
+    wm_set_peer(1, 0.40f, 0.0f, true);      /* nearer, stale */
+    wm_set_peer(2, 1.20f, 0.0f, false);     /* further, fresh */
+
+    position_t own = { 0.0f, 0.0f };
+    demo_sep_t sep;
+
+    float d = demo_min_separation(&wm, &own, &sep);
+    zassert_within(d, 0.40f, EPS, "standalone scan must see the stale peer");
+    zassert_true(sep.stale, "provenance must follow the nearest contributor");
+
+    zassert_within(demo_min_separation(&wm, &own, NULL), 0.40f, EPS,
+                   "a NULL provenance pointer must be accepted");
+
+    wm_reset();
+    zassert_true(demo_min_separation(&wm, &own, &sep) < 0.0f,
+                 "an empty world model must report -1");
+}
+
+/* The whole stale-but-not-expired band stays covered — this is the window
+ * flight 25 flew blind through. */
+ZTEST(formation_field, test_separation_live_across_whole_stale_band)
+{
+    position_t own = { 0.0f, 0.0f };
+
+    for (uint32_t age = WM_STALE_THRESHOLD_MS;
+         age < WM_EXPIRE_THRESHOLD_MS; age += 100u) {
+        wm_reset();
+        wm_set_peer(1, 0.35f, 0.0f, true);
+        wm.entries[1].age_ms = age;
+
+        demo_setpoint_t tgt;
+        demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+        demo_sep_t sep;
+        float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, &sep);
+        zassert_within(d, 0.35f, EPS,
+                       "separation went blind at age %ums", (unsigned)age);
+        zassert_true(d < DEMO_MIN_SEP_M,
+                     "violation must remain detectable at age %ums",
+                     (unsigned)age);
+        zassert_equal(sep.age_ms, age, "provenance age mismatch");
+    }
+}
+
+/* ── Regression: a peer with no fix is not a peer at a position ───────────
+ *
+ * 2026-08-31 flight 41: a drone still waiting for its lighthouse fix
+ * gossiped its zero-init (0,0,0).  Its partner, sitting 1.1 m away on the
+ * floor, measured 0.31 m against that phantom at the origin and logged a
+ * separation violation.  ELEMENT_HEALTH_NO_POSITION now says "this
+ * position is a placeholder" on the wire; nothing may measure or steer by
+ * such an entry.
+ */
+
+ZTEST(formation_field, test_unlocalized_peer_is_not_measured)
+{
+    wm_reset();
+    wm_set_peer_unlocalized(1, false);      /* phantom at the origin */
+
+    /* Roughly the flight-41 geometry: we are ~0.3 m from the origin, so a
+     * naive scan would call this a violation. */
+    position_t own = { 0.13f, 0.07f, 0.25f };
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.13f, 0.07f);
+
+    demo_sep_t sep;
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.13f, 0.07f, DT_MS, 0, &sep);
+
+    zassert_true(d < 0.0f,
+                 "an unlocalized peer must not be measured (got %.2f m)",
+                 (double)d);
+    zassert_false(sep.stale, "no contributor means no staleness claim");
+
+    /* And it must not push us either — a placeholder is not an obstacle. */
+    zassert_within(tgt.x, 0.13f, EPS, "phantom peer moved the target");
+    zassert_within(tgt.y, 0.07f, EPS, "phantom peer moved the target");
+}
+
+ZTEST(formation_field, test_unlocalized_peer_ignored_once_localized)
+{
+    /* The same slot, now carrying a real fix, must come back into view. */
+    wm_reset();
+    wm_set_peer_unlocalized(1, false);
+    position_t own = { 0.0f, 0.0f };
+    zassert_true(demo_min_separation(&wm, &own, NULL) < 0.0f,
+                 "unlocalized peer must be invisible to the scan");
+
+    wm_set_peer(1, 0.40f, 0.0f, false);     /* clears the flag */
+    zassert_within(demo_min_separation(&wm, &own, NULL), 0.40f, EPS,
+                   "a localized peer must be measured again");
+}
+
+/* ── A mid-flight fix loss is visible, not invisible ──────────────────────
+ *
+ * ELEMENT_HEALTH_POSITION_STALE (a peer that HAD a fix and lost it) is a
+ * different claim from ELEMENT_HEALTH_NO_POSITION (a peer that never had
+ * one): the position is real, just held.  It must stay visible everywhere
+ * a genuinely-unmeasured phantom must not.
+ */
+
+ZTEST(formation_field, test_position_stale_peer_still_measured_and_steered_by)
+{
+    wm_reset();
+    wm_set_peer_position_stale(1, 0.30f, 0.0f, false);  /* fresh gossip, held fix */
+
+    position_t own = { 0.0f, 0.0f };
+    demo_setpoint_t tgt;
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+
+    demo_sep_t sep;
+    float d = demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, &sep);
+
+    zassert_within(d, 0.30f, EPS,
+                   "a position-stale peer's held position must be measured");
+
+    /* And unlike a NO_POSITION phantom, it is a real airframe: inside
+     * DEMO_MIN_SEP_M the repulsion force must still react to it. */
+    wm_reset();
+    wm_set_peer_position_stale(1, 0.20f, 0.0f, false);  /* inside the floor */
+    demo_setpoint_init(&tgt, 0.0f, 0.0f);
+    (void)demo_choreo_track(&wm, &own, &tgt, 0.0f, 0.0f, DT_MS, 0, NULL);
+    zassert_true(tgt.x < 0.0f,
+                 "a position-stale peer must still push the target away");
+}
+
+ZTEST(formation_field, test_position_stale_peer_clears_deconfliction)
+{
+    wm_reset();
+    wm_set_peer_position_stale(1, -0.12f, -0.53f, false);  /* held position */
+
+    float x = -0.16f, y = -0.29f;
+    zassert_true(demo_deconflict_point(&wm, &x, &y),
+                 "a position-stale peer is a real obstacle for RTH");
+    zassert_true(dist2d(x, y, -0.12f, -0.53f) >= DEMO_MIN_SEP_M - EPS,
+                 "deconflicted point still too close to the held position");
+}
+
+/* ── Regression: RTH must not land on top of a parked peer ────────────────
+ *
+ * 2026-08-31 flight 42: a battery-preempted return-to-home aimed at this
+ * drone's own takeoff point — which, after the EXCHANGE, is where the
+ * partner had already landed.  It closed to min_d 0.39 m against a 0.50 m
+ * floor.  The in-flight repulsion cannot fix that: the GOAL POINT is the
+ * collision, so the point has to move before the goal is submitted.
+ */
+
+ZTEST(formation_field, test_deconflict_clears_an_occupied_point)
+{
+    wm_reset();
+    wm_set_peer(1, -0.12f, -0.53f, false);  /* partner parked on our pad */
+
+    float x = -0.16f, y = -0.29f;           /* flight 42's RTH target */
+    zassert_true(dist2d(x, y, -0.12f, -0.53f) < DEMO_MIN_SEP_M,
+                 "fixture must start inside the floor");
+
+    bool moved = demo_deconflict_point(&wm, &x, &y);
+
+    zassert_true(moved, "an occupied point must be reported as moved");
+    zassert_true(dist2d(x, y, -0.12f, -0.53f) >= DEMO_MIN_SEP_M - EPS,
+                 "deconflicted point still only %.2f m from the peer",
+                 (double)dist2d(x, y, -0.12f, -0.53f));
+}
+
+ZTEST(formation_field, test_deconflict_leaves_a_clear_point_alone)
+{
+    wm_reset();
+    wm_set_peer(1, 1.20f, 0.90f, false);
+
+    float x = -0.16f, y = -0.29f;
+    zassert_false(demo_deconflict_point(&wm, &x, &y),
+                  "a clear point must not be moved");
+    zassert_within(x, -0.16f, EPS, "x moved");
+    zassert_within(y, -0.29f, EPS, "y moved");
+}
+
+ZTEST(formation_field, test_deconflict_handles_a_coincident_peer)
+{
+    /* Degenerate: the point sits exactly on the peer, so the push
+     * direction is undefined.  Must still terminate and clear the floor. */
+    wm_reset();
+    wm_set_peer(1, 0.25f, 0.25f, false);
+
+    float x = 0.25f, y = 0.25f;
+    zassert_true(demo_deconflict_point(&wm, &x, &y), "must report a move");
+    zassert_true(dist2d(x, y, 0.25f, 0.25f) >= DEMO_MIN_SEP_M - EPS,
+                 "coincident case left the point %.2f m away",
+                 (double)dist2d(x, y, 0.25f, 0.25f));
+}
+
+ZTEST(formation_field, test_deconflict_ignores_unlocalized_and_stale_rules)
+{
+    /* A peer with no fix is not an obstacle (its position is a
+     * placeholder), but a STALE peer very much is — it is a real airframe
+     * at a real last-known position, and we are about to land there. */
+    wm_reset();
+    wm_set_peer_unlocalized(1, false);
+    float x = 0.0f, y = 0.0f;
+    zassert_false(demo_deconflict_point(&wm, &x, &y),
+                  "a placeholder position must not deflect a landing point");
+
+    wm_reset();
+    wm_set_peer(1, 0.10f, 0.0f, true);      /* stale, but real */
+    x = 0.0f; y = 0.0f;
+    zassert_true(demo_deconflict_point(&wm, &x, &y),
+                 "a stale peer is still a physical obstacle");
+    zassert_true(dist2d(x, y, 0.10f, 0.0f) >= DEMO_MIN_SEP_M - EPS,
+                 "stale peer not cleared");
 }
 
 ZTEST_SUITE(formation_field, NULL, NULL, NULL, NULL, NULL);
