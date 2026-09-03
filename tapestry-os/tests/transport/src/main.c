@@ -395,6 +395,66 @@ ZTEST(gossip_wire, test_the_achieved_bit_occupies_its_own_wire_byte)
 }
 
 /*
+ * ELEMENT_HEALTH_DEPARTED + its packed reason (csm.h bits [7:6] of
+ * health_flags) must survive the same wire hop as every other health bit —
+ * this is exactly the class of bug this suite exists to catch (a field
+ * packed but never unpacked, silently keeping today's ghost-vote bug
+ * alive). No TAPESTRY_WIRE_VERSION bump: health_flags is already on the
+ * wire and copied verbatim.
+ */
+ZTEST(gossip_wire, test_departed_bit_and_reason_round_trip)
+{
+    world_model_t wm;
+    element_state_t own = sender_state(3, true);
+
+    own.health_flags = element_health_set_departed(own.health_flags,
+                                                     ELEMENT_DEPARTED_FIXLOSS);
+
+    receiver_init(&wm, 0);
+    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
+    zassert_equal(gossip_drain(&wm, 0), 1, "frame should be accepted");
+
+    const wm_entry_t *e = wm_get_entry(&wm, 3);
+
+    zassert_not_null(e, "sender entry");
+    zassert_true((e->state.health_flags & ELEMENT_HEALTH_DEPARTED) != 0,
+                 "DEPARTED bit must survive the wire hop");
+    zassert_equal(element_health_departed_reason(e->state.health_flags),
+                  ELEMENT_DEPARTED_FIXLOSS,
+                  "departure reason must survive the wire hop unmangled");
+    /* Neighboring bits (LOW_BATTERY | DEGRADED, from sender_state()) must
+     * not be clobbered by packing DEPARTED + its reason into the same
+     * byte's bits [7:6]. */
+    zassert_true((e->state.health_flags & ELEMENT_HEALTH_LOW_BATTERY) != 0,
+                 "DEPARTED must not clobber LOW_BATTERY");
+    zassert_true((e->state.health_flags & ELEMENT_HEALTH_DEGRADED) != 0,
+                 "DEPARTED must not clobber DEGRADED");
+}
+
+ZTEST(gossip_wire, test_element_is_participating_excludes_departed)
+{
+    world_model_t wm;
+    element_state_t own = sender_state(3, true);
+
+    own.health_flags = element_health_set_departed(ELEMENT_HEALTH_OK,
+                                                     ELEMENT_DEPARTED_COMPLETE);
+
+    receiver_init(&wm, 0);
+    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
+    zassert_equal(gossip_drain(&wm, 0), 1, "frame should be accepted");
+
+    const wm_entry_t *e = wm_get_entry(&wm, 3);
+
+    zassert_not_null(e, "sender entry");
+    zassert_true(e->is_active,
+                 "a departed-but-still-gossiping peer stays ACTIVE — "
+                 "departure is declared, not inferred from silence");
+    zassert_false(element_is_participating(e),
+                  "a self-declared-departed peer must not participate in "
+                  "collective predicates even while still active");
+}
+
+/*
  * The QoS tier passed to gossip_send() must survive onto the wire, packed
  * into relay_qos alongside hop_count without disturbing it — both fields
  * share one byte (wire.h's TAPESTRY_PACK_RELAY_QOS).

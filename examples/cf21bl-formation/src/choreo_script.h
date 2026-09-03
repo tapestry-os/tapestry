@@ -19,6 +19,13 @@
 #define CHOREO_SCRIPT_LEN              3u
 #define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS 48000u
 
+/* Element departure policy — call choreo_set_departure_policy() (and,
+ * for CHOREO_DEPARTURE_RECALL, choreo_set_departure_recall_point_fn())
+ * before choreo_submit_script(). */
+#define CHOREO_DEPARTURE_POLICY           CHOREO_DEPARTURE_CONTINUE
+#define CHOREO_DEPARTURE_REASONS          CHOREO_DEPARTURE_REASONS_ALL
+#define CHOREO_DEPARTURE_MIN_PARTICIPANTS 0u
+
 static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {
     { .goal = { .type = CHOREO_GOAL_HOLD,
                 .required_caps = CHOREO_CAP_LOCOMOTION },

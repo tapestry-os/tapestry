@@ -94,6 +94,20 @@ static void wm_expire_peer(int slot)
     wm.entries[slot].age_ms    = WM_EXPIRE_THRESHOLD_MS + 500;
 }
 
+/* A peer that has self-declared departure (landed/backstop/fixloss/
+ * geofence) but is STILL ACTIVE and gossiping — choreo mode keeps a
+ * landed element's gossip alive on purpose (main.c's flight-12 deadlock
+ * fix), unlike wm_expire_peer() above.  Must stay visible to anything
+ * physical (separation/repulsion) but excluded from collective predicates
+ * via element_is_participating(). */
+static void wm_set_peer_departed(int slot, float x, float y,
+                                  tapestry_departure_reason_t reason)
+{
+    wm_set_peer(slot, x, y, /* stale = */ false);
+    wm.entries[slot].state.health_flags =
+        element_health_set_departed(ELEMENT_HEALTH_OK, reason);
+}
+
 static float dist2d(float ax, float ay, float bx, float by)
 {
     return sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
@@ -505,6 +519,27 @@ ZTEST(formation_field, test_min_separation_standalone)
     wm_reset();
     zassert_true(demo_min_separation(&wm, &own, &sep) < 0.0f,
                  "an empty world model must report -1");
+}
+
+/* Pinning test for the departure-policy design's explicit exception:
+ * unlike bse.c's collect_participants() / scr.c's quorum denominator /
+ * choreo_collective_achieved(), formation.c's separation/repulsion must
+ * NOT exclude a departed peer — a landed (or holding-in-place) element is
+ * still a genuine physical obstacle regardless of whether it is still
+ * "participating" in the script. */
+ZTEST(formation_field, test_departed_peer_still_counts_as_a_physical_obstacle)
+{
+    wm_reset();
+    wm_set_peer_departed(1, 0.40f, 0.0f, ELEMENT_DEPARTED_COMPLETE);
+
+    position_t own = { 0.0f, 0.0f };
+    demo_sep_t sep;
+    float d = demo_min_separation(&wm, &own, &sep);
+
+    zassert_within(d, 0.40f, EPS,
+                  "a departed peer must still be measured for separation "
+                  "— it is a real airframe at a real position, not merely "
+                  "excused from collective predicates");
 }
 
 /* The whole stale-but-not-expired band stays covered — this is the window
@@ -1506,6 +1541,39 @@ ZTEST(choreo_script, test_scope_all_waits_for_stale_peer)
                  "a stale peer reporting achieved must release scope=all");
 }
 
+ZTEST(choreo_script, test_scope_all_excludes_departed_peer)
+{
+    /* The ghost-vote bug this Phase 1 fix closes: a departed peer keeps
+     * gossiping (flight-12 deadlock fix) with whatever `achieved` bit it
+     * last held before leaving the script — frozen false here would
+     * deadlock scope=all forever without exclusion (this element can
+     * never satisfy a step it is no longer running).  Contrast with
+     * test_scope_all_waits_for_stale_peer: a STALE peer's last-known vote
+     * still counts (it may return); a DEPARTED peer's never does (it has
+     * declared it will not). */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 60000, .advance_on_achieved = true,
+          .scope = CHOREO_SCOPE_ALL },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_COMPLETE);
+    wm.entries[1].state.goal_achieved = false;
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_script_complete(),
+                 "a departed peer's frozen achieved bit must not block "
+                 "scope=all — it is no longer a participant to wait on");
+}
+
 /* ── Goal queue: preemption + resume ───────────────────────────────────────
  * choreo_preempt_goal() saves the running goal (and, for a script, its
  * exact step/timer position) instead of discarding it; choreo_terminate()
@@ -2487,6 +2555,33 @@ ZTEST(choreo_script, test_frame_collective_centroid_averages_z_too)
     zassert_within(d->target.z, 2.0f, EPS, "collective centroid averages z too");
 }
 
+ZTEST(choreo_script, test_frame_collective_centroid_excludes_departed_peer)
+{
+    /* bse.c's collect_participants() must exclude a self-declared-
+     * departed peer from centroid/swap-partner math, the same
+     * element_is_participating() exclusion the ghost-vote fix applies to
+     * choreo_collective_achieved() — a landed peer's gossip stays alive
+     * on purpose (main.c's flight-12 deadlock fix), so is_active alone
+     * would keep skewing the centroid toward it forever. */
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer_departed(1, 100.0f, 0.0f, ELEMENT_DEPARTED_COMPLETE);
+    wm_set_peer(2, 20.0f, 0.0f, false);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_COLLECTIVE };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 10.0f, EPS,
+                   "centroid must exclude the departed peer at x=100 — "
+                   "(0+20)/2=10, not (0+100+20)/3=40");
+}
+
 /* ── Effects (§12 Stage 5) ────────────────────────────────────────────────── */
 
 ZTEST(choreo_script, test_current_indicator_and_tag_are_none_before_any_script)
@@ -2746,6 +2841,517 @@ ZTEST(choreo_script, test_remote_directive_cannot_activate_an_idle_element)
                       TAPESTRY_BSE_DIRECTIVE_IDLE,
                       "tick %u: quiescence directive must stand", i);
     }
+}
+
+/* ── Element departure policy (Phase 2/3) ────────────────────────────────── */
+
+static bool        s_test_recall_available;
+static position_t  s_test_recall_point;
+
+static bool test_recall_point_fn(position_t *out)
+{
+    if (!s_test_recall_available) {
+        return false;
+    }
+    *out = s_test_recall_point;
+    return true;
+}
+
+ZTEST(choreo_script, test_departure_continue_does_not_trigger)
+{
+    /* Default policy (CONTINUE) — a departure must not interrupt the
+     * script at all; this is Phase 1's "kills the ghost-vote bug alone"
+     * guarantee, still true with the Phase 2/3 machinery wired in but
+     * never configured. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_COMPLETE);
+    choreo_tick(&wm, &scr);
+
+    zassert_false(choreo_departure_triggered(),
+                 "CONTINUE (default) must never trigger a departure response");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_RUNNING,
+                  "script must keep running under CONTINUE");
+}
+
+ZTEST(choreo_script, test_departure_land_in_place)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    choreo_set_departure_policy(CHOREO_DEPARTURE_LAND_IN_PLACE,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_FIXLOSS);
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_departure_triggered(),
+                "LAND_IN_PLACE must trigger on a participating peer's "
+                "departure");
+    zassert_equal(choreo_departure_triggered_policy(),
+                  CHOREO_DEPARTURE_LAND_IN_PLACE,
+                  "executed policy must be reported");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_IDLE,
+                  "LAND_IN_PLACE terminates exactly like normal completion");
+    zassert_true(choreo_script_complete(),
+                "same quiescence signal (s_script_done) as normal "
+                "completion — the application's landing path is shared");
+}
+
+ZTEST(choreo_script, test_departure_cp_mode_preempts_vacuous_scope_all_pass)
+{
+    /* Reproduces flight51 (2026-09-02, real hardware): under AP
+     * (CONTINUE, the default — see test_scope_all_excludes_departed_peer
+     * above), a peer that emergency-aborts mid-scope="all" step (e.g.
+     * fixloss) gets excluded from the vote, so the survivor vacuously
+     * "achieves" a step its partner never actually finished — EXCHANGE
+     * scope=all, one drone lost its fix and independently aborted to an
+     * emergency landing mid-swap, the other saw itself as "solo" and
+     * completed normally as if the swap had succeeded.
+     *
+     * Under CP (LAND_IN_PLACE), script_advance() checks the departure-
+     * policy dial BEFORE the achieved/scope=all fallback (see that
+     * function's comment), so the SAME departure instead lands the
+     * survivor in place that tick — the vacuous pass never gets a chance
+     * to run. This is CP's existing "any departure -> land_in_place"
+     * behavior catching the flight51 failure mode as a side effect of
+     * check ordering, not a separate mechanism. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD },
+          .max_duration_ms = 60000, .advance_on_achieved = true,
+          .scope = CHOREO_SCOPE_ALL },
+    };
+
+    choreo_init(0);
+    choreo_set_departure_policy(CHOREO_DEPARTURE_LAND_IN_PLACE,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+    zassert_false(choreo_script_complete(),
+                 "must not advance yet — peer has not achieved its side");
+
+    /* Peer aborts mid-collaboration (fixloss), never having achieved. */
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_FIXLOSS);
+    wm.entries[1].state.goal_achieved = false;
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_departure_triggered(),
+                "CP mode must catch the departure BEFORE scope=all gets a "
+                "chance to vacuously pass on the departed peer's exclusion");
+    zassert_equal(choreo_departure_triggered_policy(),
+                  CHOREO_DEPARTURE_LAND_IN_PLACE,
+                  "the landing must be attributed to the departure policy, "
+                  "not treated as a genuine collective achievement");
+}
+
+ZTEST(choreo_script, test_departure_triggers_on_inferred_lost_expiry_too)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    choreo_set_departure_policy(CHOREO_DEPARTURE_LAND_IN_PLACE,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    /* Peer 1 goes silent (expires) rather than self-declaring — inferred
+     * LOST, never on the wire. */
+    wm_expire_peer(1);
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_departure_triggered(),
+                "an inferred LOST (silent expiry) must also trigger the "
+                "departure policy, not only a self-declared DEPARTED bit");
+}
+
+ZTEST(choreo_script, test_departure_reasons_filter_excludes_unlisted_reason)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    choreo_set_departure_policy(
+        CHOREO_DEPARTURE_LAND_IN_PLACE,
+        CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_FIXLOSS) |
+        CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_GEOFENCE),
+        0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    /* COMPLETE is not in the reasons mask — must not trigger. */
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_COMPLETE);
+    choreo_tick(&wm, &scr);
+    zassert_false(choreo_departure_triggered(),
+                 "a filtered-out reason must not trigger the policy");
+
+    /* A second peer departs for a LISTED reason — must trigger. */
+    wm_set_peer(2, -3.0f, -3.0f, false);
+    choreo_tick(&wm, &scr);
+    wm_set_peer_departed(2, -3.0f, -3.0f, ELEMENT_DEPARTED_GEOFENCE);
+    choreo_tick(&wm, &scr);
+    zassert_true(choreo_departure_triggered(),
+                "a listed reason must trigger the policy");
+}
+
+ZTEST(choreo_script, test_departure_reasons_filter_can_exclude_lost)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    /* Only real self-declared reasons trigger — a silent radio dropout
+     * (LOST) must not, on its own, cause CP-style land_in_place. */
+    choreo_set_departure_policy(
+        CHOREO_DEPARTURE_LAND_IN_PLACE,
+        CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_COMPLETE) |
+        CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_BACKSTOP) |
+        CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_FIXLOSS) |
+        CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_GEOFENCE),
+        0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_expire_peer(1);
+    choreo_tick(&wm, &scr);
+
+    zassert_false(choreo_departure_triggered(),
+                 "LOST filtered out of reasons — must not trigger");
+}
+
+ZTEST(choreo_script, test_departure_min_participants_gate)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    /* min_participants=3 is still fine to be AT exactly — the show needs
+     * at least 3 (self + 2 peers). Losing ONE peer (survivors = 3) must
+     * not fire; losing a SECOND (survivors = 2, strictly below 3) must. */
+    choreo_set_departure_policy(CHOREO_DEPARTURE_LAND_IN_PLACE,
+                                CHOREO_DEPARTURE_REASONS_ALL, 3);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm_set_peer(2, -3.0f, -3.0f, false);
+    wm_set_peer(3, 3.0f, -3.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_COMPLETE);
+    choreo_tick(&wm, &scr);
+    zassert_false(choreo_departure_triggered(),
+                 "survivors = 3, still AT the floor(3) — must not fire yet");
+
+    wm_set_peer_departed(2, -3.0f, -3.0f, ELEMENT_DEPARTED_COMPLETE);
+    choreo_tick(&wm, &scr);
+    zassert_true(choreo_departure_triggered(),
+                "survivors = 2, strictly below the floor(3) — must fire");
+}
+
+ZTEST(choreo_script, test_departure_per_step_override_replaces_script_default)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on_departure = CHOREO_DEPARTURE_LAND_IN_PLACE,
+          .on_departure_set = true },
+    };
+
+    choreo_init(0);
+    /* Script default is CONTINUE — the step's own override must win. */
+    choreo_set_departure_policy(CHOREO_DEPARTURE_CONTINUE,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_FIXLOSS);
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_departure_triggered(),
+                "a per-step on_departure override must replace the "
+                "script-level CONTINUE default");
+}
+
+ZTEST(choreo_script, test_departure_recall_preempts_then_lands_on_arrival)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    s_test_recall_available = true;
+    s_test_recall_point = (position_t){ 10.0f, 20.0f, 0.0f };
+    choreo_set_departure_recall_point_fn(test_recall_point_fn);
+    choreo_set_departure_policy(CHOREO_DEPARTURE_RECALL,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_FIXLOSS);
+    choreo_tick(&wm, &scr);
+
+    zassert_false(choreo_departure_triggered(),
+                 "RECALL is in flight, not yet landed");
+    zassert_true(choreo_is_preempted(), "RECALL preempts the running script");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_CONVERGE,
+                  "RECALL steers via CONVERGE to the platform recall point");
+
+    /* choreo_tick()'s RUNNING case runs bse_tick() BEFORE script_advance()
+     * — the preempted intent choreo_preempt_goal() just stashed is only
+     * picked up by the FOLLOWING tick's bse_tick(), so the directive
+     * still reflects last tick's (pre-recall) intent right now. */
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_within(d->target.x, 10.0f, EPS, "recall target x");
+    zassert_within(d->target.y, 20.0f, EPS, "recall target y");
+
+    /* "Arrive" and hold long enough for the default achieve_hold_ms
+     * (BSE default 3000ms / WM_CYCLE_MS 100ms = 30 ticks). */
+    for (int i = 0; i < 32; i++) {
+        wm.entries[0].state.position.x = 10.0f;
+        wm.entries[0].state.position.y = 20.0f;
+        choreo_tick(&wm, &scr);
+    }
+
+    zassert_true(choreo_departure_triggered(),
+                "RECALL must land once the recall point is reached");
+    zassert_equal(choreo_departure_triggered_policy(), CHOREO_DEPARTURE_RECALL,
+                  "executed policy must be reported as RECALL, not a "
+                  "fallback");
+    zassert_false(choreo_is_preempted(),
+                 "landing discards the parked original script — it must "
+                 "not resume; recall is meant to be final, same as "
+                 "LAND_IN_PLACE");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_IDLE,
+                  "recall arrival lands exactly like normal completion");
+}
+
+ZTEST(choreo_script,
+     test_departure_recall_falls_back_to_land_in_place_when_unregistered)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);   /* no choreo_set_departure_recall_point_fn() call */
+    s_test_recall_available = false;
+    choreo_set_departure_policy(CHOREO_DEPARTURE_RECALL,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_FIXLOSS);
+    choreo_tick(&wm, &scr);
+
+    zassert_true(choreo_departure_triggered(),
+                "no recall point registered — must fail safe to landing, "
+                "not silently do nothing");
+    zassert_equal(choreo_departure_triggered_policy(),
+                  CHOREO_DEPARTURE_LAND_IN_PLACE,
+                  "fallback must report what ACTUALLY executed (landing), "
+                  "not the configured RECALL");
+}
+
+ZTEST(choreo_script, test_departure_hold_times_out_into_land_in_place)
+{
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    choreo_set_departure_policy(CHOREO_DEPARTURE_HOLD,
+                                CHOREO_DEPARTURE_REASONS_ALL, 0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_HEALTHY;
+    choreo_tick(&wm, &scr);
+
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_FIXLOSS);
+    choreo_tick(&wm, &scr);
+
+    zassert_false(choreo_departure_triggered(),
+                 "HOLD parks and waits, it does not immediately land");
+    zassert_true(choreo_is_preempted(), "HOLD preempts the running script");
+    zassert_equal(choreo_current_goal_type(), CHOREO_GOAL_HOLD,
+                  "HOLD station-keeps at the current position");
+
+    /* Tick past CHOREO_DEPARTURE_HOLD_TIMEOUT_MS (30s / WM_CYCLE_MS=100ms
+     * = 300 ticks); one extra to be sure. */
+    for (int i = 0; i < 301; i++) {
+        choreo_tick(&wm, &scr);
+    }
+
+    zassert_true(choreo_departure_triggered(),
+                "HOLD must fall through to landing once its timeout "
+                "elapses");
+    zassert_equal(choreo_departure_triggered_policy(),
+                  CHOREO_DEPARTURE_LAND_IN_PLACE,
+                  "HOLD's eventual response is reported as LAND_IN_PLACE, "
+                  "not HOLD itself — HOLD is never the terminal state");
+    zassert_false(choreo_is_preempted(),
+                 "timing out discards the parked script — HOLD does not "
+                 "auto-resume on recovery in this implementation, it only "
+                 "buys time before giving up");
+}
+
+ZTEST(choreo_script, test_departure_policy_yields_to_an_explicit_transition)
+{
+    /* An explicit script transition that claims the SAME tick a
+     * departure would otherwise trigger the policy wins — the script
+     * author's own handling takes priority over the coarse dial.
+     * CHOREO_EVENT_COUNT_EQ is UNDEBOUNCED (checked live every tick,
+     * unlike ELEMENT_LOST's 2 s debounce), so it is the only event that
+     * can be forced to land on the exact same tick as the departure edge
+     * for a clean, deterministic test. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on = {{ .event = CHOREO_EVENT_COUNT_EQ, .threshold = 1,
+                    .goto_step_idx = 1 }},
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+
+    choreo_init(0);
+    /* min_participants=1 is still fine to be AT — the dial only cares
+     * once BOTH peers are gone (survivors strictly below 1, i.e. 0),
+     * which is exactly the same tick swarm_size drops to 1 (self alone)
+     * and CHOREO_EVENT_COUNT_EQ(1) also fires — aligning the two signals
+     * on purpose. */
+    choreo_set_departure_policy(CHOREO_DEPARTURE_LAND_IN_PLACE,
+                                CHOREO_DEPARTURE_REASONS_ALL, 1);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm_set_peer(2, -3.0f, -3.0f, false);
+
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);   /* quorum_min=target=0: never
+                                              * LOST, matches the existing
+                                              * "welcome dance" test's
+                                              * convention for this kind
+                                              * of live-count test. */
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 0, "still step 0 with 2 peers present");
+
+    /* Peer 1 departs alone — survivors = 2, still AT the floor(1)? No:
+     * 2 >= 1, so still fine; swarm_size = 2, COUNT_EQ(1) not yet true. */
+    wm_set_peer_departed(1, 5.0f, 5.0f, ELEMENT_DEPARTED_COMPLETE);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_false(choreo_departure_triggered(), "1 of 2 departed — still fine");
+    zassert_equal(choreo_script_step(), 0, "swarm_size=2, COUNT_EQ(1) not true");
+
+    /* Peer 2 departs too — survivors = 0 (< floor 1) AND swarm_size = 1
+     * on the exact same tick. The explicit transition must win. */
+    wm_set_peer_departed(2, -3.0f, -3.0f, ELEMENT_DEPARTED_COMPLETE);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+
+    zassert_equal(choreo_script_step(), 1,
+                  "the script's own COUNT_EQ transition must claim this "
+                  "tick");
+    zassert_false(choreo_departure_triggered(),
+                 "an explicit transition claiming the tick must suppress "
+                 "the departure-policy dial, even though its own "
+                 "min_participants condition is also satisfied");
+
+    /* Confirm it's a genuine yield, not a one-tick delay. */
+    for (int i = 0; i < 10; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_false(choreo_departure_triggered(),
+                 "the departure edge was consumed on the tick the "
+                 "explicit transition claimed it — it must not "
+                 "retroactively fire later");
 }
 
 ZTEST_SUITE(choreo_script, NULL, NULL, NULL, NULL, NULL);

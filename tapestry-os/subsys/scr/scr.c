@@ -79,6 +79,12 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
     element_id_t candidates[MAX_ELEMENTS + 1];
     uint8_t      n_candidates = 0;
     uint8_t      fresh_count  = 0;
+    /* known_total / departed_count feed Step 2's vacuous-solo override
+     * below: every KNOWN (active, trusted) peer having explicitly
+     * departed is a different situation from having silently gone quiet
+     * — see that step's comment. */
+    uint8_t      known_total     = 0;
+    uint8_t      departed_count  = 0;
 
     candidates[n_candidates++] = scr->own_id;
 
@@ -90,7 +96,20 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
             continue;
         }
         const wm_entry_t *e = wm_get_entry(wm, i);
-        if (e == NULL || !e->is_active || e->is_stale) {
+        if (e == NULL || !e->is_active) {
+            continue;   /* truly gone (LOST) — not "known and accounted for" */
+        }
+        known_total++;
+        /* A self-declared-departed peer is excluded from quorum/leader
+         * election entirely — like bse.c's collect_participants(), not
+         * merely uncounted — a landed element's gossip stays alive on
+         * purpose (main.c's flight-12 deadlock fix), so is_active alone
+         * would keep it eligible to lead forever. */
+        if ((e->state.health_flags & ELEMENT_HEALTH_DEPARTED) != 0) {
+            departed_count++;
+            continue;
+        }
+        if (e->is_stale) {
             continue;
         }
         candidates[n_candidates++] = i;
@@ -115,6 +134,20 @@ void scr_tick(scr_state_t *scr, const world_model_t *wm)
         raw_quorum = SCR_QUORUM_DEGRADED;
     } else {
         raw_quorum = SCR_QUORUM_LOST;
+    }
+
+    /* Vacuous solo: every currently-known (active, trusted) peer has
+     * explicitly DEPARTED — none are silently missing — so there is
+     * genuinely no one left to lose consensus with, the same "no peer to
+     * disagree" reasoning choreo_collective_achieved() already applies to
+     * scope="all" for a genuinely solo element. Requires at least one
+     * departure to have actually happened (departed_count > 0): an
+     * element that has simply never had any peers at all is a different,
+     * pre-existing case this fix does not touch — quorum_min/target were
+     * presumably chosen with that startup scenario already in mind, and
+     * changing it is out of scope for a departure-specific fix. */
+    if (departed_count > 0 && known_total == departed_count) {
+        raw_quorum = SCR_QUORUM_HEALTHY;
     }
 
     /*

@@ -105,6 +105,37 @@ only within the SAME track) and its own optional top-level `max_runtime`
 for a cyclic track (§8.4); the top-level `max_runtime` key is single-track
 ([[steps]]) only.
 
+Element departure policy — how a survivor reacts when a participating peer
+stops participating (self-declared, or inferred LOST past
+WM_EXPIRE_THRESHOLD_MS; see choreo.h's choreo_departure_policy_t):
+
+    mode = "cp"                         # coarse dial: "ap" (default) or "cp"
+
+is shorthand for a plain [on_departure] with default reasons/
+min_participants — "ap" -> policy="continue" (do nothing extra beyond
+what element_is_participating() already gives every collective
+predicate for free); "cp" -> policy="land_in_place" (land immediately —
+NOT "recall", which flies home first; a landed-in-place element might
+resume the show later, recall abandons it).  For anything more specific,
+give the table instead (mutually exclusive with `mode` — pick one):
+
+    [on_departure]
+    policy = "hold"                     # continue|hold|land_in_place|recall
+    min_participants = 2                # 0 (default) = any departure fires;
+                                         # N is itself still fine — only
+                                         # dropping STRICTLY BELOW N fires
+    reasons = ["fixloss", "geofence"]   # default ["*"] = every reason
+
+A step's own `on_departure = "land_in_place"` replaces `policy` alone for
+THAT step only; `reasons`/`min_participants` always stay script-level.
+Neither `mode` nor [on_departure] given: policy="continue", every script
+written before this feature existed is unaffected.
+
+NOT modeled by sdk/tools/choreo_sim.py --simulate (the Python Choreo
+class) — see ChoreoDeparturePolicy's doc in choreo.py. Only choreoc.py's
+C-header codegen (the path that actually flies on hardware) acts on
+these fields today.
+
 Consumers:
     - sdk/tools/choreoc.py  emits the C header for embedded targets.
     - load_steps(path)      returns List[ChoreoStep] for a [[steps]] script:
@@ -125,7 +156,7 @@ from typing import List, Optional, Tuple
 from .choreo import (ChoreoStep, ChoreoTrack, ChoreoTrackFilter, Goal,
                      GoalType, GoalShape, ChoreoCapabilities, ChoreoEvent,
                      ChoreoTransition, SubstrateSignal, CHOREO_MAX_TRANSITIONS,
-                     CHOREO_MAX_TRACKS)
+                     CHOREO_MAX_TRACKS, ChoreoDeparturePolicy)
 from .bse import BSEFrame, BSEAnchorSelector, BSEMotion
 
 
@@ -179,20 +210,44 @@ INDICATORS = {
 # it wraps, same as "requires"/"on" above.
 _EFFECT_PARAMS = {"indicator", "telemetry_tag"}
 
+# Element departure policy (see the module docstring's "Element departure
+# policy" section) — a per-step override, allowed on any goal key exactly
+# like _EFFECT_PARAMS above; a departure can happen during any step type.
+_DEPARTURE_PARAMS = {"on_departure"}
+
 _KNOWN_PARAMS = {
-    "hold":     {"duration", "timeout", "until", "eps", "settle", "requires", "on"} | _EFFECT_PARAMS,
+    "hold":     {"duration", "timeout", "until", "eps", "settle", "requires", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "exchange": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "shift", "path", "on"} | _EFFECT_PARAMS,
+                 "scope", "shift", "path", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "form":     {"duration", "timeout", "until", "eps", "settle", "requires",
                  "scope", "target", "radius", "shape", "frame", "anchor",
-                 "spin", "on"} | _EFFECT_PARAMS,
+                 "spin", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "move":     {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "target", "on"} | _EFFECT_PARAMS,
+                 "scope", "target", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "converge": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "target", "frame", "anchor", "on"} | _EFFECT_PARAMS,
+                 "scope", "target", "frame", "anchor", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "disperse": {"duration", "timeout", "until", "eps", "settle", "requires",
-                 "scope", "radius", "on"} | _EFFECT_PARAMS,
+                 "scope", "radius", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
 }
+
+# Element departure policy names (script-level `mode`/[on_departure] and
+# per-step `on_departure`) — mirrors ChoreoDeparturePolicy (choreo.py) /
+# choreo_departure_policy_t (choreo.h) by name.
+DEPARTURE_POLICIES = {
+    "continue":      ChoreoDeparturePolicy.CONTINUE,
+    "hold":          ChoreoDeparturePolicy.HOLD,
+    "land_in_place": ChoreoDeparturePolicy.LAND_IN_PLACE,
+    "recall":        ChoreoDeparturePolicy.RECALL,
+}
+
+# Departure reason names — mirrors csm.h's tapestry_departure_reason_t by
+# value (0-3) plus "lost" (bit 4, choreo.h's CHOREO_DEPARTURE_REASON_LOST_BIT
+# — never on the wire, only ever inferred locally from expiry). "*" (the
+# default) is every bit set — CHOREO_DEPARTURE_REASONS_ALL.
+DEPARTURE_REASONS = {
+    "complete": 0, "backstop": 1, "fixloss": 2, "geofence": 3, "lost": 4,
+}
+DEPARTURE_REASONS_ALL_MASK = 0x1F
 
 # §6.1: orbit = { around, radius, rate, ... } is pure TOML-layer sugar,
 # desugared (in _desugar_orbit) to a form step before the generic parsing
@@ -292,6 +347,7 @@ class NormalizedStep:
     on:                  List[NormalizedTransition] = field(default_factory=list)
     indicator:           Optional[str] = None       # §12 Stage 5 effect
     telemetry_tag:       Optional[str] = None       # §12 Stage 5 effect
+    on_departure:        Optional[str] = None       # per-step policy override
 
 
 @dataclass
@@ -327,6 +383,15 @@ class ChoreoScript:
     # an acyclic script (the sum is authoritative, as always).  [[steps]]
     # only — see NormalizedTrack.max_runtime_ms for the [[tracks]] case.
     max_runtime_ms: Optional[int] = None
+    # Element departure policy — script-level default, from the coarse
+    # top-level `mode = "ap"|"cp"` dial OR the more specific [on_departure]
+    # table (mutually exclusive — see parse_file()).  "continue"/ALL/0 is
+    # the default when neither is given: byte-identical to every script
+    # written before this feature existed.
+    departure_policy:            str = "continue"
+    departure_reasons_mask:      int = DEPARTURE_REASONS_ALL_MASK
+    departure_min_participants:  int = 0
+
     # §11/§8.4 satisfiability warnings (see _derived_capability_warnings())
     # — non-fatal, unlike everything else in this module: the runtime
     # derives and enforces these requirements automatically
@@ -613,6 +678,13 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
             raise ScriptError(f"{where}: telemetry_tag must be a "
                               f"non-empty string")
         step.telemetry_tag = tag
+    if "on_departure" in params:
+        policy = params["on_departure"]
+        if policy not in DEPARTURE_POLICIES:
+            raise ScriptError(f"{where}: unknown on_departure policy "
+                              f"{policy!r} (known: "
+                              f"{sorted(DEPARTURE_POLICIES)})")
+        step.on_departure = policy
 
     if goal in COORDINATE_FREE:
         # target/radius/shape are already rejected via _KNOWN_PARAMS —
@@ -920,6 +992,67 @@ def _track_shadowing_warnings(tracks: List[NormalizedTrack]) -> List[str]:
     return out
 
 
+def _parse_departure_policy(path, doc: dict):
+    """Parse the script-level departure policy from either the coarse
+    `mode = "ap"|"cp"` dial or the more specific [on_departure] table —
+    mutually exclusive (having both is redundant/ambiguous). Neither
+    given: ("continue", ALL, 0) — byte-identical to every script written
+    before this feature existed. Returns (policy, reasons_mask,
+    min_participants)."""
+    has_mode = "mode" in doc
+    has_on_departure = "on_departure" in doc
+    if has_mode and has_on_departure:
+        raise ScriptError(
+            f"{path}: give either 'mode' or '[on_departure]', not both — "
+            f"'mode' is shorthand for a plain continue/land_in_place "
+            f"[on_departure] with default reasons/min_participants")
+
+    if has_mode:
+        mode = doc["mode"]
+        if mode not in ("ap", "cp"):
+            raise ScriptError(f"{path}: mode must be \"ap\" (default) or "
+                              f"\"cp\", got {mode!r}")
+        policy = "continue" if mode == "ap" else "land_in_place"
+        return policy, DEPARTURE_REASONS_ALL_MASK, 0
+
+    if has_on_departure:
+        table = doc["on_departure"]
+        if not isinstance(table, dict):
+            raise ScriptError(f"{path}: [on_departure] must be a table")
+        unknown = set(table) - {"policy", "min_participants", "reasons"}
+        if unknown:
+            raise ScriptError(f"{path}: [on_departure] unexpected key(s) "
+                              f"{sorted(unknown)}")
+        policy = table.get("policy")
+        if policy not in DEPARTURE_POLICIES:
+            raise ScriptError(f"{path}: [on_departure].policy must be one "
+                              f"of {sorted(DEPARTURE_POLICIES)}, got "
+                              f"{policy!r}")
+        min_participants = table.get("min_participants", 0)
+        if (not isinstance(min_participants, int) or
+                isinstance(min_participants, bool) or min_participants < 0):
+            raise ScriptError(f"{path}: [on_departure].min_participants "
+                              f"must be a non-negative integer")
+        reasons = table.get("reasons", ["*"])
+        if not isinstance(reasons, list) or not reasons:
+            raise ScriptError(f"{path}: [on_departure].reasons must be a "
+                              f"non-empty list of reason names, or [\"*\"]")
+        if reasons == ["*"]:
+            reasons_mask = DEPARTURE_REASONS_ALL_MASK
+        else:
+            reasons_mask = 0
+            for r in reasons:
+                if r not in DEPARTURE_REASONS:
+                    raise ScriptError(
+                        f"{path}: [on_departure].reasons: unknown reason "
+                        f"{r!r} (known: {sorted(DEPARTURE_REASONS)}, or "
+                        f"[\"*\"] for all)")
+                reasons_mask |= 1 << DEPARTURE_REASONS[r]
+        return policy, reasons_mask, min_participants
+
+    return "continue", DEPARTURE_REASONS_ALL_MASK, 0
+
+
 def parse_file(path) -> ChoreoScript:
     """Parse and validate a Choreo script file.  Raises ScriptError."""
     with open(path, "rb") as f:
@@ -931,10 +1064,14 @@ def parse_file(path) -> ChoreoScript:
     name = doc.get("choreo")
     if not isinstance(name, str) or not name:
         raise ScriptError(f"{path}: missing 'choreo = \"<name>\"'")
-    unknown = set(doc) - {"choreo", "steps", "max_runtime", "tracks"}
+    unknown = set(doc) - {"choreo", "steps", "max_runtime", "tracks",
+                          "mode", "on_departure"}
     if unknown:
         raise ScriptError(f"{path}: unexpected top-level keys "
                           f"{sorted(unknown)}")
+
+    departure_policy, departure_reasons_mask, departure_min_participants = \
+        _parse_departure_policy(path, doc)
 
     has_steps  = "steps" in doc
     has_tracks = "tracks" in doc
@@ -963,7 +1100,10 @@ def parse_file(path) -> ChoreoScript:
                    for w in _derived_capability_warnings(
                        f"tracks[{j}].steps[{i}]", s)]
         warnings += _track_shadowing_warnings(tracks)
-        return ChoreoScript(name=name, tracks=tracks, warnings=warnings)
+        return ChoreoScript(name=name, tracks=tracks, warnings=warnings,
+                           departure_policy=departure_policy,
+                           departure_reasons_mask=departure_reasons_mask,
+                           departure_min_participants=departure_min_participants)
 
     raw_steps = doc.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
@@ -987,7 +1127,10 @@ def parse_file(path) -> ChoreoScript:
     warnings = [w for i, s in enumerate(steps)
                for w in _derived_capability_warnings(f"steps[{i}]", s)]
     return ChoreoScript(name=name, steps=steps, max_runtime_ms=max_runtime_ms,
-                        warnings=warnings)
+                        warnings=warnings,
+                        departure_policy=departure_policy,
+                        departure_reasons_mask=departure_reasons_mask,
+                        departure_min_participants=departure_min_participants)
 
 
 def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]:
@@ -1028,7 +1171,10 @@ def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]
                               indicator=INDICATORS[s.indicator]
                                         if s.indicator is not None
                                         else SubstrateSignal.NONE,
-                              telemetry_tag=s.telemetry_tag))
+                              telemetry_tag=s.telemetry_tag,
+                              on_departure=DEPARTURE_POLICIES[s.on_departure]
+                                          if s.on_departure is not None
+                                          else None))
     return out
 
 

@@ -307,6 +307,10 @@ typedef enum {
     LAND_REASON_BACKSTOP,   /* MISSION_DURATION_S elapsed                  */
     LAND_REASON_FIXLOSS,    /* lighthouse fix lost > FIX_LOSS_GRACE_MS     */
     LAND_REASON_GEOFENCE,   /* strayed past GEOFENCE_RADIUS_M              */
+    LAND_REASON_DEPARTURE,  /* a peer departed; this element's own
+                             * on_departure policy responded (land_in_place,
+                             * a completed recall, or a HOLD that timed
+                             * out) — see choreo_departure_triggered() */
 } land_reason_t;
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
@@ -319,8 +323,76 @@ static const char *land_reason_name(land_reason_t r)
     case LAND_REASON_BACKSTOP: return " why=backstop";
     case LAND_REASON_FIXLOSS:  return " why=fixloss";
     case LAND_REASON_GEOFENCE: return " why=geofence";
+    case LAND_REASON_DEPARTURE:
+        /* Which policy actually executed (RECALL that fell back to
+         * landing is reported as LAND_IN_PLACE by choreo.c itself — see
+         * choreo_departure_triggered_policy()'s doc) — queried at print
+         * time since land_reason_t has no room to carry it. */
+        switch (choreo_departure_triggered_policy()) {
+        case CHOREO_DEPARTURE_RECALL:        return " why=departure(recall)";
+        case CHOREO_DEPARTURE_LAND_IN_PLACE: return " why=departure(land_in_place)";
+        default:                             return " why=departure";
+        }
     default:                   return "";
     }
+}
+#endif
+
+/* Maps this platform's land_reason_t onto the wire's narrower
+ * tapestry_departure_reason_t (csm.h) — LOST has no entry because it is
+ * never self-declared, only inferred by a receiver from expiry.
+ * LAND_REASON_NONE cannot reach here in practice (every FLIGHT_LANDING/
+ * FLIGHT_LANDED transition sets land_reason in the same step), but a
+ * defensive default is cheaper than an assert on a flight-control path. */
+static tapestry_departure_reason_t land_departure_reason(land_reason_t r)
+{
+    switch (r) {
+    case LAND_REASON_BACKSTOP: return ELEMENT_DEPARTED_BACKSTOP;
+    case LAND_REASON_FIXLOSS:  return ELEMENT_DEPARTED_FIXLOSS;
+    case LAND_REASON_GEOFENCE: return ELEMENT_DEPARTED_GEOFENCE;
+    /* LAND_REASON_DEPARTURE has no dedicated wire bit of its own — csm.h's
+     * 2-bit reason field is already fully used by the other four, and
+     * widening it would cost the wire-additive/no-version-bump property
+     * this whole mechanism was built to keep (see csm.h's rationale).
+     * COMPLETE is the closest fit: like a normal finish, this is a
+     * graceful, policy-decided stop, not an emergency backstop/fixloss/
+     * geofence condition. */
+    case LAND_REASON_DEPARTURE:
+    case LAND_REASON_COMPLETE:
+    case LAND_REASON_NONE:
+    default:
+        return ELEMENT_DEPARTED_COMPLETE;
+    }
+}
+
+#if defined(CONFIG_DEMO_MODE_CHOREO) && defined(CONFIG_PWM)
+/* choreo_departure_recall_point_fn callback (CHOREO_DEPARTURE_RECALL).
+ * Showcase mode never registers this (it has no on_departure policy
+ * surface — see the CONFIG_DEMO_MODE_CHOREO guard around where it's
+ * registered, below), so this stays choreo-mode-only to avoid an unused-
+ * function warning there.
+ *
+ * "home" for this platform is the lighthouse-frame position
+ * cf21bl_stabilizer.c latches at arming/first fix (same source RTH's own
+ * inline CONVERGE goal already uses). A plain C function pointer has no
+ * closure over main()'s locals, unlike RTH's inline construction, so z
+ * (own current commanded cruise altitude — 0 would ramp to ground level
+ * mid-flight while still translating home, same reasoning as RTH's own
+ * comment) is mirrored into g_departure_recall_z_m once per tick, right
+ * before choreo_tick() runs, the only point this callback can be invoked
+ * from. */
+static float g_departure_recall_z_m;
+
+static bool cf21bl_departure_recall_point(position_t *out)
+{
+    float home_x, home_y;
+    if (!cf21bl_stabilizer_get_pos_home(&home_x, &home_y)) {
+        return false;   /* no fix yet — RECALL falls back to LAND_IN_PLACE */
+    }
+    out->x = home_x;
+    out->y = home_y;
+    out->z = g_departure_recall_z_m;
+    return true;
 }
 #endif
 
@@ -443,6 +515,18 @@ int main(void)
 
     choreo_init(element_id);
     choreo_register_scr(&scr);
+    /* CHOREO_DEPARTURE_* come from the generated choreo_script.h —
+     * .choreo.toml's `mode`/[on_departure] (default: CONTINUE, every
+     * script written before this feature existed is unaffected). The
+     * recall-point callback is registered even when the compiled policy
+     * doesn't need it today — Phase 3's per-step on_departure override
+     * can select RECALL for an individual step regardless of the
+     * script-level default. */
+    choreo_set_departure_policy(CHOREO_DEPARTURE_POLICY, CHOREO_DEPARTURE_REASONS,
+                                CHOREO_DEPARTURE_MIN_PARTICIPANTS);
+#ifdef CONFIG_PWM
+    choreo_set_departure_recall_point_fn(cf21bl_departure_recall_point);
+#endif
     /* k_choreo_script comes from the generated choreo_script.h — the
      * authored script is ../change-partners.choreo.toml (coordinate-free:
      * hold references each drone's own station, exchange references the
@@ -683,6 +767,18 @@ int main(void)
             health |= ELEMENT_HEALTH_NO_POSITION;
         } else if (!fix_valid) {
             health |= ELEMENT_HEALTH_POSITION_STALE;
+        }
+        /* Self-declare departure the moment descent starts, not just once
+         * landed: a peer must be able to exclude us from collective
+         * predicates (scope="all", swap-partner selection) as soon as we
+         * are no longer a going participant, not only after touchdown.
+         * One WM_CYCLE_MS tick of lag versus `state`/`land_reason`
+         * (both set later in this same iteration's switch, read here at
+         * the top of the NEXT iteration) is immaterial next to
+         * WM_EXPIRE_THRESHOLD_MS. */
+        if (state == FLIGHT_LANDING || state == FLIGHT_LANDED) {
+            health = element_health_set_departed(health,
+                                                  land_departure_reason(land_reason));
         }
 #ifdef CONFIG_CF21BL_PM
         float vbat = cf21bl_pm_vbat();
@@ -960,6 +1056,13 @@ int main(void)
             was_battery_low = battery_low;
 #endif
 
+#ifdef CONFIG_PWM
+            /* Current commanded cruise altitude — see
+             * cf21bl_departure_recall_point()'s comment for why a plain
+             * callback needs this mirrored instead of reading own_pos_m.z
+             * directly. */
+            g_departure_recall_z_m = own_pos_m.z;
+#endif
             choreo_tick(&wm, &scr);
             choreo_publish_state(&own_state);
 
@@ -994,6 +1097,26 @@ int main(void)
                         last_step,
                         choreo_goal_status() == CHOREO_STATE_SUSPENDED
                             ? "(suspended)" : "");
+            }
+
+            /* Checked BEFORE choreo_script_complete(): a departure-policy
+             * landing (LAND_IN_PLACE, a completed RECALL, or a HOLD that
+             * timed out) also sets s_script_done internally
+             * (land_for_departure(), choreo.c) — the same quiescence
+             * signal a normal finish uses — so choreo_script_complete()
+             * would ALSO read true afterward. Checking the more specific
+             * flag first is what lets land_reason distinguish the two. */
+            if (choreo_departure_triggered()) {
+                LOG_INF("id=%u departure policy landed us at (%.2f, %.2f)",
+                        (unsigned)element_id,
+                        (double)own_pos_m.x, (double)own_pos_m.y);
+                state = FLIGHT_LANDING;
+                land_reason = LAND_REASON_DEPARTURE;
+                land_hold_x = own_pos_m.x;
+                land_hold_y = own_pos_m.y;
+                land_hold_valid = true;
+                sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
+                break;
             }
 
             if (choreo_script_complete()) {

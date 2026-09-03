@@ -55,6 +55,40 @@ static uint8_t s_count_locked;
 static uint8_t s_count_candidate;
 static uint32_t s_count_candidate_ms;
 
+/* ── Departure policy ─────────────────────────────────────────────────────── */
+/*
+ * Reason/identity-aware, layered ON TOP of (not instead of) the count-only
+ * membership debounce above — that one stays exactly as it was, still
+ * driving CHOREO_EVENT_ELEMENT_JOINED/LOST for script-AUTHORED transitions
+ * only.  This is a second, independent consumer of the same
+ * element_is_participating() (csm.h) predicate the ghost-vote fix uses,
+ * but needs to know WHICH peer dropped out and WHY (csm.h's
+ * tapestry_departure_reason_t) to support reasons filtering and
+ * min_participants — a debounced swarm SIZE can't answer either question.
+ * No extra debounce of its own: the DEPARTED bit is monotonic (main.c sets
+ * it once, entering FLIGHT_LANDING, and never clears it) so it cannot
+ * flicker, and the LOST-inferred case is already gated by
+ * WM_EXPIRE_THRESHOLD_MS's own 5 s stability requirement.
+ */
+static choreo_departure_policy_t   s_departure_mode = CHOREO_DEPARTURE_CONTINUE;
+static choreo_departure_reasons_t  s_departure_reasons = CHOREO_DEPARTURE_REASONS_ALL;
+static uint8_t                     s_departure_min_participants;
+static choreo_departure_recall_point_fn s_departure_recall_fn;
+
+static bool                       s_departure_triggered;
+static choreo_departure_policy_t  s_departure_triggered_policy;
+static bool                       s_recall_in_progress;
+static bool                       s_hold_in_progress;
+static uint32_t                   s_hold_ms;
+
+/* Snapshot of which peer IDs were participating as of the last evaluated
+ * tick — a bit per element_id (MAX_ELEMENTS <= 32, csm.h).  Compared
+ * against this tick's snapshot to find exactly which peer(s) newly
+ * stopped participating (a departure edge), never re-triggering on a
+ * peer that was already gone last tick. */
+static uint32_t s_prev_participating_mask;
+static bool     s_prev_participating_mask_valid;
+
 /* ── Tracks (choreo.h §7) ──────────────────────────────────────────────────── */
 /*
  * s_steps/s_n_steps/s_step_idx/s_step_ms/s_goal (already declared above)
@@ -274,7 +308,41 @@ void choreo_init(element_id_t self_id)
     s_remote_adopted  = false;
     s_remote_age_ms   = 0;
     s_remote_fresh_ms = 0;
+    s_departure_mode             = CHOREO_DEPARTURE_CONTINUE;
+    s_departure_reasons          = CHOREO_DEPARTURE_REASONS_ALL;
+    s_departure_min_participants = 0;
+    s_departure_recall_fn        = NULL;
+    s_departure_triggered        = false;
+    s_departure_triggered_policy = CHOREO_DEPARTURE_CONTINUE;
+    s_recall_in_progress         = false;
+    s_hold_in_progress           = false;
+    s_hold_ms                    = 0;
+    s_prev_participating_mask_valid = false;
     bse_init(self_id);
+}
+
+void choreo_set_departure_recall_point_fn(choreo_departure_recall_point_fn fn)
+{
+    s_departure_recall_fn = fn;
+}
+
+void choreo_set_departure_policy(choreo_departure_policy_t policy,
+                                 choreo_departure_reasons_t reasons,
+                                 uint8_t min_participants)
+{
+    s_departure_mode             = policy;
+    s_departure_reasons          = reasons;
+    s_departure_min_participants = min_participants;
+}
+
+bool choreo_departure_triggered(void)
+{
+    return s_departure_triggered;
+}
+
+choreo_departure_policy_t choreo_departure_triggered_policy(void)
+{
+    return s_departure_triggered_policy;
 }
 
 void choreo_remote_directive(const tapestry_bse_directive_t *d,
@@ -342,6 +410,10 @@ static void terminate_hard(void)
     script_clear();
     s_parked_depth = 0;   /* bse_submit_intent() below drops BSE's side too */
     s_count_locked_valid = false;   /* a fresh submission starts fresh */
+    s_prev_participating_mask_valid = false;   /* ditto, for departure detection */
+    s_recall_in_progress = false;
+    s_hold_in_progress   = false;
+    s_hold_ms            = 0;
     s_n_tracks = 0;                 /* drop multi-track mode entirely */
     bse_set_track_scope(0);         /* bse.c's filter must not stay stuck nonzero */
     tapestry_bse_intent_t idle = { .type = TAPESTRY_BSE_INTENT_IDLE };
@@ -422,6 +494,7 @@ int choreo_submit_goal(const choreo_goal_t *goal)
         terminate_hard();
     }
     s_script_done = false;
+    s_departure_triggered = false;
     int rc = choreo_configure(goal);
     if (rc != 0) {
         return rc;
@@ -493,6 +566,7 @@ int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps)
         terminate_hard();
     }
     s_script_done = false;
+    s_departure_triggered = false;
 
     int rc = choreo_configure(&steps[0].goal);
     if (rc != 0) {
@@ -551,7 +625,14 @@ bool choreo_collective_achieved(const world_model_t *wm)
          * quorum has been LOST for 3.5 s and the script is SUSPENDED —
          * script_advance() is unreachable — so an expired peer cannot
          * reopen the window either. */
-        if (e->is_self || !e->is_active) {
+        /* element_is_participating() (not is_active alone) also excludes a
+         * peer that has self-declared departure (ELEMENT_HEALTH_DEPARTED):
+         * a landed element's gossip stays alive on purpose (main.c's
+         * flight-12 deadlock fix) with a frozen `achieved` bit that would
+         * otherwise ghost-vote this step forever — either blocking it (bit
+         * frozen false) or passing it on a step the departed element was
+         * never part of (bit frozen true). */
+        if (e->is_self || !element_is_participating(e)) {
             continue;
         }
         /* Track-filtered to match bse.c's collect_participants() (§7,
@@ -680,11 +761,154 @@ static void advance_to(int target_idx)
     bse_submit_intent(&intent);
 }
 
+/*
+ * departure_policy_should_fire — reason/identity-aware departure edge
+ * detector (see the "Departure policy" state comment above for why this
+ * exists alongside, not instead of, update_membership_debounce()).
+ *
+ * Rebuilds this tick's participating-peer bitmask, diffs it against the
+ * previous tick's, and for every peer that just dropped out determines
+ * its reason bit (csm.h's tapestry_departure_reason_t, or the LOST bit
+ * for an entry that expired outright).  Fires only if: something newly
+ * departed this tick (the edge — never re-fires on a peer already gone
+ * last tick); the resolved policy (per-step override, else the script
+ * default) is not CONTINUE; at least one of this tick's departure
+ * reasons passes the reasons filter; and, if min_participants > 0, the
+ * surviving count (self + still-participating peers) has dropped to at
+ * or below it.  Writes the resolved policy to *out_policy regardless of
+ * whether it fires, so callers can log it either way.
+ */
+static bool departure_policy_should_fire(const world_model_t *wm,
+                                         const choreo_step_t *st,
+                                         choreo_departure_policy_t *out_policy)
+{
+    uint32_t mask = 0;
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_self || !e->is_active) {
+            continue;
+        }
+        if (element_is_participating(e)) {
+            mask |= (1u << e->state.id);
+        }
+    }
+
+    choreo_departure_reasons_t departed_reasons = 0;
+    if (s_prev_participating_mask_valid) {
+        uint32_t dropped = s_prev_participating_mask & ~mask;
+        for (int id = 0; id < MAX_ELEMENTS; id++) {
+            if ((dropped & (1u << id)) == 0) {
+                continue;
+            }
+            const wm_entry_t *e = wm_get_entry(wm, (element_id_t)id);
+            if (e == NULL || !e->is_active) {
+                departed_reasons |= CHOREO_DEPARTURE_REASON_LOST_BIT;
+            } else {
+                departed_reasons |= CHOREO_DEPARTURE_REASON_BIT(
+                    element_health_departed_reason(e->state.health_flags));
+            }
+        }
+    }
+    s_prev_participating_mask       = mask;
+    s_prev_participating_mask_valid = true;
+
+    choreo_departure_policy_t policy = (st->on_departure_set)
+                                        ? st->on_departure : s_departure_mode;
+    *out_policy = policy;
+
+    if (departed_reasons == 0 || policy == CHOREO_DEPARTURE_CONTINUE) {
+        return false;
+    }
+    if ((departed_reasons & s_departure_reasons) == 0) {
+        return false;   /* every reason that fired is filtered out */
+    }
+    if (s_departure_min_participants > 0) {
+        uint8_t surviving = 1;   /* self */
+        for (int id = 0; id < MAX_ELEMENTS; id++) {
+            if (mask & (1u << id)) {
+                surviving++;
+            }
+        }
+        /* min_participants is a floor that is still OK to be AT — "this
+         * show needs at least N" is satisfied by exactly N, only firing
+         * once a departure pushes the surviving count STRICTLY below it. */
+        if (surviving >= s_departure_min_participants) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/*
+ * trigger_departure_policy — execute the resolved policy.  LAND_IN_PLACE
+ * terminates exactly like normal script completion (advance_to()'s own
+ * end-of-script path), just latching s_departure_triggered/
+ * _triggered_policy first so the application can tell the two apart.
+ * RECALL and HOLD preempt (choreo_preempt_goal()); their eventual
+ * termination happens later, in choreo_tick() — see the RUNNING case —
+ * once the recall point is reached, or the hold timeout elapses. Either
+ * one falls back to landing immediately if it cannot even start (no
+ * recall point registered/available, or something else already parked)
+ * rather than silently doing nothing.
+ */
+static void land_for_departure(choreo_departure_policy_t executed_policy)
+{
+    s_departure_triggered        = true;
+    s_departure_triggered_policy = executed_policy;
+    s_script_done                = true;
+    choreo_terminate();
+}
+
+static void trigger_departure_policy(choreo_departure_policy_t policy)
+{
+    switch (policy) {
+    case CHOREO_DEPARTURE_RECALL: {
+        position_t recall_pt;
+        if (s_departure_recall_fn != NULL &&
+            s_departure_recall_fn(&recall_pt)) {
+            choreo_goal_t recall_goal = {
+                .type   = CHOREO_GOAL_CONVERGE,
+                .target = recall_pt,
+            };
+            if (choreo_preempt_goal(&recall_goal) == 0) {
+                s_recall_in_progress = true;
+                return;
+            }
+        }
+        land_for_departure(CHOREO_DEPARTURE_LAND_IN_PLACE);
+        return;
+    }
+
+    case CHOREO_DEPARTURE_HOLD: {
+        choreo_goal_t hold_goal = { .type = CHOREO_GOAL_HOLD };
+        if (choreo_preempt_goal(&hold_goal) == 0) {
+            s_hold_in_progress = true;
+            s_hold_ms          = 0;
+            return;
+        }
+        land_for_departure(CHOREO_DEPARTURE_LAND_IN_PLACE);
+        return;
+    }
+
+    case CHOREO_DEPARTURE_LAND_IN_PLACE:
+        land_for_departure(CHOREO_DEPARTURE_LAND_IN_PLACE);
+        return;
+
+    case CHOREO_DEPARTURE_CONTINUE:
+    default:
+        return;
+    }
+}
+
 /* Advance the script if the current step's exit condition is met —
  * either an explicit transition (checked first, first match wins) or,
  * absent any match, the legacy advance_on_achieved/max_duration_ms rule
  * (implicit next-index advance) every step had before transitions
- * existed. */
+ * existed.  The departure-policy dial ([choreo] mode / [on_departure] —
+ * see choreo_set_departure_policy()) is checked next, but ONLY if no
+ * explicit transition claimed the tick: a script's own authored
+ * CHOREO_EVENT_ELEMENT_LOST handling is a deliberate choice by the
+ * script author and takes priority over the coarse dial. */
 static void script_advance(const world_model_t *wm, const scr_state_t *scr)
 {
     if (!s_script_active) {
@@ -704,6 +928,21 @@ static void script_advance(const world_model_t *wm, const scr_state_t *scr)
             target_idx = t->goto_step_idx;
             break;
         }
+    }
+
+    /* Unconditional: departure_policy_should_fire() must run every tick
+     * regardless of target_idx, to keep its participating-peer snapshot
+     * current — skipping it on a tick an explicit transition also fires
+     * would corrupt next tick's edge diff (a real departure could be
+     * silently missed, or re-detected a tick late against a stale
+     * baseline). Only ACTING on the result is conditional on no explicit
+     * transition having already claimed the tick. */
+    choreo_departure_policy_t departure_policy;
+    bool departure_fires =
+        departure_policy_should_fire(wm, st, &departure_policy);
+    if (target_idx < 0 && departure_fires) {
+        trigger_departure_policy(departure_policy);
+        return;
     }
 
     if (target_idx < 0) {
@@ -865,6 +1104,7 @@ int choreo_submit_tracks(const world_model_t *wm, const choreo_track_t *tracks, 
         terminate_hard();
     }
     s_script_done = false;
+    s_departure_triggered = false;
 
     for (uint8_t i = 0; i < n_tracks; i++) {
         s_tracks[i]          = tracks[i];
@@ -922,8 +1162,39 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
         bse_set_track_scope(choreo_current_track());
         bse_tick(wm, scr);
         script_advance(wm, scr);
-        /* script_advance may have terminated → IDLE; quorum check only
-         * applies while still RUNNING. */
+        /* RECALL preempts to CHOREO_GOAL_CONVERGE (script_advance() ->
+         * trigger_departure_policy()) with s_script_active now false, so
+         * script_advance() no longer runs while it's in progress — this
+         * is the only place its arrival is ever observed.  terminate_hard()
+         * (not choreo_terminate()) on purpose: the parked ORIGINAL script
+         * must be discarded, not resumed — recall landing is meant to be
+         * final, the same as LAND_IN_PLACE. */
+        if (s_recall_in_progress && s_state == CHOREO_STATE_RUNNING &&
+            choreo_goal_achieved()) {
+            s_recall_in_progress = false;
+            s_departure_triggered        = true;
+            s_departure_triggered_policy = CHOREO_DEPARTURE_RECALL;
+            s_script_done = true;
+            terminate_hard();
+        }
+        /* HOLD preempts to CHOREO_GOAL_HOLD for up to
+         * CHOREO_DEPARTURE_HOLD_TIMEOUT_MS, then gives up and lands —
+         * departure is one-directional (a peer that left does not come
+         * back), so this buys time rather than waiting for recovery.
+         * terminate_hard(), same reasoning as RECALL above: discard the
+         * parked script, don't resume it. */
+        if (s_hold_in_progress && s_state == CHOREO_STATE_RUNNING) {
+            s_hold_ms += WM_CYCLE_MS;
+            if (s_hold_ms >= CHOREO_DEPARTURE_HOLD_TIMEOUT_MS) {
+                s_hold_in_progress = false;
+                s_departure_triggered        = true;
+                s_departure_triggered_policy = CHOREO_DEPARTURE_LAND_IN_PLACE;
+                s_script_done = true;
+                terminate_hard();
+            }
+        }
+        /* script_advance/the two blocks above may have terminated → IDLE;
+         * quorum check only applies while still RUNNING. */
         if (s_state == CHOREO_STATE_RUNNING &&
             scr->quorum_state == SCR_QUORUM_LOST) {
             s_state = CHOREO_STATE_SUSPENDED;

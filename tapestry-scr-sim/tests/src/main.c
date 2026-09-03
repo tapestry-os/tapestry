@@ -66,6 +66,25 @@ static void make_scr(scr_state_t *scr, element_id_t own_id)
 }
 
 /*
+ * inject_departed_peer — Gossip a state for peer `id` with
+ * ELEMENT_HEALTH_DEPARTED set (csm.h) — a peer that is still active/
+ * gossiping (unlike inject_peer() + wm_tick() past expiry) but has
+ * self-declared it is no longer participating.
+ */
+static void inject_departed_peer(world_model_t *wm, element_id_t id,
+                                  uint32_t clock,
+                                  tapestry_departure_reason_t reason)
+{
+    element_state_t s = {0};
+    s.id            = id;
+    s.logical_clock = clock;
+    s.position.x    = 10.0f + (float)((id * 17) % 80);
+    s.position.y    = 10.0f + (float)((id * 23) % 80);
+    s.health_flags  = element_health_set_departed(ELEMENT_HEALTH_OK, reason);
+    wm_receive_gossip(wm, &s);
+}
+
+/*
  * make_scr_with_caps — Initialize SCR with specific capability flags.
  */
 static void make_scr_with_caps(scr_state_t *scr, element_id_t own_id,
@@ -383,6 +402,92 @@ ZTEST(scr_suite, test_expired_peer_not_counted)
                   "Expired peer → LOST");
     zassert_equal(scr_get_leader(&scr), ELEMENT_ID_INVALID,
                   "Expired peer → no valid leader");
+}
+
+/*
+ * test_departed_peer_not_counted — A peer that is still ACTIVE/gossiping
+ * but has self-declared ELEMENT_HEALTH_DEPARTED (landed, backstop,
+ * fixloss, geofence) is excluded from fresh_count/leader election
+ * exactly like a stale or expired one — is_active alone must not keep it
+ * eligible forever (a landed element's gossip stays alive on purpose,
+ * main.c's flight-12 deadlock fix, so is_active never goes false for it).
+ * Two OTHER peers stay behind (not vacuous-solo — that is this file's
+ * next test) so this isolates the exclusion itself from the quorum
+ * override.
+ */
+ZTEST(scr_suite, test_departed_peer_not_counted)
+{
+    world_model_t wm;
+    scr_state_t   scr;
+
+    make_wm(&wm, OWN_ID);
+    make_scr(&scr, OWN_ID);
+
+    inject_peer(&wm, 4u, 1);   /* Lower ID than own (5) — would lead */
+    inject_peer(&wm, 6u, 1);
+    inject_peer(&wm, 7u, 1);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY,
+                  "Before departure: HEALTHY with 3 fresh peers");
+    zassert_equal(scr_get_leader(&scr), 4u,
+                  "Before departure: peer 4 is leader");
+
+    /* Peer 4 self-declares departure — still active, no time passes. */
+    inject_departed_peer(&wm, 4u, 100, ELEMENT_DEPARTED_COMPLETE);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+
+    zassert_equal(scr.fresh_count, 2,
+                  "Departed peer not counted, despite still being active; "
+                  "peers 6/7 still are");
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_DEGRADED,
+                  "2 real fresh peers (not vacuous — 6/7 never departed) "
+                  "→ DEGRADED, below quorum_target(3)");
+    zassert_equal(scr_get_leader(&scr), OWN_ID,
+                  "Departed peer 4 no longer a valid leader candidate — "
+                  "own ID (5), lowest among the survivors {5, 6, 7}, "
+                  "elected");
+}
+
+/*
+ * test_quorum_vacuous_when_all_known_peers_departed — Every currently-
+ * known active peer has explicitly DEPARTED (none are silently missing)
+ * → quorum reports HEALTHY despite fresh_count being below quorum_min,
+ * the same "no peer to disagree" reasoning
+ * choreo_collective_achieved() already applies to a genuinely solo
+ * element's scope="all" step.  Requires at least one real departure to
+ * have happened — an element that never had any peers stays LOST
+ * (test_quorum_lost_no_peers), unaffected by this fix.
+ */
+ZTEST(scr_suite, test_quorum_vacuous_when_all_known_peers_departed)
+{
+    world_model_t wm;
+    scr_state_t   scr;
+
+    make_wm(&wm, OWN_ID);
+    make_scr(&scr, OWN_ID);
+
+    inject_peer(&wm, 6u, 1);
+    inject_peer(&wm, 7u, 1);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_DEGRADED,
+                  "Before departure: 2 fresh peers → DEGRADED");
+
+    /* Both peers depart — still active, no expiry involved. */
+    inject_departed_peer(&wm, 6u, 100, ELEMENT_DEPARTED_COMPLETE);
+    inject_departed_peer(&wm, 7u, 100, ELEMENT_DEPARTED_COMPLETE);
+    wm_tick(&wm, WM_CYCLE_MS);
+    scr_tick(&scr, &wm);
+
+    zassert_equal(scr.fresh_count, 0,
+                  "Both departed peers excluded from fresh_count");
+    zassert_equal(scr_get_quorum(&scr), SCR_QUORUM_HEALTHY,
+                  "Every known peer explicitly departed (none silently "
+                  "missing) → vacuously HEALTHY, not LOST");
 }
 
 /* ── Gap 3: Extended roles ────────────────────────────────────────────────── */

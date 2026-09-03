@@ -297,6 +297,77 @@ goal freezes, not preventing the freeze. If `swap` doesn't declare
 as before this feature existed — `quorum_lost` is opt-in per step, same
 as every other event.
 
+## Element departure policy
+
+Quorum loss (above) is about the WHOLE collective going isolated. This is
+about ONE peer leaving while everyone else can still hear each other
+fine — landed to completion, hit a safety backstop, lost its position
+fix, strayed past the geofence, or simply went silent
+(`WM_EXPIRE_THRESHOLD_MS` of no gossip at all, the only *inferred* case —
+every other reason is self-declared, never inferred from silence).
+
+By default nothing special happens: a departed peer is already excluded
+from every collective predicate (`scope = "all"` achievement,
+swap-partner selection, quorum) for free, so the survivors just carry on
+with a smaller participant set. For anything more deliberate, set the
+coarse dial:
+
+```toml
+choreo = "change-partners"
+mode   = "cp"                      # "ap" (default) or "cp"
+```
+
+`mode = "ap"` is the default just described (do nothing extra). `mode =
+"cp"` lands every survivor immediately, in place, the moment ANY peer
+departs — not a recall home, on purpose: a survivor that lands where it
+is might resume the show later, where flying home first would abandon it
+outright. For anything more specific than the two-value dial, give the
+table instead (mutually exclusive with `mode` — pick one):
+
+```toml
+[on_departure]
+policy            = "hold"                       # continue|hold|land_in_place|recall
+min_participants  = 2                             # 0 (default): any departure is enough
+reasons           = ["fixloss", "geofence"]       # default ["*"]: every reason
+```
+
+| Key | Meaning |
+|---|---|
+| `policy` | `"continue"` (default) — do nothing extra. `"hold"` — station-keep for up to 30s, then give up and land; does not resume the original show even if the situation "recovers" (departure is one-directional). `"land_in_place"` — land immediately, wherever this survivor currently is. `"recall"` — fly to this platform's own recall point (its own takeoff/home position — never a shared muster point), then land there; falls back to `"land_in_place"` if the platform has no recall point registered or available (no fix yet) rather than silently doing nothing. |
+| `min_participants` | `0` (default) — any departure is enough to trigger. A nonzero N is itself still an acceptable size (a script that "needs at least N" is satisfied by exactly N) — only a departure that drops the surviving count (self + still-participating peers) *strictly below* N fires. |
+| `reasons` | Which departure reasons count, by name: `"complete"`, `"backstop"`, `"fixloss"`, `"geofence"`, `"lost"` (the inferred-from-silence case), or `["*"]` (default) for all five. A reason not in this list never trips the policy, no matter how many peers leave for it — e.g. `reasons = ["fixloss", "geofence"]` means a peer finishing its script cleanly (`"complete"`) never triggers `land_in_place`, only a genuine emergency does. |
+
+A step's own `on_departure = "land_in_place"` replaces `policy` alone for
+THAT step only — `reasons`/`min_participants` always stay script-level.
+An `exchange` mid-swap is a more sensitive moment than a `hold`:
+
+```toml
+[[steps]]
+[steps.exchange]
+until       = "achieved"
+timeout     = "30s"
+scope       = "all"
+requires    = ["locomotion"]
+on_departure = "land_in_place"
+```
+
+If the current step also declares an explicit `on = [...]` transition
+(e.g. reacting to `element_lost` itself) and that transition fires on the
+same tick a departure would otherwise trigger the policy, the script's
+own transition wins — an author's explicit handling always takes
+priority over the coarse dial.
+
+Neither `mode` nor `[on_departure]` given: `policy = "continue"`, every
+script written before this feature existed is unaffected.
+
+**Not modeled by the Python `--simulate` tool** (`sdk/tools/
+choreo_sim.py`) — `mode`/`[on_departure]`/per-step `on_departure` parse
+and round-trip correctly but are silently inert there, the same
+disclaimer that tool already carries for other physics it deliberately
+omits (see "Script-authoring simulation" below). Only `choreoc.py`'s
+C-header codegen — the path that actually flies on hardware — acts on
+these fields today.
+
 ## Effects
 
 Any goal key can also carry `indicator` and/or `telemetry_tag` (design

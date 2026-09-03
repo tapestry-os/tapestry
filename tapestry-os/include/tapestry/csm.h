@@ -145,6 +145,54 @@ static inline orientation_t orientation_identity(void)
  * airframe at a real last-known point and stays visible to both, the same
  * as any other stale-but-active peer.  Cleared on the next fix. */
 #define ELEMENT_HEALTH_POSITION_STALE 0x10u  /* Held position, fix down now */
+/* This element has self-declared that it has stopped participating in the
+ * collective's Choreo script (landed to completion, hit a safety backstop,
+ * lost its position fix, or breached the geofence) — see
+ * element_is_participating() below.  Departure must be DECLARED, never
+ * inferred from silence: an element that goes quiet without setting this
+ * bit is presumed LOST only after WM_EXPIRE_THRESHOLD_MS, which is exactly
+ * why cf21bl-formation's main.c keeps a landed element gossiping in choreo
+ * mode instead of going silent (the flight-12 deadlock this bit's producer
+ * comment references).  Reason lives in bits [7:6]
+ * (tapestry_departure_reason_t) — a narrower vocabulary than the
+ * platform's own land_reason_t: LOST has no wire representation, because a
+ * receiver already infers it locally from expiry.  Additive bit, same
+ * precedent as NO_POSITION/POSITION_STALE above — health_flags is already
+ * on the wire verbatim (gossip.c), so this needs no TAPESTRY_WIRE_VERSION
+ * bump; older receivers just ignore it and keep today's ghost-vote
+ * behavior. Excluded from collective predicates (scope="all" achievement,
+ * swap-partner selection, quorum) but NOT from anything physical
+ * (separation/repulsion) — a departed element is still a real obstacle. */
+#define ELEMENT_HEALTH_DEPARTED       0x20u
+
+#define ELEMENT_DEPARTED_REASON_SHIFT 6u
+#define ELEMENT_DEPARTED_REASON_MASK  0xC0u
+
+typedef enum {
+    ELEMENT_DEPARTED_COMPLETE = 0,  /* script finished — quiescence -> land */
+    ELEMENT_DEPARTED_BACKSTOP = 1,  /* mission-duration backstop elapsed    */
+    ELEMENT_DEPARTED_FIXLOSS  = 2,  /* position fix lost past grace period  */
+    ELEMENT_DEPARTED_GEOFENCE = 3,  /* strayed past the geofence radius     */
+} tapestry_departure_reason_t;
+
+/* Sets ELEMENT_HEALTH_DEPARTED and packs reason into bits [7:6], leaving
+ * every other health_flags bit untouched. */
+static inline uint8_t element_health_set_departed(uint8_t health_flags,
+                                                    tapestry_departure_reason_t reason)
+{
+    health_flags &= (uint8_t)~ELEMENT_DEPARTED_REASON_MASK;
+    health_flags |= ELEMENT_HEALTH_DEPARTED;
+    health_flags |= (uint8_t)(((uint8_t)reason << ELEMENT_DEPARTED_REASON_SHIFT) &
+                               ELEMENT_DEPARTED_REASON_MASK);
+    return health_flags;
+}
+
+static inline tapestry_departure_reason_t
+element_health_departed_reason(uint8_t health_flags)
+{
+    return (tapestry_departure_reason_t)
+        ((health_flags & ELEMENT_DEPARTED_REASON_MASK) >> ELEMENT_DEPARTED_REASON_SHIFT);
+}
 
 /* ── Element state ───────────────────────────────────────────────────────── */
 /*
@@ -246,6 +294,31 @@ typedef struct {
     bool            is_self;        /* True if this entry belongs to owner     */
     uint32_t        update_count;   /* How many gossip updates received        */
 } wm_entry_t;
+
+/* ── Participation predicate ─────────────────────────────────────────────── */
+/*
+ * False if the peer has self-declared departure (ELEMENT_HEALTH_DEPARTED)
+ * OR gone silent past WM_EXPIRE_THRESHOLD_MS (is_active == false — the only
+ * *inferred* case, implicitly reason LOST).  Collective predicates —
+ * choreo_collective_achieved()'s scope="all" vote, bse.c's
+ * collect_participants() swap-partner/centroid selection, scr.c's quorum
+ * denominator — must use this instead of checking is_active alone, or a
+ * departed element's frozen gossiped state keeps voting forever (the
+ * ghost-vote bug: a landed peer's frozen `achieved` bit either blocks or
+ * spuriously passes a scope="all" step it has already left).
+ *
+ * formation.c's separation/repulsion math must NOT use this predicate — a
+ * departed element (landed, or holding position after a fix loss) is
+ * still a genuine physical obstacle regardless of whether it is still
+ * "participating" in the script.
+ */
+static inline bool element_is_participating(const wm_entry_t *e)
+{
+    if (!e->is_active) {
+        return false;
+    }
+    return (e->state.health_flags & ELEMENT_HEALTH_DEPARTED) == 0;
+}
 
 /* ── Consistency metric ──────────────────────────────────────────────────── */
 /*

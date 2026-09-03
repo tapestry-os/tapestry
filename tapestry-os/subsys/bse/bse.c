@@ -218,8 +218,13 @@ static int collect_participants(const world_model_t *wm,
 
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
+        /* element_is_participating() (not is_active alone) excludes a
+         * self-declared-departed peer from swap-partner selection and
+         * centroid math — a landed element's gossip stays alive on
+         * purpose (main.c's flight-12 deadlock fix), so is_active alone
+         * would keep counting it here forever. */
         bool participant = e->is_self ||
-                           (e->is_active && !e->is_stale &&
+                           (element_is_participating(e) && !e->is_stale &&
                             scr_peer_is_trusted(scr, e->state.id) &&
                             e->state.current_track == s_track_scope);
         if (!participant) {
@@ -275,7 +280,7 @@ static bool lookup_anchor_position(const world_model_t *wm,
             }
             continue;
         }
-        if (e->is_active && !e->is_stale && e->state.id == id &&
+        if (element_is_participating(e) && !e->is_stale && e->state.id == id &&
             scr_peer_is_trusted(scr, id)) {
             *out = e->state.position;
             return true;

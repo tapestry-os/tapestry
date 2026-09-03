@@ -149,6 +149,130 @@ typedef uint16_t choreo_capabilities_t;
 #define CHOREO_CAP_SIGNALING     ((choreo_capabilities_t)0x08)
 #define CHOREO_CAP_ABS_POSITION  ((choreo_capabilities_t)0x10)
 
+/* ── Element departure policy ─────────────────────────────────────────────── */
+/*
+ * How a survivor reacts when a participating peer stops participating —
+ * self-declared (ELEMENT_HEALTH_DEPARTED, csm.h) or inferred LOST past
+ * WM_EXPIRE_THRESHOLD_MS.  Each survivor decides locally; there is no
+ * leader/consensus vote.  The runtime tracks each currently-participating
+ * peer (csm.h's element_is_participating()) and fires the resolved policy
+ * once on the tick a previously-participating peer drops out — never
+ * re-inferred from silence for the DEPARTED case (that would defeat the
+ * whole point of self-declaring), and gated by WM_EXPIRE_THRESHOLD_MS's
+ * existing stability requirement for the LOST-inferred case.
+ *
+ *   CHOREO_DEPARTURE_CONTINUE       (default) — do nothing beyond what
+ *     element_is_participating() already gives every collective predicate
+ *     for free (scope=all, swap-partner selection, quorum denominator):
+ *     shrink the participant set and keep running.
+ *   CHOREO_DEPARTURE_HOLD           — preempt to a HOLD (station-keep) for
+ *     up to CHOREO_DEPARTURE_HOLD_TIMEOUT_MS, then fall through to
+ *     LAND_IN_PLACE.  Does not resume the original script — departure is
+ *     one-directional (a peer that left does not come back), so this
+ *     policy buys time, it does not wait for recovery.
+ *   CHOREO_DEPARTURE_LAND_IN_PLACE  — land immediately wherever this
+ *     survivor currently is (terminates exactly like normal script
+ *     completion — see choreo_departure_triggered() for how a caller
+ *     tells the two apart).
+ *   CHOREO_DEPARTURE_RECALL         — preempt to the platform's own recall
+ *     point (choreo_set_departure_recall_point_fn() below), then land on
+ *     arrival.  Falls back to LAND_IN_PLACE if no recall point is
+ *     registered or currently available (e.g. no fix yet) rather than
+ *     silently doing nothing.
+ */
+typedef enum {
+    CHOREO_DEPARTURE_CONTINUE      = 0,
+    CHOREO_DEPARTURE_HOLD          = 1,
+    CHOREO_DEPARTURE_LAND_IN_PLACE = 2,
+    CHOREO_DEPARTURE_RECALL        = 3,
+} choreo_departure_policy_t;
+
+#ifndef CHOREO_DEPARTURE_HOLD_TIMEOUT_MS
+#define CHOREO_DEPARTURE_HOLD_TIMEOUT_MS 30000u
+#endif
+
+/*
+ * choreo_departure_reasons_t — bitmask filter over WHICH departure
+ * reasons trigger the policy (script-level [on_departure].reasons in
+ * .choreo.toml).  Bits 0-3 mirror csm.h's tapestry_departure_reason_t
+ * (COMPLETE/BACKSTOP/FIXLOSS/GEOFENCE) exactly, by value — see
+ * CHOREO_DEPARTURE_REASON_BIT().  Bit 4 (LOST) has no csm.h counterpart:
+ * it is never on the wire, only ever inferred locally from expiry.
+ * CHOREO_DEPARTURE_REASONS_ALL is the default ("*") — every departure
+ * reason triggers the configured policy, matching the coarse [choreo]
+ * mode dial's behavior (no filtering) before this per-script/per-step
+ * refinement existed.
+ */
+typedef uint8_t choreo_departure_reasons_t;
+
+#define CHOREO_DEPARTURE_REASON_BIT(r) ((choreo_departure_reasons_t)(1u << (r)))
+#define CHOREO_DEPARTURE_REASON_LOST_BIT \
+    ((choreo_departure_reasons_t)(1u << 4))
+#define CHOREO_DEPARTURE_REASONS_ALL ((choreo_departure_reasons_t)0x1Fu)
+
+/*
+ * choreo_departure_recall_point_fn — platform callback returning this
+ * element's own recall destination.  "Home" is a platform concept, not a
+ * Choreo one: cf21bl-formation's is the lighthouse-frame position its
+ * stabilizer latches at arming; webots/cutebot have their own start-
+ * position notions.  Returns false if no recall point is currently
+ * available (e.g. no fix yet yet) — CHOREO_DEPARTURE_RECALL falls back to
+ * LAND_IN_PLACE for that trigger rather than doing nothing.
+ */
+typedef bool (*choreo_departure_recall_point_fn)(position_t *out);
+
+/*
+ * choreo_set_departure_recall_point_fn — register the platform's recall-
+ * point callback.  Optional, like choreo_register_scr(): CHOREO_DEPARTURE_
+ * RECALL silently falls back to LAND_IN_PLACE if never registered, rather
+ * than crashing or being rejected outright.  Persists across script
+ * submissions, like choreo_register_scr() — only choreo_init() clears it.
+ */
+void choreo_set_departure_recall_point_fn(choreo_departure_recall_point_fn fn);
+
+/*
+ * choreo_set_departure_policy — configure the SCRIPT-LEVEL departure
+ * response (.choreo.toml's coarse [choreo] `mode` dial, or its more
+ * specific [on_departure] table — choreoc.py resolves either to this one
+ * call). `reasons` is CHOREO_DEPARTURE_REASONS_ALL unless narrowed
+ * (0 is invalid — a script that means "never trigger" should pass policy
+ * = CHOREO_DEPARTURE_CONTINUE instead, not an empty reasons mask).
+ * `min_participants` is 0 for "any departure is enough to trigger" (the
+ * `mode` dial's behavior) — a nonzero value additionally requires the
+ * surviving participant count (self + still-participating peers) to have
+ * dropped STRICTLY BELOW it: N is itself still an acceptable size (a
+ * script that "needs at least N" is satisfied by exactly N), only a
+ * departure that pushes below N fires.  A choreo_step_t's own `on_departure`
+ * override (choreo_step_t below) replaces `policy` alone for that step;
+ * `reasons`/`min_participants` stay script-level always.  Persists across
+ * script submissions like choreo_register_scr(); choreo_init() resets to
+ * (CONTINUE, ALL, 0) — every script written before this feature existed
+ * gets exactly that, unchanged.
+ */
+void choreo_set_departure_policy(choreo_departure_policy_t policy,
+                                 choreo_departure_reasons_t reasons,
+                                 uint8_t min_participants);
+
+/*
+ * choreo_departure_triggered — true once this survivor's departure
+ * policy has fired a LAND_IN_PLACE or RECALL response and landed (edge-
+ * latched exactly like choreo_script_complete() — stays true until the
+ * next submit_goal/submit_script).  The application's cue to treat this
+ * exactly like script completion (map the IDLE directive to platform
+ * quiescence) but attribute it to departure policy, not a normal finish
+ * — see choreo_departure_triggered_policy() for which policy actually
+ * executed (RECALL that fell back is reported as LAND_IN_PLACE, since
+ * that is what actually happened).
+ */
+bool choreo_departure_triggered(void);
+
+/*
+ * choreo_departure_triggered_policy — which policy actually executed the
+ * tick choreo_departure_triggered() went true.  Meaningless (returns
+ * CHOREO_DEPARTURE_CONTINUE) before that.
+ */
+choreo_departure_policy_t choreo_departure_triggered_policy(void);
+
 /* ── Goal ─────────────────────────────────────────────────────────────────── */
 /*
  * A goal is a declarative desired world state submitted by the application.
@@ -436,6 +560,19 @@ typedef struct {
      */
     substrate_signal_t indicator;
     const char         *telemetry_tag;
+
+    /*
+     * Per-step departure-policy override (.choreo.toml's per-step
+     * `on_departure = { policy = "..." }`) — replaces choreo_set_
+     * departure_policy()'s script-level `policy` for THIS step only;
+     * `reasons`/`min_participants` stay script-level regardless.
+     * on_departure_set defaults false (zero-initialized, like every
+     * choreo_step_t written before this field existed) meaning "inherit
+     * the script default" — byte-identical behavior for every existing
+     * generated header.
+     */
+    choreo_departure_policy_t on_departure;
+    bool                      on_departure_set;
 } choreo_step_t;
 
 /* ── SDK API ──────────────────────────────────────────────────────────────── */

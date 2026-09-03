@@ -13,6 +13,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   BSE and script keep ticking the whole time regardless, so falling back
   is bumpless by construction — never a resume-from-freeze. Bumps
   `TAPESTRY_WIRE_VERSION` to 5.
+- **Element departure policy** — a peer that stops participating
+  (self-declared `ELEMENT_HEALTH_DEPARTED`, `csm.h` — wire-additive, no
+  `TAPESTRY_WIRE_VERSION` bump — or inferred `LOST` past
+  `WM_EXPIRE_THRESHOLD_MS`) now drives a configurable survivor response
+  instead of only being silently excluded from collective predicates.
+  `choreo_collective_achieved()`'s existing exclusion is now also applied
+  in `bse.c`'s `collect_participants()`/`lookup_anchor_position()`
+  (swap-partner selection, centroid math) and `scr.c`'s quorum
+  denominator, both of which previously kept counting a landed-but-still-
+  gossiping peer indefinitely; `scr.c` also gains a vacuous-solo override
+  once every known peer has explicitly departed. A new policy engine in
+  `choreo.c` supports `continue` (default) / `hold` / `land_in_place` /
+  `recall`, set via `.choreo.toml`'s `mode = "ap"|"cp"` dial or a more
+  specific `[on_departure]` table, with a per-step override — checked
+  before the achieved/`scope="all"` fallback, so `cp` mode also prevents a
+  survivor from vacuously passing a collaborative step its partner
+  aborted out of mid-task — an outcome real hardware flights produced,
+  not a hypothetical. Physical/safety checks
+  (`formation.c` separation, `EXCHANGE`-occupied, `DISPERSE` spacing)
+  deliberately still treat a departed peer as a real obstacle.
 
 ### Fixed
 - **`cf21bl-formation`'s `DEMO_MIN_SEP_M` separation check was inert whenever

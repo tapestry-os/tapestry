@@ -107,6 +107,34 @@ INDICATOR_ENUM = {
     "failed":   "SUBSTRATE_SIGNAL_FAILED",
 }
 
+DEPARTURE_POLICY_ENUM = {
+    "continue":      "CHOREO_DEPARTURE_CONTINUE",
+    "hold":          "CHOREO_DEPARTURE_HOLD",
+    "land_in_place": "CHOREO_DEPARTURE_LAND_IN_PLACE",
+    "recall":        "CHOREO_DEPARTURE_RECALL",
+}
+
+# Bit position within choreo_departure_reasons_t — mirrors csm.h's
+# tapestry_departure_reason_t (0-3) plus choreo.h's LOST bit (4, never on
+# the wire). Emitted as CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_*) /
+# CHOREO_DEPARTURE_REASON_LOST_BIT so the generated header stays
+# self-documenting rather than a bare hex literal.
+DEPARTURE_REASON_BIT_EXPR = {
+    0: "CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_COMPLETE)",
+    1: "CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_BACKSTOP)",
+    2: "CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_FIXLOSS)",
+    3: "CHOREO_DEPARTURE_REASON_BIT(ELEMENT_DEPARTED_GEOFENCE)",
+    4: "CHOREO_DEPARTURE_REASON_LOST_BIT",
+}
+
+
+def departure_reasons_expr(mask: int) -> str:
+    if mask == 0x1F:
+        return "CHOREO_DEPARTURE_REASONS_ALL"
+    bits = [expr for bit, expr in DEPARTURE_REASON_BIT_EXPR.items()
+           if mask & (1 << bit)]
+    return " | ".join(bits) if bits else "0u"
+
 CAP_FLAGS = [
     (0x01, "CHOREO_CAP_LOCOMOTION"),
     (0x02, "CHOREO_CAP_BONDING"),
@@ -195,6 +223,10 @@ def emit_step(s: NormalizedStep) -> str:
         step_fields.append(f".indicator = {INDICATOR_ENUM[s.indicator]}")
     if s.telemetry_tag is not None:
         step_fields.append(f".telemetry_tag = {c_string(s.telemetry_tag)}")
+    if s.on_departure is not None:
+        step_fields.append(
+            f".on_departure = {DEPARTURE_POLICY_ENUM[s.on_departure]}")
+        step_fields.append(".on_departure_set = true")
     lines.append("      " + ", ".join(step_fields) + " },")
     return "\n".join(lines)
 
@@ -231,6 +263,13 @@ def _emit_steps_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> s
 #define CHOREO_NAME                    "{script.name}"
 #define CHOREO_SCRIPT_LEN              {len(script.steps)}u
 #define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS {script.total_timeout_ms}u
+
+/* Element departure policy — call choreo_set_departure_policy() (and,
+ * for CHOREO_DEPARTURE_RECALL, choreo_set_departure_recall_point_fn())
+ * before choreo_submit_script(). */
+#define CHOREO_DEPARTURE_POLICY           {DEPARTURE_POLICY_ENUM[script.departure_policy]}
+#define CHOREO_DEPARTURE_REASONS          {departure_reasons_expr(script.departure_reasons_mask)}
+#define CHOREO_DEPARTURE_MIN_PARTICIPANTS {script.departure_min_participants}u
 
 static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = {{
 {steps}
@@ -286,6 +325,13 @@ def _emit_tracks_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> 
 #define CHOREO_NAME                    "{script.name}"
 #define CHOREO_N_TRACKS                {len(tracks)}u
 #define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS {total_timeout_ms}u
+
+/* Element departure policy — call choreo_set_departure_policy() (and,
+ * for CHOREO_DEPARTURE_RECALL, choreo_set_departure_recall_point_fn())
+ * before choreo_submit_tracks(). */
+#define CHOREO_DEPARTURE_POLICY           {DEPARTURE_POLICY_ENUM[script.departure_policy]}
+#define CHOREO_DEPARTURE_REASONS          {departure_reasons_expr(script.departure_reasons_mask)}
+#define CHOREO_DEPARTURE_MIN_PARTICIPANTS {script.departure_min_participants}u
 
 {step_arrays_text}
 

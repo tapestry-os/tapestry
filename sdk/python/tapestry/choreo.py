@@ -144,6 +144,29 @@ class ChoreoTransition:
     threshold:     int = 0   # COUNT_GTE / COUNT_EQ only
 
 
+class ChoreoDeparturePolicy(IntEnum):
+    """How a survivor reacts when a participating peer stops
+    participating (self-declared ELEMENT_HEALTH_DEPARTED, csm.h, or
+    inferred LOST past WM_EXPIRE_THRESHOLD_MS).  Mirrors
+    choreo_departure_policy_t (choreo.h) — see that type's doc for full
+    semantics (each policy's exact behavior, RECALL's fallback to
+    LAND_IN_PLACE, HOLD's timeout).
+
+    NOT implemented by this Python Choreo class's tick() — this enum
+    exists only so ChoreoStep.on_departure and script_toml.py's TOML
+    parsing round-trip correctly for sdk/tools/choreoc.py's C-header
+    codegen path (the one that actually flies on hardware). The
+    sdk/tools/choreo_sim.py --simulate authoring tool (this class) does
+    not model departure policy at all yet — a script's `mode`/
+    `[on_departure]`/per-step `on_departure` are silently inert there,
+    the same "not a fidelity simulator" disclaimer choreo.h already
+    makes for other physics this simulator deliberately omits."""
+    CONTINUE      = 0
+    HOLD          = 1
+    LAND_IN_PLACE = 2
+    RECALL        = 3
+
+
 class ChoreoScope(IntEnum):
     """Whose achievement gates an advance_on_achieved step (design doc
     §8.5). SELF (default) is this element's own achievement only. ALL is
@@ -211,6 +234,14 @@ class ChoreoStep:
     # to every ChoreoStep written before this feature existed.
     indicator:     SubstrateSignal = SubstrateSignal.NONE
     telemetry_tag: Optional[str]   = None
+
+    # Per-step departure-policy override — mirrors choreo_step_t's
+    # on_departure/on_departure_set (choreo.h) as a single Optional field:
+    # None means "inherit the script default" (on_departure_set=false in
+    # C), byte-identical to every ChoreoStep written before this feature
+    # existed. NOT acted on by this Python class's tick() — see
+    # ChoreoDeparturePolicy's doc.
+    on_departure: Optional[ChoreoDeparturePolicy] = None
 
 
 @dataclass
