@@ -127,3 +127,8 @@ int substrate_sense(substrate_sensor_t type, float *out)
 void substrate_bond(void)    {}
 void substrate_release(void) {}
 void substrate_emit(void)    {}
+
+/* No addressable per-id indicator on this platform (the single status LED
+ * is fully owned by substrate_set_signal()'s quorum/goal semantics) —
+ * no-op, same as substrate_bond() et al. above. */
+void substrate_identify(uint8_t ordinal) { (void)ordinal; }

@@ -1,0 +1,127 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "../protos/CutebotRover.proto"
+EXTERNPROTO "../protos/ChessboardFloor.proto"
+
+# ring_cutebot.wbt — Tapestry ring.choreo.toml (examples/cutebot-formation's
+# script, unmodified logic) on 4 simulated Cutebots. Same L3-L7 stack as
+# real Cutebot hardware -- see ../README.md and
+# ../controllers/cutebot/main.c's header comment for what this harness is
+# and isn't for (element IDs come from controllerArgs, not auto-ID
+# negotiation -- negotiation itself was already confirmed correct on
+# hardware via the substrate_identify() LED blink).
+#
+# WHY THE ROBOT PROTO IS AN EXTERNPROTO AND NOT INLINE. This world used to
+# declare `PROTO CutebotRover [...] {...}` inline, VRML97-style, in this
+# file. Webots dropped inline PROTO declarations when it moved to the
+# EXTERNPROTO system: the parser does not recognize a bare `PROTO` token at
+# world top level and abandons the rest of the file there. Everything after
+# it -- the robots included -- silently never loads. The symptom is a black
+# viewport with an empty-looking Scene Tree and NO console message, because
+# the parse error goes to stderr and `open -a Webots` discards stderr. If a
+# world ever comes up black again, launch it from a terminal so stderr is
+# visible:
+#
+#   /Applications/Webots.app/Contents/MacOS/webots worlds/ring_cutebot.wbt
+#
+# Every PROTO here (including the backgrounds and Floor) is now an
+# EXTERNPROTO -- CutebotRover's body lives in ../protos/CutebotRover.proto
+# (see that file's own header for the device-name/geometry contract it
+# shares with ../controllers/cutebot/substrate_webots_cutebot.c) -- same
+# convention change_partners.wbt (this same directory) already uses and
+# loads correctly with.
+
+WorldInfo {
+  info [
+    "Tapestry ring.choreo.toml (examples/cutebot-formation's script,"
+    "unmodified logic) on 4 simulated Cutebots. Same L3-L7 stack as real"
+    "Cutebot hardware -- see ../README.md and"
+    "../controllers/cutebot/main.c."
+  ]
+  title "Tapestry ring (Webots, N=4)"
+  basicTimeStep 32
+}
+
+Viewpoint {
+  # Top-down view of the whole arena. Identity orientation (angle 0, so the
+  # axis is irrelevant) points the camera along -Z, which in this Z-up world
+  # is straight down; screen-up is then +Y, so the view reads as a map --
+  # robot 0 (+X) at right, robot 1 (+Y) at top, counterclockwise by ID.
+  # Cross-check that identity really is straight down: scene1_zone_allocation
+  # .wbt's known-good `orientation 1 0 0 0.965` at `position 0 -24 18` gives
+  # forward (0, sin 0.965, -cos 0.965) == (0, 0.82, -0.57), which is the
+  # direction from that camera to the origin (0, 0.8, -0.6). That only holds
+  # if an unrotated viewpoint looks along -Z.
+  #
+  # HEIGHT DEPENDS ON THE 3D VIEW'S ASPECT RATIO, which is why this is 7 m
+  # and not the ~4 m a naive calculation gives. Webots takes fieldOfView
+  # with respect to the LARGER viewport dimension (WbViewpoint::
+  # updateFieldOfViewY: for aspect > 1 it divides tan(fov/2) by the aspect
+  # to get the vertical half-angle), so on any normal wide 3D view the
+  # default 0.785 rad is the HORIZONTAL angle and vertical coverage is the
+  # binding constraint:
+  #
+  #   visible height at floor level = 2*h*tan(fov/2)/aspect = 0.83*h/aspect
+  #   to fit the 3.2 m Floor:          h >= 3.86 * aspect
+  #
+  # 7 m covers the full floor up to aspect ~1.8 (16:9 gives 3.26 m visible).
+  # On a wider-than-2:1 3D view the floor's north/south edges creep out of
+  # frame, but the robots never do: the FORM step tops out at radius 30
+  # units == 0.9 m, so all motion stays inside a 1.8 m span.
+  orientation -0.577 0.577 0.577 2.09
+  position 0 0 5.0
+}
+
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+# Defaults (8x8 squares, 0.3 m each, 1-square border) reproduce the real
+# chessboard's proportions at this world's METERS_PER_UNIT=0.03 scale:
+# (8 + 2*1) squares * 0.3 m = 3.0 x 3.0 m total, 2.4 x 2.4 m checkered
+# interior -- see ChessboardFloor.proto's header for the derivation and
+# ../../cutebot-formation/src/formation.h's "Arena scale" comment for the
+# real-board measurement it mirrors. Colors are an unmeasured placeholder.
+ChessboardFloor {
+}
+
+# 4 robots on a ring, radius 10 abstract units (== ring.choreo.toml's
+# opening HOLD placement, before the FORM step re-spaces them), placed in
+# ID order going counterclockwise (0/90/180/270 deg) -- same cardinal
+# formula cutebot-formation/src/main.c's compute_start_pos() uses,
+# converted through METERS_PER_UNIT=0.03 (see
+# ../controllers/cutebot/main.c). ring.choreo.toml's FORM step uses
+# frame="collective" (recomputes each vertex from live rank every cycle),
+# so this exact placement isn't load-bearing the way change_partners.wbt's
+# EXCHANGE placement is -- it's for hardware-parity/readability. z=0.0462
+# == WHEEL_RADIUS_M, so each robot's axle starts exactly at floor height.
+
+CutebotRover {
+  translation 0.3 0 0.0462
+  rotation 0 0 1 0
+  name "cutebot0"
+  controllerArgs [ "0" "4" ]
+}
+
+CutebotRover {
+  translation 0 0.3 0.0462
+  rotation 0 0 1 1.5708
+  name "cutebot1"
+  controllerArgs [ "1" "4" ]
+}
+
+CutebotRover {
+  translation -0.3 0 0.0462
+  rotation 0 0 1 3.14159
+  name "cutebot2"
+  controllerArgs [ "2" "4" ]
+}
+
+CutebotRover {
+  translation 0 -0.3 0.0462
+  rotation 0 0 1 4.71239
+  name "cutebot3"
+  controllerArgs [ "3" "4" ]
+}

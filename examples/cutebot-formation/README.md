@@ -128,20 +128,28 @@ auto-ID, and placement steps are identical; its runtime behavior is the
 hold → form(grid) → hold sequence described above instead of continuous
 emergent spacing.
 
-**Physical placement before power-on**
-IDs are assigned by FICR nonce rank at boot — you won't know which physical
-robot gets which ID until after the first run. Connect one robot to serial,
-note its ID in the boot log (`element %u`), and put a numbered sticker on it.
-Do this once per robot; the FICR nonce is fixed hardware.
+**Physical placement — power on first, then place**
+IDs are assigned by FICR nonce rank at boot, so you can't know which physical
+robot gets which ID before power-on. Rather than pre-labelling hardware via a
+one-time serial connection, each robot announces its own negotiated ID by
+blinking its LEDs white — `id + 1` short flashes, repeated a few times —
+immediately after auto-ID completes and before it starts moving. Power on all
+robots together, then place/orient each one while it's blinking, reading its
+ID off the flash count.
 
-Orient each robot facing outward from the center point of the arena:
+Orient each robot facing outward from the center point of the arena, one
+chessboard square out **along its own heading axis** — cardinal, not
+diagonal. Find the point where the four central squares of the board meet
+(the board's true center falls on a grid line, not inside a square, since 8
+squares per side is even); each robot's own center then goes on the next
+grid-line intersection straight out from there:
 
 | ID | Heading | Face toward |
 |---|---|---|
-| 0 | 0° | right (east) |
-| 1 | 90° | away from you (north) |
-| 2 | 180° | left (west) |
-| 3 | 270° | toward you (south) |
+| 0 | 0° | right (east) — one square right of center, on the horizontal centerline |
+| 1 | 90° | away from you (north) — one square away, on the vertical centerline |
+| 2 | 180° | left (west) — one square left of center, on the horizontal centerline |
+| 3 | 270° | toward you (south) — one square toward you, on the vertical centerline |
 
 For three robots the angles are 0°, 120°, 240°.
 
@@ -277,9 +285,16 @@ time `native_sim` is available, before trusting it as a regression gate.
 Dead-reckoning drifts. World-model positions are computed entirely from motor
 commands, not physical sensing. Picking up a robot and repositioning it
 physically has no effect on its self-reported position until it moves under
-motor power again. The planned fix is to replace dead-reckoning distance with
-RSSI-based proximity from the BLE scan callbacks (`transceiver_ble.c` already
-receives `rssi` per peer).
+motor power again. The planned fix is grid-based correction using the printed
+chessboard as a periodic reference — snapping the estimate to the nearest
+gridline on a detected crossing — which requires an IR ground-sensor driver
+that does not exist in this repo yet (`cutebot.c` is motors/LEDs over I2C
+only). Until that lands, `demo_arena_fence()` (`formation.c`) only bounds how
+far a robot can be commanded to travel relative to its OWN drifting estimate
+— it cannot stop the estimate itself from disagreeing with the physical
+board over a long run. Expect real drift on any run longer than a couple of
+minutes; `ring.choreo.toml`'s FORM step is deliberately kept short (90s) for
+this reason.
 
 **FORM's `abs_position` capability claim is weaker than its usual meaning.**
 `SCR_CAP_ABS_POSITION` (declared in `main.c`'s `scr_init()` call, and

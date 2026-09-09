@@ -3,7 +3,7 @@
  *
  * Choreo: "ring"
  * Regenerate after editing the script file:
- *   python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cutebot-formation/ring.choreo.toml -o tapestry/examples/cutebot-formation/src/choreo_script.h
+ *   python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cutebot-formation/ring.choreo.toml -o tapestry/examples/webots-formation/controllers/cutebot/choreo_script.h
  *
  * Every step is time-bounded by construction (choreoc requires it): the
  * script cannot stall in flight, and CHOREO_SCRIPT_TOTAL_TIMEOUT_MS is a

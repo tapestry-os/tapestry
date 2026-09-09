@@ -3,6 +3,30 @@
  * using the GPIO bitbang driver.  The hardware TWIM1 peripheral shares an
  * address with SPIM1 and requires more DTS scaffolding; the bitbang driver
  * is simpler and sufficient for 100 kHz Cutebot register writes.
+ *
+ * Cutebot Mini's two ground-facing line-tracking sensors are NOT on this
+ * I2C bus — they are plain digital GPIO inputs on edge-connector pins 13
+ * (P0.17, left) and 14 (P0.01, right), confirmed against both the
+ * ELECFREAKS pxt-cutebot MakeCode source (elecfreaks/pxt-cutebot,
+ * cutebot.ts: `pins.digitalReadPin(DigitalPin.P13/P14)`, PullNone — no
+ * internal pull, the sensor module drives its own output) and this
+ * Zephyr tree's own bbc_microbit_v2.dts edge_connector gpio-map (P13 ->
+ * &gpio0 17, P14 -> &gpio0 1) — cross-checked against P19/P20 in that
+ * same map, which match the I2C pins above exactly. Output convention
+ * (pxt-cutebot): LOW = line (dark surface) detected, HIGH = no line
+ * (bright surface) — see cutebot_line.c for how that's consumed.
+ *
+ * The two sensor pins live on the `zephyr,user` node, not a custom node
+ * like cutebot_i2c above — a node with no `compatible` gets NO
+ * property-type inference at all (confirmed against a real build: zero
+ * macros generated for a bare custom node's "-gpios" properties), and
+ * `zephyr,user` is the one node path Zephyr's devicetree tooling
+ * special-cases for exactly this ad-hoc-GPIO use case (gen_edt.py:
+ * `infer_binding_for_paths=["/zephyr,user", "/cpus"]`). Confirmed
+ * against Zephyr's own in-tree sample for these same P13/P14 pins:
+ * samples/boards/bbc/microbit/line_follower_robot's overlay uses this
+ * identical `zephyr,user { left-gpios = ...; right-gpios = ...; }`
+ * pattern for the same DFRobot Maqueen line sensors on P13/P14.
  */
 
 / {
@@ -13,5 +37,10 @@
         #address-cells = <1>;
         #size-cells = <0>;
         clock-frequency = <I2C_BITRATE_STANDARD>;
+    };
+
+    zephyr,user {
+        cutebot-line-left-gpios  = <&gpio0 17 GPIO_ACTIVE_HIGH>;   /* P13 */
+        cutebot-line-right-gpios = <&gpio0  1 GPIO_ACTIVE_HIGH>;   /* P14 */
     };
 };

@@ -19,6 +19,7 @@
 
 #include <tapestry/substrate.h>
 #include "cutebot.h"
+#include <zephyr/kernel.h>
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -94,3 +95,34 @@ int substrate_sense(substrate_sensor_t type, float *out)
 void substrate_bond(void)    {}
 void substrate_release(void) {}
 void substrate_emit(void)    {}
+
+/* ── Identity announcement ───────────────────────────────────────────────── */
+/*
+ * Blink white — a color substrate_set_signal() never uses (green/orange/
+ * red/blue/off only), so this can't be confused with a quorum/goal status
+ * — `ordinal + 1` short flashes, several repeats so a person walking
+ * between four simultaneously-blinking robots has time to read each one.
+ *
+ * Blocking (k_msleep, not a timer) is deliberate: this exists to run once
+ * at boot, before transport_negotiate_id()'s result is used for anything
+ * placement-sensitive (see main.c's compute_start_pos()) and before the
+ * main loop starts — there is nothing else this thread should be doing
+ * during the announcement window.
+ */
+#define IDENTIFY_FLASH_MS      250
+#define IDENTIFY_GAP_MS        250
+#define IDENTIFY_REP_PAUSE_MS 1500
+#define IDENTIFY_REPEATS         4
+
+void substrate_identify(uint8_t ordinal)
+{
+    for (int rep = 0; rep < IDENTIFY_REPEATS; rep++) {
+        for (int flash = 0; flash <= ordinal; flash++) {
+            cutebot_set_leds(180, 180, 180);
+            k_msleep(IDENTIFY_FLASH_MS);
+            cutebot_set_leds(0, 0, 0);
+            k_msleep(IDENTIFY_GAP_MS);
+        }
+        k_msleep(IDENTIFY_REP_PAUSE_MS);
+    }
+}

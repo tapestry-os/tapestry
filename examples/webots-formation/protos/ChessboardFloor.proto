@@ -1,0 +1,106 @@
+#VRML_SIM R2025a utf8
+# license: Apache License 2.0
+# license url: https://www.apache.org/licenses/LICENSE-2.0
+# documentation url: https://github.com/tapestry-os/tapestry/blob/main/examples/webots-formation/README.md
+# tags: static
+# A checkered floor matching the physical chessboard the ring formation was
+# measured against (see ../../cutebot-formation/src/formation.h's "Arena
+# scale" comment for the real-world measurement this mirrors) -- an NxM
+# checkered interior plus a plain border ring `borderSquares` wide on every
+# side, all built from the SAME squareSize so the two regions tile flush.
+#
+# THIS IS A TEMPLATE PROTO (uses %<...>% JavaScript preprocessing to loop
+# over rows*cols square tiles) -- NOT the same thing as the inline `PROTO`
+# block that used to break ring_cutebot.wbt (see that world's header
+# comment). A template PROTO is still a normal EXTERNPROTO-referenced
+# separate file; the %<...>% blocks are expanded into plain VRML before the
+# parser ever sees them, and every %<...>% here follows the for-loop /
+# %<= expr >% pattern documented in Webots' javascript-procedural-proto.md.
+#
+# Defaults are the measured board from formation.h: 8x8 squares, 0.3 m each
+# (== ring.choreo.toml's DEMO_SQUARE_UNITS of 10 units, converted through
+# this world's METERS_PER_UNIT=0.03 in ../controllers/cutebot/main.c -- NOT
+# the real board's own 12.6625 mm/unit; the two scales are independent, see
+# main.c's header), and a 1-square border, matching formation.h's "the
+# plain border outside the checkered area is about one square wide on every
+# side." Total footprint at the defaults is (8+2*1)*0.3 = 3.0 x 3.0 m.
+#
+# Colors are a cosmetic placeholder, not measured from the real board --
+# override lightColor/darkColor/borderColor if an exact match matters.
+
+PROTO ChessboardFloor [
+  field SFVec3f    translation    0 0 0
+  field SFRotation rotation       0 0 1 0
+  field SFInt32    rows           8        # squares along Y (north-south)
+  field SFInt32    cols           8        # squares along X (east-west)
+  field SFFloat    squareSize     0.3      # metres per square (border uses the same size)
+  field SFFloat    borderSquares  1.0      # border ring width, in squares, on EACH side
+  field SFColor    lightColor     0.9 0.85 0.75
+  field SFColor    darkColor      0.2 0.13 0.08
+  field SFColor    borderColor    0.45 0.3 0.16
+]
+{
+%<
+  let rows = fields.rows.value;
+  let cols = fields.cols.value;
+  let sq = fields.squareSize.value;
+  let border = fields.borderSquares.value;
+  if (rows <= 0) rows = fields.rows.defaultValue;
+  if (cols <= 0) cols = fields.cols.defaultValue;
+  if (sq <= 0) sq = fields.squareSize.defaultValue;
+  if (border < 0) border = fields.borderSquares.defaultValue;
+  let totalX = (cols + 2 * border) * sq;
+  let totalY = (rows + 2 * border) * sq;
+  let light = fields.lightColor.value;
+  let dark = fields.darkColor.value;
+>%
+  Solid {
+    translation IS translation
+    rotation IS rotation
+    children [
+      # Border ring + base plane: one plain-colored Plane spanning the full
+      # footprint. The checkered squares (below) are drawn on top of it, so
+      # this shows through only in the border area.
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS borderColor
+          roughness 0.95
+          metalness 0
+        }
+        geometry Plane {
+          size %<= totalX >% %<= totalY >%
+        }
+      }
+      Group {
+        children [
+%< for (let r = 0; r < rows; r++) { for (let c = 0; c < cols; c++) {
+     let isLight = (r + c) % 2 === 0;
+     let color = isLight ? light : dark;
+     let cx = -totalX / 2 + border * sq + (c + 0.5) * sq;
+     let cy = -totalY / 2 + border * sq + (r + 0.5) * sq;
+>%
+          Pose {
+            translation %<= cx >% %<= cy >% 0.0005
+            children [
+              Shape {
+                appearance PBRAppearance {
+                  baseColor %<= color.r >% %<= color.g >% %<= color.b >%
+                  roughness 0.9
+                  metalness 0
+                }
+                geometry Plane {
+                  size %<= sq >% %<= sq >%
+                }
+              }
+            ]
+          }
+%< } } >%
+        ]
+      }
+    ]
+    name "chessboard_floor"
+    boundingObject Plane {
+      size %<= totalX >% %<= totalY >%
+    }
+  }
+}

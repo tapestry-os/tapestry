@@ -118,6 +118,28 @@ void substrate_set_signal(substrate_signal_t signal);
 void substrate_set_power(substrate_power_state_t state);
 
 /*
+ * substrate_identify — Physically announce this element's ordinal so a
+ * human can tell WHICH element they are looking at, before any auto-
+ * negotiated identity (element_id from transport_negotiate_id(), a slot
+ * index, etc.) is otherwise visible to the naked eye.  Intended to be
+ * called once, right after that identity is known and before motion
+ * starts — e.g. so a person can then physically place/orient the element
+ * correctly for a formation that assumes a specific id-to-position
+ * mapping (see cutebot-formation's compute_start_pos()), instead of
+ * guessing or pre-labelling hardware via a one-time serial connection.
+ *
+ * `ordinal` is caller-defined (typically element_id) — substrate has no
+ * opinion on what it means, only that it should be rendered as something
+ * a person can count or read off without instrumentation.
+ *
+ * No-op on substrates with no addressable indicator (see substrate_bond()
+ * etc. for the same "no-op stub, defined for substrates that can't do
+ * this" pattern) or where a physical announcement makes no sense (e.g. a
+ * simulated element with no viewport to look at).
+ */
+void substrate_identify(uint8_t ordinal);
+
+/*
  * substrate_sense — Read a sensor channel into *out (normalized [0.0, 1.0]).
  * Returns 0 on success, negative value if the sensor is unsupported or
  * unavailable on this substrate.

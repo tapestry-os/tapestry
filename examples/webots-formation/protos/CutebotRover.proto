@@ -1,0 +1,161 @@
+#VRML_SIM R2025a utf8
+# CutebotRover.proto — differential-drive Cutebot body for
+# ../worlds/ring_cutebot.wbt / ../controllers/cutebot/.
+#
+# MUST be an EXTERNPROTO, not declared inline in a .wbt: Webots dropped
+# VRML97-style inline `PROTO ... { }` world-file declarations when it
+# moved to the EXTERNPROTO system. An inline declaration parses as a
+# fatal "Expected node or PROTO name, found 'PROTO'" error that silently
+# aborts the rest of the file — no console message reaches a GUI launched
+# via `open -a Webots` (stderr is discarded), so the only visible symptom
+# is a black viewport with nothing in the Scene Tree. If a world in this
+# example ever comes up black again with a clean-looking console, launch
+# it from a terminal instead so stderr is visible:
+#   /Applications/Webots.app/Contents/MacOS/webots worlds/<name>.wbt
+#
+# Device-name / geometry API contract this PROTO exposes to
+# ../controllers/cutebot/substrate_webots_cutebot.c — device names below
+# and the two constants that follow MUST stay numerically consistent:
+#   Devices:  "gps", "inertial_unit", "left_wheel_motor", "right_wheel_motor"
+#   Wheel anchor Y offset (+/-0.0425) == substrate_webots_cutebot.c's
+#     WHEEL_TRACK_M / 2
+#   Wheel Cylinder radius (0.021)     == substrate_webots_cutebot.c's
+#     WHEEL_RADIUS_M
+# A change to either side without the other silently miscalibrates the
+# differential-drive kinematics conversion in code (motion becomes
+# imprecise, not broken outright — no compiler or Webots error catches
+# this).
+#
+# Geometry (chassis/wheel/caster size) is a first-pass approximation
+# sized to roughly match the real Cutebot Mini and this example's
+# METERS_PER_UNIT=0.03 arena scale (see main.c) — contact/mass/friction
+# are starting points, not values tuned against a real run.
+
+PROTO CutebotRover [
+  field SFVec3f    translation     0 0 0.0462
+  field SFRotation rotation        0 0 1 0
+  field SFString   name            "cutebot0"
+  field MFString   controllerArgs  [ "0" "4" ]
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    controller "cutebot"
+    controllerArgs IS controllerArgs
+    children [
+      GPS {
+        name "gps"
+      }
+      InertialUnit {
+        name "inertial_unit"
+      }
+      Shape {
+        appearance PBRAppearance {
+          baseColor 0.2 0.55 0.85
+          roughness 0.6
+          metalness 0
+        }
+        geometry Box {
+          size 0.176 0.132 0.03
+        }
+      }
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0 0.0935 0
+        }
+        device [
+          RotationalMotor {
+            name "left_wheel_motor"
+            maxVelocity 150
+          }
+        ]
+        endPoint Solid {
+          translation 0 0.0935 0
+          children [
+            Shape {
+              appearance PBRAppearance {
+                baseColor 0.1 0.1 0.1
+                roughness 0.9
+              }
+              geometry Cylinder {
+                radius 0.0462
+                height 0.022
+              }
+            }
+          ]
+          name "left_wheel"
+          boundingObject Cylinder {
+            radius 0.0462
+            height 0.022
+          }
+          physics Physics {
+          }
+        }
+      }
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0 -0.0935 0
+        }
+        device [
+          RotationalMotor {
+            name "right_wheel_motor"
+            maxVelocity 150
+          }
+        ]
+        endPoint Solid {
+          translation 0 -0.0935 0
+          children [
+            Shape {
+              appearance PBRAppearance {
+                baseColor 0.1 0.1 0.1
+                roughness 0.9
+              }
+              geometry Cylinder {
+                radius 0.0462
+                height 0.022
+              }
+            }
+          ]
+          name "right_wheel"
+          boundingObject Cylinder {
+            radius 0.0462
+            height 0.022
+          }
+          physics Physics {
+          }
+        }
+      }
+      Solid {
+        translation -0.066 0 -0.013
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0.3 0.3 0.3
+              roughness 0.9
+            }
+            geometry Sphere {
+              radius 0.0176
+            }
+          }
+        ]
+        name "caster"
+        boundingObject Sphere {
+          radius 0.0176
+        }
+        physics Physics {
+        }
+      }
+    ]
+    boundingObject Box {
+      size 0.176 0.132 0.03
+    }
+    physics Physics {
+      density -1
+      mass 0.08
+    }
+  }
+}

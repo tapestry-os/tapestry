@@ -1,32 +1,40 @@
 /*
  * main.c — formation.c unit tests (no hardware, no BLE radio)
  *
- * Covers the two pieces this session added on top of the existing,
- * hardware-validated spring field (demo_compute_drive, exercised only
- * lightly below as a regression check that the demo_force_to_twist
- * extraction didn't change its behavior):
- *
- *   - demo_track_target()  the new differential-drive go-to-point law
- *                          (arrival snap, trapezoidal approach, emergency
- *                          repulsion backstop, the exact-180-degree
- *                          reverse case)
- *   - the form-grid Choreo script (hold -> form(grid) -> hold), run
- *     end-to-end through REAL demo_odometry_t + demo_track_target +
- *     demo_odometry_update integration (not a teleporting perfect
- *     tracker) — this is the actual control loop main.c runs, so a script
- *     that "completes" here is completing against physically plausible
- *     motion, not just BSE's own achievement math in isolation.
+ * Covers:
+ *   - demo_track_target()   the differential-drive go-to-point law
+ *                           (arrival snap, trapezoidal approach, emergency
+ *                           repulsion backstop, the exact-180-degree
+ *                           reverse case)
+ *   - demo_arena_fence()    the outward-command veto near a WORLD_SIZE
+ *                           edge, exercised implicitly through the ring
+ *                           script test below (element 3's scenario) —
+ *                           see that test's comment for why this matters
+ *   - ring.choreo.toml      (hold -> form(circle,collective) -> hold),
+ *                           run end-to-end through REAL demo_odometry_t +
+ *                           demo_track_target + demo_odometry_update
+ *                           integration (not a teleporting perfect
+ *                           tracker) — the actual control loop main.c
+ *                           runs, so a script that "completes" here is
+ *                           completing against physically plausible
+ *                           motion, not just BSE's own achievement math.
  *
  * Build:  west build -p always -b native_sim tapestry/examples/cutebot-formation/tests
  *         (on a 64-bit-only host, e.g. the aarch64 Pi: -b native_sim/native/64)
  * Run:    ./build/zephyr/zephyr.exe
  *
  * NOT run this session (no ZEPHYR_BASE / west toolchain available) — the
- * new math in formation.c was instead verified with a standalone host
- * build (plain clang, no Zephyr) exercising the same scenarios as the
- * ztest cases below; see the session notes. This file is the intended
- * permanent, CI-buildable form of that verification and should be run
- * for real the first time native_sim is available.
+ * ztest cases below were instead verified with a standalone host build
+ * (plain gcc, no Zephyr: formation.c linked directly against the real
+ * scr.c/bse.c/choreo.c/world_model.c sources, with a ~15-line stub for
+ * <zephyr/logging/log.h> and <zephyr/display/mb_display.h>) exercising
+ * the exact same scenarios. Run this suite for real the first time
+ * native_sim is available, before trusting it as a regression gate.
+ *
+ * choreo_script.h now compiles from ring.choreo.toml, not form-grid — the
+ * ring-script test below replaces the old form-grid one, which asserted
+ * fixed-grid-corner positions that no longer apply (ring's FORM target is
+ * frame=collective: a live centroid, not an absolute point).
  */
 
 #include <zephyr/ztest.h>
@@ -240,12 +248,28 @@ ZTEST_SUITE(formation_field, NULL, NULL, NULL, NULL, NULL);
 #include <tapestry/choreo.h>
 #include "choreo_script.h"
 
-/* One tick from ONE element's perspective (choreo.c/bse.c are per-element
- * singletons — this mirrors cf21bl-formation/tests's own pattern): real
- * scr_tick() derives task_slot/swarm_size from wm, real choreo_tick()
- * decomposes the FORM goal into this element's own target vertex, and the
- * result is driven by the REAL demo_track_target + demo_odometry_update
- * loop main.c runs — not a teleporting perfect tracker. */
+/* choreo.c/bse.c/scr.c hold per-element state as module-level singletons
+ * (one physical element per process, on real hardware) — a process can't
+ * hold 4 elements' internal state concurrently without exposing and
+ * saving/restoring those statics, which none of the three headers offer.
+ * True 4-way concurrent simulation (all elements ticking the SAME shared
+ * instant, jointly converging) is therefore not practical here.
+ *
+ * What IS practical, and what this suite does: simulate each element's
+ * FULL script run in ISOLATION, against the other 3 elements' STARTING
+ * positions held STATIC for that whole run (same technique this file's
+ * other demo_track_target tests already use via wm_set_peer — a fixed
+ * peer, never moved). This exercises the real production path
+ * (scr_tick/choreo_tick/demo_track_target/demo_odometry_update, not a
+ * teleporting perfect tracker) and is exactly what ring.choreo.toml's
+ * frame=collective needs to be meaningfully checkable: the centroid a
+ * static peer set produces is a fixed, predictable number, so "did this
+ * element converge to radius R from that centroid" is a well-defined
+ * assertion. (Running each element's pass against the OTHERS' CURRENT,
+ * possibly-already-converged positions — which is what letting all 4
+ * peers roam via their own separate passes would do — was tried first
+ * and produces centroid values that depend on pass ORDER, not on the
+ * script itself; not a meaningful thing to assert against.) */
 static float sim_tick(scr_state_t *scr, demo_odometry_t *odo, element_id_t id)
 {
     scr_tick(scr, &wm);
@@ -266,86 +290,101 @@ static float sim_tick(scr_state_t *scr, demo_odometry_t *odo, element_id_t id)
     return dist2d(odo->x, odo->y, dir->target.x, dir->target.y);
 }
 
-ZTEST(choreo_script, test_form_grid_script_end_to_end)
+/* Same 4 arbitrary distinct corner-ish starts the form-grid version of
+ * this test used (irrelevant to FORM which doesn't care where an element
+ * started, only wm's live peer set at activation) — kept unchanged so
+ * this remains a comparable regression scenario. */
+static const float seed_x[4] = { 5.0f, 90.0f, 10.0f, 80.0f };
+static const float seed_y[4] = { 5.0f, 10.0f, 85.0f, 80.0f };
+static const float seed_h[4] = { 0.3f, 2.1f, -1.0f, 1.7f };
+
+ZTEST(choreo_script, test_ring_script_end_to_end)
 {
-    /* 4 elements at their form-grid.choreo.toml boot-time-analog stations
-     * (arbitrary distinct starting points — FORM doesn't care where they
-     * started, only wm's live peer set at activation time). Each
-     * element's own perspective is simulated in turn: wm is rebuilt every
-     * tick from all 4 bodies' CURRENT positions before that element's
-     * own scr_tick/choreo_tick/demo_track_target/demo_odometry_update. */
-    demo_odometry_t odo[4];
-    demo_odometry_init(&odo[0],  5.0f,  5.0f);
-    demo_odometry_init(&odo[1], 90.0f, 10.0f);
-    demo_odometry_init(&odo[2], 10.0f, 85.0f);
-    demo_odometry_init(&odo[3], 80.0f, 80.0f);
-    odo[0].heading = 0.3f; odo[1].heading = 2.1f;
-    odo[2].heading = -1.0f; odo[3].heading = 1.7f;
-
-    scr_state_t scr[4];
-    for (int i = 0; i < 4; i++) {
-        choreo_init((element_id_t)i);   /* re-inits the singleton each pass below */
-        scr_init(&scr[i], (element_id_t)i, 1, 1, SCR_CAP_ACTUATOR | SCR_CAP_ABS_POSITION);
-    }
-
-    /* choreo.c/bse.c are singletons: run each element's FULL script to
-     * completion in its own pass (its wm view is rebuilt from the OTHER
-     * three elements' bodies as of the tick before this pass started —
-     * a reasonable approximation for this test's purpose, verifying each
-     * element's own script logic and controller against the shared grid
-     * geometry, not true 4-way concurrent simulation). */
-    bool completed[4] = {0};
+    /* Verified via the standalone host build (see top-of-file comment):
+     *   element 0: final (99.07, 58.55)  radius from centroid 29.31
+     *   element 1: final (32.05, 95.99)  radius from centroid 29.50
+     *   element 2: final (18.14, 33.53)  radius from centroid 30.18
+     *   element 3: final (35.00,  6.05)  radius from centroid 20.46 (fenced)
+     * Elements 0-2's ideal circle vertex (radius 30 from the centroid of
+     * self + the 3 static peers) lies inside [0, WORLD_SIZE] and they
+     * reach it within ~1 unit. Element 3's ideal vertex does NOT — the
+     * math wants y ~ -4, off the board — so demo_arena_fence() correctly
+     * vetoes the outward force once y is within DEMO_ARENA_FENCE_MARGIN
+     * of the edge, and it holds there instead of pinning at y=0 (which
+     * is what happened before that fence existed: see formation.c's
+     * demo_odometry_update() comment on why the raw position_clamp
+     * alone cannot stop a robot from being commanded past the true
+     * edge). This is therefore also the regression test for that fence.
+     */
     for (int who = 0; who < 4; who++) {
+        demo_odometry_t odo;
+        demo_odometry_init(&odo, seed_x[who], seed_y[who]);
+        odo.heading = seed_h[who];
+
+        scr_state_t scr;
         choreo_init((element_id_t)who);
+        scr_init(&scr, (element_id_t)who, 1, 1, SCR_CAP_ACTUATOR);
+        choreo_register_scr(&scr);
         zassert_equal(choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN), 0,
                       "submit failed for element %d", who);
 
         int ticks = 0;
         while (ticks < 2000 && !choreo_script_complete()) {
             wm_reset();
-            wm_set_self(who, (element_id_t)who, odo[who].x, odo[who].y);
+            wm_set_self(who, (element_id_t)who, odo.x, odo.y);
             for (int j = 0; j < 4; j++) {
                 if (j != who) {
-                    wm_set_peer(j, odo[j].x, odo[j].y, false);
+                    wm_set_peer(j, seed_x[j], seed_y[j], false);
                 }
             }
-            sim_tick(&scr[who], &odo[who], (element_id_t)who);
+            sim_tick(&scr, &odo, (element_id_t)who);
             ticks++;
         }
-        completed[who] = choreo_script_complete();
-        zassert_true(completed[who],
+        zassert_true(choreo_script_complete(),
                      "element %d script did not complete in %d ticks", who, ticks);
-    }
 
-    /* Each element must have settled near ONE of the 4 expected grid
-     * vertices (bse.c's TAPESTRY_BSE_SHAPE_GRID: target=(50,50),
-     * radius=50 is cell spacing -> corners at (50 +- 25, 50 +- 25)), and collectively
-     * every vertex must be covered exactly once — permutation-invariant,
-     * since task_slot ordering (ascending element_id when all are fresh)
-     * determines which element gets which corner, not this test. */
-    const float verts[4][2] = {
-        { 25.0f, 25.0f }, { 75.0f, 25.0f }, { 25.0f, 75.0f }, { 75.0f, 75.0f },
-    };
-    bool vertex_used[4] = {0};
-    for (int who = 0; who < 4; who++) {
-        int matched = -1;
-        for (int v = 0; v < 4; v++) {
-            /* 3.0 units, not a tight 1.0: the controller's own arrival
-             * snap (DEMO_TRACK_ARRIVE_EPS=2.0) and the script's
-             * achieve_eps (5.0, form-grid.choreo.toml) both allow
-             * settling short of the exact vertex — verified empirically
-             * (max observed error ~1.84 units) via a standalone host run
-             * of this exact scenario this session; see the session notes. */
-            if (!vertex_used[v] &&
-                dist2d(odo[who].x, odo[who].y, verts[v][0], verts[v][1]) < 3.0f) {
-                matched = v;
-                break;
-            }
+        /* Sanity floor every element must clear regardless of fencing:
+         * stay on the board at all. Trivially true given
+         * demo_odometry_update's own [0,WORLD_SIZE] clamp, but asserted
+         * explicitly since staying in the arena is the property this
+         * whole test exists to guard. */
+        zassert_true(odo.x >= 0.0f && odo.x <= WORLD_SIZE &&
+                     odo.y >= 0.0f && odo.y <= WORLD_SIZE,
+                     "element %d ended at (%.2f,%.2f), outside [0,%.0f]",
+                     who, (double)odo.x, (double)odo.y, (double)WORLD_SIZE);
+
+        float cx = odo.x, cy = odo.y;
+        for (int j = 0; j < 4; j++) {
+            if (j != who) { cx += seed_x[j]; cy += seed_y[j]; }
         }
-        zassert_true(matched >= 0,
-                     "element %d ended at (%.2f,%.2f), not on any unclaimed "
-                     "grid vertex", who, (double)odo[who].x, (double)odo[who].y);
-        vertex_used[matched] = true;
+        cx /= 4.0f;
+        cy /= 4.0f;
+        float radius = dist2d(odo.x, odo.y, cx, cy);
+
+        if (who == 3) {
+            /* The one element whose ideal vertex is off-board: verify
+             * the fence actually engaged (radius well short of 30, not
+             * a coincidence) and held it near the margin rather than
+             * pinned at the raw edge (y=0) or run away past it. */
+            zassert_true(radius < 25.0f,
+                         "element 3 reached radius %.2f — expected the "
+                         "arena fence to hold it well short of 30",
+                         (double)radius);
+            zassert_true(odo.y > 1.0f,
+                         "element 3 ended at y=%.2f — fence should hold "
+                         "it near the %.1f-unit margin, not pinned at "
+                         "the raw edge", (double)odo.y,
+                         (double)DEMO_ARENA_FENCE_MARGIN);
+        } else {
+            /* 3.0 units, not a tight 1.0: the controller's own arrival
+             * snap (DEMO_TRACK_ARRIVE_EPS) and the script's achieve_eps
+             * (ring.choreo.toml) both allow settling short of the exact
+             * radius — verified empirically (max observed error ~0.7
+             * units for these 3) via the standalone host build. */
+            zassert_true(fabsf(radius - 30.0f) < 3.0f,
+                         "element %d reached radius %.2f from its own "
+                         "centroid, expected ~30", who, (double)radius);
+        }
     }
 }
 

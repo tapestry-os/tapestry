@@ -124,6 +124,32 @@ What a new element needs, in a new `controllers/<substrate>/`:
   the part worth copying directly.
 - A `.wbt` world instantiating that element's proto instead of `Crazyflie {}`.
 
+`controllers/cutebot/` (world: `worlds/ring_cutebot.wbt`, script:
+`examples/cutebot-formation`'s `ring.choreo.toml`) is a second, ground-element worked
+example of exactly this pattern — a differential-drive Cutebot instead of a flying
+`cf21bl`. Its body is `protos/CutebotRover.proto`, and the arena is
+`protos/ChessboardFloor.proto` (a template PROTO reproducing the real measured
+chessboard's proportions at this world's own scale) — both `EXTERNPROTO`s pointing at
+local files (no network needed for either; only the background protos, same
+GitHub-hosted ones `change_partners.wbt` already uses, need network on first run).
+Every PROTO in this world **must** stay an `EXTERNPROTO`: an earlier version declared
+`PROTO CutebotRover [...] {...}` inline, VRML97-style, directly in the `.wbt` — modern
+Webots rejects that with a fatal parse error on the bare `PROTO` token, silently
+dropping the rest of the file. Since the error goes to stderr and `open -a Webots`
+discards it, the only symptom was a black viewport with an empty Scene Tree and a
+perfectly clean-looking GUI console — see `protos/CutebotRover.proto`'s header comment
+for the fix and how to get stderr visible if this ever recurs on a new world. Its own
+`main.c` still takes `element_id` from
+`controllerArgs` rather than `transport_negotiate_id()`, same shortcut as `cf21bl` —
+see that file's header comment for why (auto-ID itself was already confirmed correct
+on real hardware via the `substrate_identify()` LED blink, so this harness exists to
+observe the gossip → `scr_tick` → `bse.c` task_slot/FORM-vertex path downstream of a
+known-good ID, not to re-verify negotiation). `controllers/cutebot/tracker.c` is a
+trim of `demo_track_target()` (turn-then-drive differential-drive tracking) from
+`cutebot-formation/src/formation.c`, not `common/tracker.c` — that file's
+`demo_choreo_track()` is a different, holonomic algorithm specific to `cf21bl`.
+Own `ci-check-cutebot/` mirrors `ci-check/` for compile-only CI coverage.
+
 ## Running a different Choreo
 
 To fly a different Choreo: write your own `<name>.choreo.toml` (goal/parameter reference:

@@ -8,15 +8,23 @@ choice DEMO_MODE
 	default DEMO_MODE_CHOREO
 
 config DEMO_MODE_CHOREO
-	bool "Choreo script (L5/L6/L7): hold, form a grid, hold"
+	bool "Choreo script (L5/L6/L7): hold, form a ring, hold"
 	help
 	  The robots execute a declarative L7 Choreo script through a real L5
-	  SCR and the L6 BSE: hold the boot-time station, arrange into a
-	  near-square grid (FORM, shape=grid — see ../form-grid.choreo.toml),
-	  then hold the finished grid.  The script is authored in
-	  form-grid.choreo.toml (this directory) and compiled to
-	  src/choreo_script.h by sdk/tools/choreoc.py — edit the TOML, re-run
-	  the tool, rebuild.
+	  SCR and the L6 BSE.  The currently compiled script is
+	  ../ring.choreo.toml: hold the boot-time station, then hold one long
+	  FORM (shape=circle, frame=collective) in which the ring re-divides
+	  itself live as robots leave and rejoin, then a closing hold.
+
+	  Two scripts live in this directory; src/choreo_script.h is generated
+	  from whichever one you compile, so switching shows means re-running
+	  the tool and rebuilding:
+
+	    ring.choreo.toml       equidistant ring, adapts to departures
+	    form-grid.choreo.toml  the earlier near-square grid
+
+	    python3 sdk/tools/choreoc.py \
+	        examples/cutebot-formation/ring.choreo.toml
 
 	  ONE BINARY for all robots — element IDs are negotiated at boot over
 	  BLE (transport_negotiate_id), same auto-ID protocol as the legacy
@@ -36,6 +44,73 @@ config DEMO_MODE_SHOWCASE
 	  no Choreo. This is the hardware-validated behavior every prior
 	  revision of this example shipped — kept as a fallback and as a
 	  smaller reference for the L1-L4 stack in isolation.
+
+config DEMO_MODE_STRAIGHT_LINE
+	bool "Straight-line drive test (single robot, no swarm/Choreo/SCR)"
+	help
+	  Isolated motion-primitive test — skips transport_init(), auto-ID,
+	  SCR, and Choreo entirely. There is no peer repulsion here, not
+	  because it's disabled but because it structurally cannot fire:
+	  demo_track_target()'s emergency backstop (DEMO_TRACK_MIN_SEP) only
+	  triggers against a fresh peer in the world model, and this mode
+	  never builds one (no gossip, no wm at all).
+
+	  main() does: substrate_init(), cutebot_line_init(), seed odometry
+	  at a fixed position/heading (DEMO_TEST_START_X/Y/HEADING,
+	  formation.h — default matches id=0's normal seed: one square east
+	  of board center, heading 0), then loop forever calling
+	  demo_drive_straight() (formation.c) — constant forward force
+	  through the SAME arena fence demo_track_target() uses — plus grid
+	  correction on detected crossings, logging position and sensor
+	  state every cycle.
+
+	  For validating ONE thing at a time before trusting the full
+	  swarm/Choreo stack: does the estimate track straight, does grid
+	  correction fire the expected number of times for a known number of
+	  gridlines, does the fence actually stop it near the true board
+	  edge. Flash exactly ONE robot, physically placed at the position/
+	  heading this config assumes.
+
+	  No heading correction from the line sensors: an axis-relative
+	  "one sensor changed alone = drifted" signal only means what it
+	  looks like when travel is parallel to a gridline. A later diagonal
+	  Choreo move crosses both row and column lines as a matter of
+	  course, where that same signal doesn't distinguish drift from
+	  correct diagonal progress — deliberately not generalized to that
+	  case; heading is uncorrected here, same as the swarm demo.
+
+config DEMO_MODE_CONVERGE_TEST
+	bool "Two-robot converge/swap test (real gossip, no SCR/Choreo)"
+	help
+	  The next motion primitive after DEMO_MODE_STRAIGHT_LINE: two
+	  robots swap positions via demo_track_target() — real transport +
+	  gossip for live peer-position awareness (the repulsion backstop
+	  below needs an ACTUAL peer position, not a hardcoded guess), but
+	  no SCR and no Choreo — a fixed target computed once at boot, not a
+	  FORM-derived one.
+
+	  Collision avoidance is exactly demo_track_target()'s existing
+	  emergency repulsion backstop (DEMO_TRACK_MIN_SEP, formation.h) —
+	  the same close-range-only mechanism the 2026-08-24 four-robot
+	  form-grid run already exercised, unmodified: zero effect beyond
+	  160 mm, repels only inside it. Nothing here adds long-range
+	  repulsion — attraction toward the fixed target is unopposed until
+	  the peer is genuinely close.
+
+	  Requires EXACTLY two robots powered together: transport_negotiate_
+	  id() needs a peer to resolve at all (same requirement the swarm
+	  demo already has), and "swap with whom" is only unambiguous for
+	  precisely two — a third or more grounds with an error rather than
+	  guessing. With two, compute_start_pos() (unchanged, main.c) already
+	  places them exactly opposite each other: (60,50) and (40,50), 253mm
+	  apart on the same line through center — no new placement scheme.
+
+	  Watch this run closely and be ready to pick a robot up: a perfectly
+	  head-on, perfectly symmetric approach is a real edge case for a
+	  velocity-based repulsion force (both sides pushing back exactly
+	  along the same line they're attracted along has no built-in lateral
+	  escape direction) — real-world asymmetry likely breaks the tie, but
+	  that is a hypothesis this test exists to check, not a guarantee.
 
 endchoice
 

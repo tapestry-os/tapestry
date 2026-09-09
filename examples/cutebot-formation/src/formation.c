@@ -45,6 +45,34 @@ static float clampf(float v, float lo, float hi)
     return v < lo ? lo : (v > hi ? hi : v);
 }
 
+/*
+ * demo_arena_fence — veto the OUTWARD component of a commanded force
+ * once the (dead-reckoning) position estimate is within
+ * DEMO_ARENA_FENCE_MARGIN of an edge. Component-wise, not radial: near a
+ * corner this can leave a force that still has an inward-diagonal
+ * component, which reads as "sliding along the wall" rather than a clean
+ * bounce — acceptable for a safety backstop, not a precision behavior.
+ *
+ * See DEMO_ARENA_FENCE_MARGIN's doc (formation.h) for what this can and
+ * cannot guarantee: it bounds commanded travel relative to THIS robot's
+ * own estimate, which is not the same as bounding it relative to the
+ * physical board if the estimate has already drifted. */
+static void demo_arena_fence(const demo_odometry_t *odo, float *fx, float *fy)
+{
+    if (odo->x < DEMO_ARENA_FENCE_MARGIN && *fx < 0.0f) {
+        *fx = 0.0f;
+    }
+    if (odo->x > WORLD_SIZE - DEMO_ARENA_FENCE_MARGIN && *fx > 0.0f) {
+        *fx = 0.0f;
+    }
+    if (odo->y < DEMO_ARENA_FENCE_MARGIN && *fy < 0.0f) {
+        *fy = 0.0f;
+    }
+    if (odo->y > WORLD_SIZE - DEMO_ARENA_FENCE_MARGIN && *fy > 0.0f) {
+        *fy = 0.0f;
+    }
+}
+
 /* ── Odometry ─────────────────────────────────────────────────────────────── */
 
 void demo_odometry_init(demo_odometry_t *odo, float x, float y)
@@ -72,11 +100,45 @@ void demo_odometry_update(demo_odometry_t *odo,
     odo->x += v_center * cosf(odo->heading) * dt;
     odo->y += v_center * sinf(odo->heading) * dt;
 
-    /* Clamp to world bounds */
+    /* Clamp the STORED ESTIMATE to world bounds — this keeps the number
+     * gossiped to peers sane, nothing more. It does NOT stop the robot:
+     * speed_cmd/rate_cmd are computed independently (demo_track_target /
+     * demo_compute_drive) from whatever force this tick's estimate and
+     * target produce, and this clamp cannot see or influence that. If
+     * the commanded force still points outward when the estimate pins
+     * here, the estimate stops advancing while the real robot keeps
+     * driving — see demo_arena_fence(), which is the actual command-
+     * level guard against that. */
     if (odo->x < 0.0f)      { odo->x = 0.0f; }
     if (odo->x > WORLD_SIZE) { odo->x = WORLD_SIZE; }
     if (odo->y < 0.0f)      { odo->y = 0.0f; }
     if (odo->y > WORLD_SIZE) { odo->y = WORLD_SIZE; }
+}
+
+/* ── Grid-based drift correction ──────────────────────────────────────────── */
+
+void demo_grid_correct(demo_odometry_t *odo, bool crossed)
+{
+    if (!crossed) {
+        return;
+    }
+
+    float ac = fabsf(cosf(odo->heading));
+    float as = fabsf(sinf(odo->heading));
+
+    if (ac < DEMO_GRID_AXIS_COS_MIN && as < DEMO_GRID_AXIS_COS_MIN) {
+        /* Too close to a 45-degree heading to know whether this was a
+         * row or column crossing — skip rather than guess wrong. */
+        return;
+    }
+
+    if (ac >= as) {
+        /* Moving mostly along x: the line just crossed runs along y
+         * (constant x) — correct x. */
+        odo->x = roundf(odo->x / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS;
+    } else {
+        odo->y = roundf(odo->y / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS;
+    }
 }
 
 /* ── Force → twist projection (shared by demo_compute_drive and
@@ -190,6 +252,8 @@ void demo_compute_drive(const world_model_t *wm,
         return;
     }
 
+    demo_arena_fence(odo, &fx, &fy);
+
     /* Hysteresis: require a larger force to start moving than to stop.
      * Prevents oscillation and gossip-cascade near equilibrium. */
     float force_mag = sqrtf(fx * fx + fy * fy);
@@ -211,6 +275,22 @@ void demo_compute_drive(const world_model_t *wm,
     LOG_DBG("fx=%.2f fy=%.2f spd=%.2f rate=%.2f peers=%d",
             (double)fx, (double)fy,
             (double)*speed_out, (double)*rate_out, peer_count);
+}
+
+/* ── Straight-line drive (isolated motion-primitive testing) ─────────────── */
+
+void demo_drive_straight(const demo_odometry_t *odo,
+                          float *speed_out, float *rate_out)
+{
+    float fx = DEMO_TRACK_MAX_FORCE * cosf(odo->heading);
+    float fy = DEMO_TRACK_MAX_FORCE * sinf(odo->heading);
+
+    /* Same fence demo_track_target() uses — the only thing in this
+     * function's whole path that can stop it besides running off the
+     * board unbounded. No peer repulsion here at all: this function
+     * never looks at wm, by design (see its header doc). */
+    demo_arena_fence(odo, &fx, &fy);
+    demo_force_to_twist(odo, fx, fy, 22.0f, 15.0f, speed_out, rate_out);
 }
 
 /* ── Choreo tracking (see formation.h) ───────────────────────────────────── */
@@ -245,6 +325,7 @@ void demo_track_target(const world_model_t *wm,
     /* Emergency repulsion backstop — see formation.h's doc. Repulsion
      * only (no attraction term): the target above already IS the
      * attraction. */
+    bool repelled = false;
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
         if (!e->is_active || e->is_self || e->is_stale) {
@@ -262,8 +343,23 @@ void demo_track_target(const world_model_t *wm,
         float force = (DEMO_TRACK_MIN_SEP - pdist) * DEMO_TRACK_EMERGENCY_K;
         fx -= force * (pdx / pdist);
         fy -= force * (pdy / pdist);
+        repelled = true;
     }
 
+    /* See DEMO_TRACK_REPEL_DEADBAND's doc (formation.h) — holds rather
+     * than letting demo_force_to_twist's stiction floor turn a near-
+     * cancelled residual into a full-speed lurch that flips sign again
+     * next tick. */
+    if (repelled) {
+        float net_mag = sqrtf(fx * fx + fy * fy);
+        if (net_mag < DEMO_TRACK_REPEL_DEADBAND) {
+            *speed_out = 0.0f;
+            *rate_out  = 0.0f;
+            return;
+        }
+    }
+
+    demo_arena_fence(odo, &fx, &fy);
     demo_force_to_twist(odo, fx, fy, 22.0f, 15.0f, speed_out, rate_out);
 
     LOG_DBG("choreo cmd=(%.2f,%.2f) dist=%.2f spd=%.2f rate=%.2f",

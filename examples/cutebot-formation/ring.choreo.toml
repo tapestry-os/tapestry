@@ -1,0 +1,82 @@
+# ring.choreo.toml — "Choreo 1": an equidistant ring that re-spaces itself
+# as robots leave and rejoin.  This is the ONLY file to edit to change the
+# show.  Regenerate the committed header afterwards:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/ring.choreo.toml \
+#       -o tapestry/examples/cutebot-formation/src/choreo_script.h
+#
+# Units are this app's abstract [0, WORLD_SIZE] world (WORLD_SIZE=100,
+# csm.h), NOT metres — parse_length_m() passes bare numbers through
+# unitless, so plain floats are correct here.  On the measured chessboard
+# 1 unit = 12.6625 mm and one square = 10 units exactly (formation.h's
+# "Arena scale"), so:
+#
+#     radius 30  =  380 mm  =  3 squares out from centre
+#     the checkered 8x8 spans units [10, 90]; the border ring is outside it
+#
+# Vertices therefore sit 10 units (127 mm) inside the checkered edge, with
+# the whole border ring beyond that as turn-around room.
+#
+# Script completion means quiescence; this platform maps it to holding the
+# finished position — there is no "land" for a ground rover (see main.c).
+
+choreo = "ring"
+
+# Settle at the boot-time station before moving — the same opening beat
+# form-grid.choreo.toml and cf21bl-formation's change-partners both use.
+[[steps]]
+hold = { duration = "5s", requires = ["locomotion"] }
+
+# The show itself.  ONE long FORM step, deliberately NOT advancing on
+# achievement.
+#
+# This is the whole point of the demo and the reason there is no
+# until = "achieved" here.  FORM recomputes each element's vertex every
+# cycle from the LIVE participant count — bse.c places element `rank` at
+# angle 2*pi*rank/count, where rank is the L5 task_slot and count the
+# fresh-peer count from scr_tick().  So powering a robot off shrinks
+# `count`, every survivor's angle widens on the next cycle, and the ring
+# re-divides itself; powering it back on tightens them again.  That
+# behaviour only exists WHILE this step is active.  Advancing to a HOLD on
+# first achievement would freeze each robot at its captured station and
+# the ring would stop reacting — the demo would work exactly once.
+#
+# frame="collective" (not "absolute"): the target is the live participant
+# centroid, so the ring rides wherever the group actually is.  Two
+# consequences worth knowing — shared dead-reckoning drift translates the
+# formation instead of deforming it, and the goal needs no abs_position
+# capability, which is honest here in a way form-grid.choreo.toml's
+# fixed (50,50) target is not (see its own comment admitting as much:
+# cutebot "absolute position" is dead reckoning from a seeded formula, not
+# a sensor).
+#
+# The centroid does drift toward whichever side still has robots when one
+# is removed, so the ring shifts slightly on each departure.  That is
+# correct behaviour for a coordinate-free frame, not a bug — the
+# collective has no shared origin to be "wrong" about.
+#
+# duration=90s, not the 240s this was first written with.  There is no
+# grid-based drift correction running yet (see formation.h's ARENA_FENCE
+# comment) — dead reckoning is unconstrained, and each robot computes its
+# OWN "live centroid" from its own drifting view of peer positions, so
+# the four robots' independently-drifting centroids diverge from each
+# other the longer this step runs, and the target each one chases never
+# settles.  90s bounds how far that can compound before you can observe
+# and stop it. Once grid correction exists, this can go back up.
+[[steps]]
+name = "ring"
+[steps.form]
+shape     = "circle"
+frame     = "collective"
+radius    = 30.0
+duration  = "90s"
+eps       = 4.0
+settle    = "2s"
+indicator = "active"
+telemetry_tag = "ring"
+requires  = ["locomotion"]
+
+# Quiescence beat before the script completes.
+[[steps]]
+hold = { duration = "15s", requires = ["locomotion"] }

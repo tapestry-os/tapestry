@@ -199,3 +199,8 @@ int substrate_sense(substrate_sensor_t type, float *out)
 void substrate_bond(void)    {}
 void substrate_release(void) {}
 void substrate_emit(void)    {}
+
+void substrate_identify(uint8_t ordinal)
+{
+    (void)ordinal;   /* no viewport to look at in this sim — no-op */
+}

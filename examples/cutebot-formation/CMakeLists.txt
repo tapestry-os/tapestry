@@ -44,6 +44,7 @@ if(CONFIG_I2C)
     target_sources(app PRIVATE
         ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot.c
         ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot.c
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot_line.c
     )
 else()
     target_sources(app PRIVATE ${TAPESTRY_OS_BOARDS}/substrate_null.c)
