@@ -87,7 +87,23 @@ BUILD_ASSERT(MFR_DATA_SIZE <= MFR_DATA_MAX_SIZE,
              "target hardware before raising MFR_DATA_MAX_SIZE, or shrink "
              "tapestry_gossip_frame_t / the auth tag.");
 
-#define RX_QUEUE_DEPTH  8
+/*
+ * 32, not 8 — CHANGED 2026-09-12. Real 4-robot hardware run showed
+ * repeated "BLE RX queue full — frame dropped" during auto-ID
+ * negotiation (transport.c's AUTO_ID_BEACON_MS=150ms retry rate across 4
+ * co-booting elements is a real burst of traffic against a queue this
+ * shallow), and separately, the ONLY consumer (gossip_drain(), called
+ * once per WM_CYCLE_MS=100ms from the main loop) can only ever pull 1
+ * item per rx() call — so any burst of legitimate extended-advertising
+ * scan reports arriving faster than one 100ms drain cycle can process
+ * silently and permanently loses frames (K_NO_WAIT, no retry). 32 is a
+ * cheap insurance policy on an nRF52833 (each slot is
+ * TAPESTRY_GOSSIP_WIRE_SIZE bytes, a few dozen bytes at most) — not a fix
+ * for whatever caused this session's separate, longer-lived "never sees
+ * all peers" symptom, which persisted well after these warnings stopped
+ * and needs its own diagnosis.
+ */
+#define RX_QUEUE_DEPTH  32
 
 /* Queue stores raw wire bytes (frame + optional auth tag) so gossip.c can
  * verify authentication before interpreting the frame content. */
@@ -152,7 +168,14 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
 
     if (f->id == ELEMENT_ID_INVALID) {
         uint32_t nonce = f->update_seq;
-        k_msgq_put(&ble_discovery_q, &nonce, K_NO_WAIT);
+        /* Previously silent on overflow — CHANGED 2026-09-12, same
+         * observability gap as ble_rx_q below had until this session:
+         * a dropped discovery nonce during auto-ID negotiation is
+         * exactly the kind of thing that could bias rank/id assignment
+         * without ever showing up in a log. */
+        if (k_msgq_put(&ble_discovery_q, &nonce, K_NO_WAIT) != 0) {
+            LOG_WRN("BLE discovery queue full — nonce dropped");
+        }
     } else {
         if (k_msgq_put(&ble_rx_q, ctx.wire, K_NO_WAIT) != 0) {
             LOG_WRN("BLE RX queue full — frame dropped");

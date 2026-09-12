@@ -42,16 +42,43 @@ static struct gpio_callback s_right_cb;
 static volatile uint16_t s_left_edges;
 static volatile uint16_t s_right_edges;
 
+/* Line-ENTRY (LOW-going) edge timestamps, same synchronization as above
+ * — see cutebot_line_sample_t's doc for why these exist (heading-error
+ * sensing from the left/right crossing-time delta). */
+static volatile bool     s_left_entered;
+static volatile bool     s_right_entered;
+static volatile uint32_t s_left_entry_ms;
+static volatile uint32_t s_right_entry_ms;
+
 static void line_isr(const struct device *port, struct gpio_callback *cb,
                       gpio_port_pins_t pins)
 {
     ARG_UNUSED(port);
-    if (cb == &s_left_cb) {
+    ARG_UNUSED(pins);
+
+    bool is_left = (cb == &s_left_cb);
+    const struct gpio_dt_spec *spec = is_left ? &s_left : &s_right;
+
+    if (is_left) {
         s_left_edges++;
     } else {
         s_right_edges++;
     }
-    ARG_UNUSED(pins);
+
+    /* gpio_pin_get_dt() is a plain register read on this GPIO backend —
+     * safe from ISR context, no blocking call. LOW (0) == line, per the
+     * overlay's documented sensor convention — this is the ENTRY edge,
+     * not the later rising/exit edge. */
+    if (gpio_pin_get_dt(spec) == 0) {
+        uint32_t now = k_uptime_get_32();
+        if (is_left) {
+            s_left_entry_ms = now;
+            s_left_entered  = true;
+        } else {
+            s_right_entry_ms = now;
+            s_right_entered  = true;
+        }
+    }
 }
 
 int cutebot_line_init(void)
@@ -111,6 +138,13 @@ void cutebot_line_poll(cutebot_line_sample_t *out)
     out->right_edges = s_right_edges;
     s_left_edges  = 0;
     s_right_edges = 0;
+
+    out->left_entered  = s_left_entered;
+    out->right_entered = s_right_entered;
+    out->left_entry_ms  = s_left_entry_ms;
+    out->right_entry_ms = s_right_entry_ms;
+    s_left_entered  = false;
+    s_right_entered = false;
     irq_unlock(key);
 }
 
@@ -127,6 +161,10 @@ void cutebot_line_poll(cutebot_line_sample_t *out)
     out->right = false;
     out->left_edges = 0;
     out->right_edges = 0;
+    out->left_entered = false;
+    out->right_entered = false;
+    out->left_entry_ms = 0;
+    out->right_entry_ms = 0;
 }
 
 #endif

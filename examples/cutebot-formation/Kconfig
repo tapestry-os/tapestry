@@ -112,7 +112,94 @@ config DEMO_MODE_CONVERGE_TEST
 	  escape direction) — real-world asymmetry likely breaks the tie, but
 	  that is a hypothesis this test exists to check, not a guarantee.
 
+config DEMO_MODE_WHEEL_CHARACTERIZE
+	bool "Per-wheel actuator characterization (single robot, no fence)"
+	help
+	  Diagnostic for "which robot's wheels are miscalibrated" — built
+	  after choreo-1's ring test failed on real hardware a second time
+	  (some robots curving instead of driving straight) despite a clean
+	  Webots simulation, to get real numbers on each wheel's actual
+	  response instead of guessing from the emergent failure.
+
+	  Bypasses formation.c's whole force model: no odometry, no grid
+	  correction, no arena fence. A scripted sequence of raw left/right
+	  wheel percentages runs once, each step held briefly then stopped
+	  with a pause before the next:
+
+	    1. Per-wheel stiction ramp — left wheel alone (right=0) at
+	       8/12/16/20/24/28/30/32/34%, then the same for right alone. Watch for
+	       the exact percentage at which THAT wheel visibly starts to
+	       turn — if the two wheels' thresholds differ, that alone can
+	       explain curving at any commanded speed near either threshold.
+	    2. Straight-line sweep — both wheels equal, at 22/35/50%. Judge
+	       by eye/ruler whether it actually goes straight at each speed,
+	       not just the one ~22% level DEMO_MODE_STRAIGHT_LINE is
+	       mathematically locked to (that mode's commanded turn is always
+	       exactly 0 by construction, so it already isolates real
+	       mechanical asymmetry from the estimator — but only at that one
+	       operating point).
+	    3. In-place rotation, both directions — does turning speed match
+	       between CW and CCW for the same equal-and-opposite command?
+
+	  NOT run through the arena fence: run this on a long clear stretch
+	  of floor, not the chessboard, especially for the straight-line
+	  sweep at the higher percentages. Flash and run ONE robot at a time
+	  — there is nothing here to identify which robot is which, and
+	  nothing to distinguish results across robots except which one is
+	  physically on the floor.
+
+config DEMO_MODE_LINE_SENSOR_BENCH
+	bool "Line sensor bring-up: log raw P11/P12/P13/P14 every 500 ms"
+	help
+	  Diagnostic for "are the line sensors even connected/responding at
+	  all" — built after a DEMO_MODE_STRAIGHT_LINE run that stayed
+	  entirely on the printed chessboard's checkered area but logged
+	  ZERO line-sensor edges the whole way, an unexplained hardware-level
+	  gap (cutebot_line_init() reported success — the GPIO/interrupt
+	  config itself is fine) uncovered while bench-verifying the new
+	  grid-based heading correction.
+
+	  No motors, no odometry, no interrupts — just cutebot_line_bench.c
+	  configuring FOUR edge-connector pins (P11, P12, P13, P14 — not just
+	  the P13/P14 pxt-cutebot's own source documents as the line sensors,
+	  per a report this physical unit may have all four wired) as plain
+	  inputs and logging their RAW levels (no "true means line" inversion
+	  — see cutebot_line_bench.h for why) once every 500 ms, forever:
+
+	    P11: 1  P12: 0  P13: 1  P14: 1
+
+	  Hold different materials/colors under the sensors and vary the
+	  angle/height while watching the log — this isolates the sensor
+	  response itself from any question of driving speed, crossing
+	  timing, or which pins are the "real" ones, so a real answer (does
+	  anything ever toggle, and which pins) doesn't depend on catching a
+	  brief transition while physically dragging a robot around.
+
 endchoice
+
+config DEMO_GRID_CORRECTION
+	bool "Enable grid-based position/heading drift correction"
+	default y
+	help
+	  Gates demo_grid_correct()/demo_grid_heading_correct() (formation.c)
+	  in every mode with real odometry (STRAIGHT_LINE, CONVERGE_TEST, the
+	  swarm/CHOREO loop) — both depend entirely on the ground-facing line
+	  sensors actually detecting a real dark/light transition on the
+	  physical board.
+
+	  Default y is the intended long-term behavior once the board
+	  reliably registers as IR-dark (see DEMO_LINE_SENSOR_SEPARATION_MM's
+	  doc, formation.h, for the 2026-09-10 bench finding that this
+	  printed chessboard's black ink does NOT read as dark to these IR
+	  sensors, and needs real IR-absorptive tape along the gridlines —
+	  not full squares, see that same doc — before either correction can
+	  fire at all). Until that tape is in place, both corrections are
+	  already silently no-ops (zero real crossings ever detected) — this
+	  flag exists to make that explicit and deliberate rather than
+	  incidental, e.g. for a run that wants pure dead-reckoning behavior
+	  guaranteed even if the board is later partially retaped. Override
+	  for a no-correction run:
+	    west build ... -- -DCONFIG_DEMO_GRID_CORRECTION=n
 
 config TAPESTRY_QUORUM_MIN
 	int "Minimum fresh peers for DEGRADED state"

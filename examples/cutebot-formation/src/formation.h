@@ -197,11 +197,29 @@
  * settling — the same problem demo_compute_drive's FORCE_STOP/FORCE_START
  * hysteresis solves for the spring field, expressed here as a distance
  * gate since attraction force is monotonic in distance (no sign to
- * hystrese around). Kept smaller than the .choreo.toml script's own
- * achieve_eps (4.0 units in ring.choreo.toml, 5.0 in form-grid) so the
- * controller settles before L6/L7 achievement is even evaluated, rather
- * than fighting it. */
-#define DEMO_TRACK_ARRIVE_EPS  DEMO_MM(25.0f)    /* 2.0 units */
+ * hystrese around).
+ *
+ * 2.0 units (~6.7% of ring.choreo.toml's 30-unit radius) — briefly
+ * relaxed to 6.0 (20%) on 2026-09-11 to chase a "settle, then correct a
+ * little" hunting symptom, then reverted here the same day once the REAL
+ * cause was found and fixed instead: bse.c recomputes each element's FORM
+ * vertex from live rank/count every tick regardless of tolerance, so a
+ * single dropped/delayed gossip frame nudges the target and no amount of
+ * dead-band hides that — see ring.choreo.toml's "settled" HOLD step
+ * (added the same day), which actually stops the live recompute instead.
+ * With that fixed, the tight original value is safe again and back to
+ * matching CONFIG_TAPESTRY_QUORUM comments-adjacent precision elsewhere.
+ * Tune by adjusting the literal below — expressed as a flat unit count,
+ * not a live percentage of whatever radius a given script happens to
+ * use, so changing it here affects every demo_track_target() caller
+ * uniformly.
+ *
+ * MUST stay smaller than the .choreo.toml script's own achieve_eps (see
+ * ring.choreo.toml, kept at 3.0 for exactly this reason) — otherwise the
+ * robot can stop (zero motion, this gate) farther from center than
+ * achieve_eps requires, with no residual force left to close the
+ * remaining gap, so the L6/L7 achievement predicate would never fire. */
+#define DEMO_TRACK_ARRIVE_EPS  DEMO_MM(25.0f)    /* 2.0 units (~6.7% of 30) */
 
 /* Emergency repulsion backstop, mirroring cf21bl-formation's
  * demo_choreo_track(): FORM's own vertex spacing is the primary
@@ -326,6 +344,147 @@ void demo_odometry_update(demo_odometry_t *odo,
 #endif
 
 void demo_grid_correct(demo_odometry_t *odo, bool crossed);
+
+/* ── Grid-based heading correction ────────────────────────────────────────── */
+/*
+ * BENCH FINDING (2026-09-10) — this printed chessboard's black ink does
+ * NOT read as dark to the ELECFREAKS IR line sensors, even though it
+ * looks black to a human eye. IR reflectance sensors see near-infrared
+ * reflectance, not visible color — verified via DEMO_MODE_LINE_SENSOR_
+ * BENCH (raw P13/P14 logging): plain white paper read 1/1, plain black
+ * paper read 0/0 (sensors and wiring both confirmed working correctly,
+ * left/right mapping confirmed correct), but the printed board's black
+ * AND white squares both read 1/1 — no distinction at all. Whatever
+ * process printed this board (not a carbon-based laser toner, evidently)
+ * produced ink that's IR-transparent to these sensors.
+ *
+ * Until the board is retaped/reprinted with real IR-dark material,
+ * demo_grid_correct()/demo_grid_heading_correct() are silently no-ops —
+ * zero real crossings ever reach them, not a bug in either function.
+ * See CONFIG_DEMO_GRID_CORRECTION (Kconfig) to make "no correction"
+ * explicit/deliberate rather than incidental for a run in this state.
+ *
+ * Fix: real IR-absorptive tape (matte black electrical tape, black
+ * cardstock — anything that tested as genuinely 0 in the bench mode)
+ * along the GRIDLINES ONLY, not filling entire checkerboard squares.
+ * Functionally either works — both functions only react to a bright/
+ * dark TRANSITION at a boundary, not to anything about what's inside a
+ * square — but full squares would cost roughly half the board's area in
+ * material for zero functional benefit over covering just the ~13 mm-
+ * wide boundary strips. A quick pre-check before committing to either:
+ * a single line drawn directly on the board with a black permanent
+ * marker (most are carbon-based, usually IR-dark) should read 0 in the
+ * bench mode if the theory is right.
+ *
+ * DEMO_LINE_SENSOR_SEPARATION — lateral distance between the two
+ * ground-facing line sensors (NOT DEMO_WHEEL_TRACK — the sensors are
+ * mounted at the front of the chassis, not at the wheel axle, and there
+ * is no reason to assume the two distances match; measured 15 mm apart
+ * on the physical Cutebot Mini, much narrower than the 85 mm wheel
+ * track). This directly scales every heading correction
+ * demo_grid_heading_correct() produces — a wrong value here over- or
+ * under-corrects proportionally, with no way to tell which from firmware
+ * behavior alone, so override if a different unit's sensors measure
+ * differently:
+ *   west build ... -- -DDEMO_LINE_SENSOR_SEPARATION_MM=<measured mm>
+ */
+#ifndef DEMO_LINE_SENSOR_SEPARATION_MM
+#define DEMO_LINE_SENSOR_SEPARATION_MM 15.0f
+#endif
+#define DEMO_LINE_SENSOR_SEPARATION DEMO_MM(DEMO_LINE_SENSOR_SEPARATION_MM)
+
+/* Reject a left/right entry-edge pair as "not really the same crossing"
+ * beyond this time delta. In practice the stateless design below only
+ * ever compares two timestamps captured within the SAME poll window
+ * (WM_CYCLE_MS, 100 ms) — see demo_grid_heading_correct()'s doc for why
+ * a delta from two separate crossings essentially cannot reach this
+ * bound; kept as an explicit sanity check rather than relying on that
+ * implicitly. */
+#define DEMO_HEADING_MAX_PAIR_MS 200u
+
+/* Reject a single correction event that implies more than this much
+ * heading error outright, rather than applying it — a real crossing at
+ * this fleet's speeds should never imply anywhere near 30 degrees; a
+ * value this large is far more likely a noisy/spurious edge pairing
+ * than a genuine reading. */
+#define DEMO_HEADING_MAX_CORRECTION_RAD 0.5236f   /* 30 degrees */
+
+/*
+ * demo_grid_heading_correct — infer and correct heading error from the
+ * TIME DELTA between the left and right line sensors crossing the same
+ * gridline.
+ *
+ * Unlike demo_grid_correct() (position only, "a line crossing carries no
+ * heading information" — true for a SINGLE sensor), two laterally
+ * separated sensors crossing the same line at different instants DOES
+ * carry heading information: if the robot crosses exactly perpendicular
+ * to the line, both sensors reach it at the same instant (delta 0); if
+ * the robot is rotated by some small angle from perpendicular, one
+ * sensor — whichever is now leading into the line — reaches it measurably
+ * sooner. That delta, combined with forward speed and the physical
+ * sensor separation, gives a real heading-error estimate:
+ *
+ *   heading_error_rad = -(forward_speed_units_per_s * delta_s) / DEMO_LINE_SENSOR_SEPARATION
+ *
+ * (derivation: in the robot's own frame the left/right sensors sit at
+ * lateral offset +-separation/2; rotating the robot by theta from the
+ * nominal axis-aligned heading shifts each sensor's world-frame crossing
+ * time by +-(separation/2)*theta/v in opposite directions, so the
+ * measured delta t_right - t_left = -separation*theta/v, i.e. theta =
+ * -v*delta/separation — SIGN NOT YET VERIFIED ON HARDWARE: confirm on
+ * the bench by dragging a robot across a line at a small deliberate
+ * angle and checking the corrected heading moves the right way before
+ * trusting this in a real run; flip the sign here if it doesn't).
+ *
+ * Sensor-agnostic like demo_grid_correct() — takes plain bool/timestamp
+ * pairs, not a cutebot_line_sample_t, so formation.c stays
+ * hardware-independent and host-testable.
+ *
+ *   speed_norm              — the SAME normalized [-1,1] speed just
+ *                              passed to substrate_move() this cycle
+ *                              (needed to convert delta_s into an angle
+ *                              via DEMO_MAX_SPEED — same conversion
+ *                              demo_odometry_update() already uses).
+ *   left/right_entered       — did THIS poll see a NEW line-entry edge on
+ *                              that sensor (cutebot_line_sample_t's
+ *                              left_entered/right_entered).
+ *   left/right_entry_ms      — that edge's k_uptime_get_32() timestamp
+ *                              (cutebot_line_sample_t's *_entry_ms).
+ *
+ * Deliberately stateless — no-ops unless BOTH sensors report a new entry
+ * edge in the SAME poll call. A crossing's total dwell time is roughly
+ * 21 ms (see cutebot_line.h) against a 100 ms poll period, so both
+ * sensors' edges land in the same poll window in the overwhelming
+ * majority of cases; the rare crossing that straddles a poll boundary
+ * simply loses heading correction for that one event rather than adding
+ * cross-call pairing state to catch it — same bias toward "skip a rare
+ * case rather than risk mispairing two different crossings" as
+ * demo_grid_correct()'s axis-ambiguity gate.
+ *
+ * Also skips (no-op) when: heading isn't clearly axis-aligned yet
+ * (DEMO_GRID_AXIS_COS_MIN, same gate demo_grid_correct() uses — a
+ * diagonal crossing's geometry isn't what this derivation assumes),
+ * speed is near zero (no meaningful distance/angle conversion without
+ * real forward motion), the pair's time delta exceeds
+ * DEMO_HEADING_MAX_PAIR_MS, or the implied correction exceeds
+ * DEMO_HEADING_MAX_CORRECTION_RAD.
+ *
+ * On a valid correction, REPLACES odo->heading with (nearest cardinal
+ * axis to the current estimate) + the measured error — a full re-anchor,
+ * not an incremental nudge, same "snap to nearest known-good reference"
+ * philosophy demo_grid_correct() already uses for position, and more
+ * robust than nudging a possibly-already-wrong running estimate.
+ *
+ * Returns the applied heading_err in radians (the same value folded into
+ * odo->heading), or exactly 0.0f if no correction fired this call (either
+ * of the no-op cases above). Callers that want a visible sign indicator
+ * for bench verification (LEDs, since a nonzero return this rare an event
+ * is easy to react to) can check the SIGN of this return value directly
+ * — see main.c's DEMO_MODE_STRAIGHT_LINE branch for exactly that use.
+ */
+float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
+                                 bool left_entered, uint32_t left_entry_ms,
+                                 bool right_entered, uint32_t right_entry_ms);
 
 /* ── Formation control ──────────────────────────────────────────────────── */
 

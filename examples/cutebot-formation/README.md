@@ -283,18 +283,33 @@ time `native_sim` is available, before trusting it as a regression gate.
 ## Known limitations
 
 Dead-reckoning drifts. World-model positions are computed entirely from motor
-commands, not physical sensing. Picking up a robot and repositioning it
-physically has no effect on its self-reported position until it moves under
-motor power again. The planned fix is grid-based correction using the printed
-chessboard as a periodic reference — snapping the estimate to the nearest
-gridline on a detected crossing — which requires an IR ground-sensor driver
-that does not exist in this repo yet (`cutebot.c` is motors/LEDs over I2C
-only). Until that lands, `demo_arena_fence()` (`formation.c`) only bounds how
-far a robot can be commanded to travel relative to its OWN drifting estimate
-— it cannot stop the estimate itself from disagreeing with the physical
-board over a long run. Expect real drift on any run longer than a couple of
-minutes; `ring.choreo.toml`'s FORM step is deliberately kept short (90s) for
-this reason.
+commands, not physical sensing, unless corrected — which now happens two
+ways, both driven by the ground-facing IR line sensors (`cutebot_line.c`,
+edge-connector GPIO, not the I2C motor/LED bus): `demo_grid_correct()`
+snaps the position estimate to the nearest chessboard gridline on a
+detected crossing, and `demo_grid_heading_correct()` (added after this
+session's second real-hardware ring run reproduced curving/asymmetric
+turning) infers a heading-error correction from the TIME DELTA between the
+left and right sensors crossing the same line — a crossing at an angle
+reaches one sensor measurably before the other, unlike a single sensor's
+edge count, which carries no heading information at all. Both require the
+robot to actually be traveling roughly axis-aligned to fire (see
+`DEMO_GRID_AXIS_COS_MIN`), and heading correction's magnitude scales
+directly with `DEMO_LINE_SENSOR_SEPARATION_MM` (measured 15 mm on the
+physical Cutebot Mini — see `formation.h`) — **the correction's SIGN is
+still unverified on the bench**, so treat corrected headings as
+unverified until that's been checked (drag/rotate a robot a known
+direction across a line and confirm the logged correction goes the same
+way — see `formation.h`'s doc for the exact prediction). Neither corrects
+for a robot picked up and
+repositioned by hand while stationary — that only resolves once it
+crosses a line under its own power again. `demo_arena_fence()`
+(`formation.c`) is a separate, complementary backstop: it only bounds how
+far a robot can be COMMANDED to travel relative to its own estimate, it
+does not correct the estimate itself. Expect some residual drift on any
+run longer than a couple of minutes even with both corrections active;
+`ring.choreo.toml`'s FORM step is deliberately kept short (90s) for this
+reason.
 
 **FORM's `abs_position` capability claim is weaker than its usual meaning.**
 `SCR_CAP_ABS_POSITION` (declared in `main.c`'s `scr_init()` call, and

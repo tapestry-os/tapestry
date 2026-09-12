@@ -1,6 +1,7 @@
-# ring.choreo.toml — "Choreo 1": an equidistant ring that re-spaces itself
-# as robots leave and rejoin.  This is the ONLY file to edit to change the
-# show.  Regenerate the committed header afterwards:
+# ring.choreo.toml — "Choreo 1": forms an equidistant ring, holds once
+# settled, and only re-forms on a genuine (debounced) membership change —
+# not on ordinary gossip jitter.  This is the ONLY file to edit to change
+# the show.  Regenerate the committed header afterwards:
 #
 #   python3 tapestry/sdk/tools/choreoc.py \
 #       tapestry/examples/cutebot-formation/ring.choreo.toml \
@@ -21,62 +22,108 @@
 # Script completion means quiescence; this platform maps it to holding the
 # finished position — there is no "land" for a ground rover (see main.c).
 
-choreo = "ring"
+choreo      = "ring"
+# Required for a script whose step graph loops back on itself (ring <->
+# settled below) — see sdk/CHOREO_SCRIPTS.md's "Cycles need max_runtime".
+# 10 min is a generous demo-session cap, not a tuned value — this is a
+# safety bound on the whole script, not how long any one hold actually
+# lasts (that's each step's own duration/on-transition, see below).
+max_runtime = "10min"
 
 # Settle at the boot-time station before moving — the same opening beat
 # form-grid.choreo.toml and cf21bl-formation's change-partners both use.
 [[steps]]
 hold = { duration = "5s", requires = ["locomotion"] }
 
-# The show itself.  ONE long FORM step, deliberately NOT advancing on
-# achievement.
+# The show itself: form the ring, then HOLD once achieved — CHANGED
+# 2026-09-11 from one long FORM step that never advanced on achievement.
 #
-# This is the whole point of the demo and the reason there is no
-# until = "achieved" here.  FORM recomputes each element's vertex every
-# cycle from the LIVE participant count — bse.c places element `rank` at
-# angle 2*pi*rank/count, where rank is the L5 task_slot and count the
-# fresh-peer count from scr_tick().  So powering a robot off shrinks
-# `count`, every survivor's angle widens on the next cycle, and the ring
-# re-divides itself; powering it back on tightens them again.  That
-# behaviour only exists WHILE this step is active.  Advancing to a HOLD on
-# first achievement would freeze each robot at its captured station and
-# the ring would stop reacting — the demo would work exactly once.
+# WHY THE OLD DESIGN CHANGED: bse.c recomputes each element's vertex
+# EVERY CYCLE from the live participant count (task_slot/swarm_size from
+# L5 scr_tick() — see the FORM case in bse.c) regardless of frame — a
+# single dropped/delayed real BLE gossip frame makes a peer read as
+# briefly stale, count shifts for that one tick, the vertex angle shifts
+# with it, and demo_track_target() computes a small corrective nudge even
+# though the robot had already settled. Real hardware showed this as
+# "settle for ~3s, then keep adjusting a little" — ordinary BLE jitter,
+# not a radio fault, being treated by the old always-live-recompute
+# design as if it were a real departure. Webots never showed it: that
+# transport never drops a frame and position is real GPS, not dead
+# reckoning, so count essentially never flickers there.
 #
-# frame="collective" (not "absolute"): the target is the live participant
-# centroid, so the ring rides wherever the group actually is.  Two
-# consequences worth knowing — shared dead-reckoning drift translates the
-# formation instead of deforming it, and the goal needs no abs_position
-# capability, which is honest here in a way form-grid.choreo.toml's
-# fixed (50,50) target is not (see its own comment admitting as much:
-# cutebot "absolute position" is dead reckoning from a seeded formula, not
-# a sensor).
+# NEW DESIGN: FORM transitions to a named HOLD ("settled") on achieving
+# (`on = [{event="achieved", ...}]`), which per bse.c's own HOLD
+# semantics captures and freezes the JUST-achieved position — no more
+# live rank/count recomputation, so ordinary jitter can no longer nudge
+# it. "settled" transitions back to "ring" only on element_joined/
+# element_lost — DEBOUNCED events (2 s stable fresh-peer-count change per
+# sdk/CHOREO_SCRIPTS.md's event vocabulary — the same "one lucky/unlucky
+# gossip frame must not fire this fleet-wide" lesson anchor-selector
+# debouncing already uses elsewhere), so a single dropped frame cannot
+# trigger a re-form, only a real, sustained membership change can. This
+# is what actually delivers "re-spaces itself as robots leave and
+# rejoin" now — the old design's every-tick recompute technically also
+# reacted to real departures, but couldn't distinguish them from noise.
 #
-# The centroid does drift toward whichever side still has robots when one
-# is removed, so the ring shifts slightly on each departure.  That is
-# correct behaviour for a coordinate-free frame, not a bug — the
-# collective has no shared origin to be "wrong" about.
-#
-# duration=90s, not the 240s this was first written with.  There is no
-# grid-based drift correction running yet (see formation.h's ARENA_FENCE
-# comment) — dead reckoning is unconstrained, and each robot computes its
-# OWN "live centroid" from its own drifting view of peer positions, so
-# the four robots' independently-drifting centroids diverge from each
-# other the longer this step runs, and the target each one chases never
-# settles.  90s bounds how far that can compound before you can observe
-# and stop it. Once grid correction exists, this can go back up.
+# frame="absolute", target=[50,50,0] — CHANGED 2026-09-11 from
+# frame="collective" for an unrelated reason (see git history/session
+# notes): collective recomputes the target as the LIVE participant
+# centroid every tick, so a robot that started moving before the others
+# finished sync-hold dragged the whole group's target center along with
+# its own motion, tainting the entire formation. absolute anchors to a
+# value set once at configure time and never recomputed. 50,50 is not
+# "wherever the group happens to start" dynamically computed — it is the
+# fixed world-arena center that compute_start_pos() (main.c) already
+# places all four robots symmetrically around by construction, so for
+# THIS demo's placement scheme the two concepts coincide; it would NOT
+# track a different/asymmetric physical placement the way collective
+# would have. Cost: absolute requires claiming SCR_CAP_ABS_POSITION
+# (added to requires below) — cutebot's "absolute position" is honestly
+# just dead reckoning from compute_start_pos()'s seeded formula, not a
+# real position sensor, same admitted caveat form-grid.choreo.toml
+# already carries.
 [[steps]]
 name = "ring"
 [steps.form]
 shape     = "circle"
-frame     = "collective"
+frame     = "absolute"
+target    = [50.0, 50.0, 0.0]
 radius    = 30.0
+# Safety fallback if achievement is never reached (falls through to the
+# next step in sequence, same as any other step's duration fallback) —
+# not the primary exit anymore now that `on` below handles the normal
+# case. Was 90s when this had to bound unconstrained dead-reckoning
+# divergence across 4 independently-drifting live centroids (see prior
+# session notes) — that specific risk no longer applies with the target
+# now fixed, but kept at 90s rather than raised speculatively.
 duration  = "90s"
-eps       = 4.0
+# Tightened to 3.0 (10% of radius) 2026-09-11, after the REAL cause of
+# the earlier "settle, then correct a little" hunting was found and fixed
+# (see the "settled" HOLD step below and its comment) — that fix, not a
+# loose tolerance, is what actually stops the live jitter, so this can go
+# back to a tight value. Must stay above formation.h's
+# DEMO_TRACK_ARRIVE_EPS (2.0) or the robot can stop farther out than this
+# requires, with no force left to close the gap, and achievement never
+# fires.
+eps       = 3.0
 settle    = "2s"
 indicator = "active"
 telemetry_tag = "ring"
-requires  = ["locomotion"]
+requires  = ["locomotion", "abs_position"]
+on        = [ { event = "achieved", goto = "settled" } ]
 
-# Quiescence beat before the script completes.
+# Holds the position captured at the moment FORM achieved (bse.c's HOLD
+# semantics: inherits the prior achieved goal point, not live position —
+# see that fix's own commit) until a real, debounced membership change
+# says otherwise. duration is a safety fallback only (falls through to
+# script completion if truly nothing ever changes) — max_runtime above is
+# the real bound on how long this can cycle.
 [[steps]]
-hold = { duration = "15s", requires = ["locomotion"] }
+name = "settled"
+[steps.hold]
+duration = "300s"
+requires = ["locomotion"]
+on = [
+  { event = "element_lost",   goto = "ring" },
+  { event = "element_joined", goto = "ring" },
+]

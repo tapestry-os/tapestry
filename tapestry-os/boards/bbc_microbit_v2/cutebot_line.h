@@ -43,12 +43,44 @@
  *                         the line; 0 means "no transition this cycle,"
  *                         not "no line under the sensor" (see `left`/
  *                         `right` for the latter).
+ *   left_entered/right_entered, left_entry_ms/right_entry_ms — did this
+ *                         sensor see a NEW
+ *                         line-ENTRY edge (the LOW-going transition —
+ *                         "just started seeing dark," not the later
+ *                         rising/exit edge) since the previous poll, and
+ *                         if so, the k_uptime_get_32() timestamp captured
+ *                         live in the ISR at that exact edge (millisecond
+ *                         resolution, NOT quantized to WM_CYCLE_MS/poll
+ *                         cadence the way `left`/`right`/edge COUNTS
+ *                         are). This is what lets a caller measure the
+ *                         time delta between the left and right sensor
+ *                         crossing the SAME physical gridline — see
+ *                         demo_grid_heading_correct() (formation.c),
+ *                         the reason this pair of fields exists: a
+ *                         nonzero delta between the two sensors'
+ *                         entry-edge timestamps for what was geometrically
+ *                         the same crossing means the robot crossed the
+ *                         line at an angle instead of perpendicular to
+ *                         it — a real, sensor-derived heading-error
+ *                         signal that a bare "line/no-line" reading
+ *                         cannot provide (a single sensor's edge count
+ *                         alone is otherwise silent on the crossing
+ *                         angle entirely). If more than one entry edge
+ *                         happens to fall within one poll window (only
+ *                         plausible near the stiction floor / very slow
+ *                         travel), only the most recent is reported —
+ *                         same "coalesce since last poll" approximation
+ *                         `left_edges`/`right_edges` already make.
  */
 typedef struct {
     bool     left;
     bool     right;
     uint16_t left_edges;
     uint16_t right_edges;
+    bool     left_entered;
+    bool     right_entered;
+    uint32_t left_entry_ms;
+    uint32_t right_entry_ms;
 } cutebot_line_sample_t;
 
 /*

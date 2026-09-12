@@ -37,6 +37,19 @@
  *     fixed swap target, exercising its existing close-range-only
  *     repulsion backstop in isolation. See Kconfig's help text.
  *
+ *   DEMO_MODE_WHEEL_CHARACTERIZE — single-robot per-wheel actuator test,
+ *     bypassing formation.c entirely: a scripted sequence of raw
+ *     left/right wheel percentages (per-wheel stiction ramp, a
+ *     straight-line speed sweep, in-place CW/CCW rotation), judged by
+ *     physically observing the robot, not by anything it self-reports.
+ *     See Kconfig's help text.
+ *
+ *   DEMO_MODE_LINE_SENSOR_BENCH — no motors, no odometry: just logs
+ *     P11/P12/P13/P14's raw GPIO levels every 500 ms so the line
+ *     sensors' actual hardware response can be checked directly against
+ *     different materials/angles, decoupled from any driving dynamics.
+ *     See Kconfig's help text.
+ *
  * DEMO_MODE_CHOREO ran end-to-end on four physical robots on 2026-08-24
  * (hold -> form(grid) -> hold, BLE gossip, real L5 quorum); approach speed
  * is untuned.  The tests/ suite covers the same path host-side.  The
@@ -71,6 +84,9 @@
  * condition CMakeLists.txt uses to compile cutebot_line.c at all).
  * Drives demo_grid_correct() (formation.h) below. */
 #include "cutebot_line.h"
+/* Raw 4-pin sensor bring-up diagnostic — DEMO_MODE_LINE_SENSOR_BENCH
+ * only, see cutebot_line_bench.h. */
+#include "cutebot_line_bench.h"
 #endif
 
 #include "formation.h"
@@ -84,10 +100,49 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
  * DEMO_MODE_CONVERGE_TEST: wait until fresh peers actually show up in
  * the world model (a real gossip frame received and not yet stale)
  * before starting to move — successful auto-ID negotiation alone does
- * NOT mean that has happened yet. Caps at this so a genuinely missing
- * robot doesn't stall the demo forever.
+ * NOT mean that has happened yet.
+ *
+ * UNBOUNDED — CHANGED 2026-09-11 from a 4s-then-give-up cap. The cap was
+ * exactly the mechanism behind "bots starting at different times taint
+ * the whole formation": a robot that happened to see fresh peers within
+ * 4s proceeded into the real choreo loop (HOLD, then FORM — i.e. started
+ * actually moving) while a robot powered on even slightly later was
+ * still negotiating/gossiping, so the early robot's FORM target ended up
+ * computed against a partial/stale view of the group. Removing the cap
+ * makes this a true barrier: NO robot enters the main loop (motors are
+ * never commanded before it) until every expected peer is confirmed
+ * fresh, so a late power-on can no longer put an early one at an
+ * advantage — every robot starts choreo from the same fully-formed view
+ * of the group, regardless of how staggered the actual power-on was.
+ * There is deliberately no solo-allowed escape hatch here (matches the
+ * swarm branch's existing rationale below) — a genuinely missing robot
+ * should be an obvious, visible "still waiting" state (see
+ * DEMO_SYNC_LOG_INTERVAL_MS), not something that silently times out and
+ * proceeds shorthanded.
+ *
+ * DEBOUNCED — ADDED 2026-09-11: `fresh >= n_total - 1` must hold
+ * CONTINUOUSLY for DEMO_SYNC_SETTLE_MS before the barrier actually
+ * releases, not just be true for one lucky poll — same "one lucky/
+ * unlucky gossip frame must not fire this fleet-wide" lesson
+ * CHOREO_MEMBERSHIP_HOLD_MS already encodes for element_lost/joined,
+ * applied to the mirror-image case (a peer newly arriving). Any drop
+ * back below n_total-1 resets the debounce timer.
+ *
+ * VALUE IS TIGHTLY BOUNDED BY WM_STALE_THRESHOLD_MS (csm.h, 1500 ms) and
+ * GOSSIP_INTERVAL_MS (500 ms) — first attempt used 3000 ms (matching
+ * CHOREO_MEMBERSHIP_HOLD_MS) and real hardware never satisfied it at
+ * all: that's asking all 3 peer-links to each independently avoid a
+ * >1500ms gap TWICE in a row, simultaneously, with zero misses across
+ * any of them — a much harder bar than it looks on paper given real BLE
+ * reception. Symptom was every robot's LED flickering yellow/green
+ * (1/2 fresh) forever, never all four together — the barrier was
+ * correctly refusing to release, just against a bar nothing could clear.
+ * 800 ms is a little over half of one WM_STALE_THRESHOLD_MS renewal
+ * window — enough to rule out a single-instant fluke without demanding
+ * near-perfect multi-second reception across three links at once.
  */
-#define DEMO_SYNC_GRACE_MS 4000
+#define DEMO_SYNC_LOG_INTERVAL_MS 2000u
+#define DEMO_SYNC_SETTLE_MS       800u
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
 /* Quorum-recovery hold, fed to scr_set_quorum_hold_ms() below — requires
@@ -174,6 +229,25 @@ int main(void)
     uint32_t trace_right_edges = 0;
 #endif
 
+    /*
+     * Visual sign indicator for demo_grid_heading_correct()'s bench
+     * verification (see formation.h's doc / README's "Known
+     * limitations") — this mode has no cable long enough to watch the
+     * serial console while physically dragging a robot around the
+     * board, so a correction's SIGN needs to be readable from across the
+     * room instead: orange (SUBSTRATE_SIGNAL_DEGRADED) briefly on a
+     * POSITIVE correction, red (SUBSTRATE_SIGNAL_FAILED) briefly on a
+     * NEGATIVE one, overriding the normal green/blue fence-status signal
+     * for HEADING_FLASH_MS so it's not missed. DEGRADED/FAILED are
+     * otherwise unused in this mode (no quorum, no real failure state to
+     * confuse this with), unlike CONVERGE_TEST/the swarm mode where
+     * FAILED means an actual grounding error — this flash is
+     * STRAIGHT_LINE-only for exactly that reason.
+     */
+#define HEADING_FLASH_MS 1500u
+    uint32_t heading_flash_remaining_ms = 0;
+    bool     heading_flash_positive     = false;
+
     while (true) {
         float speed_cmd = 0.0f;
         float rate_cmd  = 0.0f;
@@ -184,7 +258,18 @@ int main(void)
 #ifdef CONFIG_I2C
         cutebot_line_sample_t line;
         cutebot_line_poll(&line);
+        float heading_err = 0.0f;
+#ifdef CONFIG_DEMO_GRID_CORRECTION
         demo_grid_correct(&odo, (line.left_edges > 0) || (line.right_edges > 0));
+        heading_err = demo_grid_heading_correct(
+            &odo, speed_cmd,
+            line.left_entered, line.left_entry_ms,
+            line.right_entered, line.right_entry_ms);
+#endif
+        if (heading_err != 0.0f) {
+            heading_flash_remaining_ms = HEADING_FLASH_MS;
+            heading_flash_positive     = (heading_err > 0.0f);
+        }
         trace_left_edges  += line.left_edges;
         trace_right_edges += line.right_edges;
 #endif
@@ -195,12 +280,23 @@ int main(void)
         };
         substrate_move(&twist);
 
-        /* Green while the fence still lets it drive; blue once the
-         * fence has vetoed the forward force and it's effectively
-         * parked (the visible "did it stop at the border" signal). */
-        substrate_set_signal(fabsf(speed_cmd) > 0.001f
-                                  ? SUBSTRATE_SIGNAL_ACTIVE
-                                  : SUBSTRATE_SIGNAL_IDLE);
+        if (heading_flash_remaining_ms > 0) {
+            /* Overrides the fence-status signal below for HEADING_FLASH_MS
+             * after a correction fires — see the comment above. */
+            substrate_set_signal(heading_flash_positive
+                                      ? SUBSTRATE_SIGNAL_DEGRADED   /* orange: + */
+                                      : SUBSTRATE_SIGNAL_FAILED);   /* red: -    */
+            heading_flash_remaining_ms = (heading_flash_remaining_ms > WM_CYCLE_MS)
+                                              ? heading_flash_remaining_ms - WM_CYCLE_MS
+                                              : 0;
+        } else {
+            /* Green while the fence still lets it drive; blue once the
+             * fence has vetoed the forward force and it's effectively
+             * parked (the visible "did it stop at the border" signal). */
+            substrate_set_signal(fabsf(speed_cmd) > 0.001f
+                                      ? SUBSTRATE_SIGNAL_ACTIVE
+                                      : SUBSTRATE_SIGNAL_IDLE);
+        }
 
         trace_accum += WM_CYCLE_MS;
         if (trace_accum >= 1000) {
@@ -307,7 +403,8 @@ int main(void)
 
     /*
      * Convergence hold — same purpose and same pattern as the swarm
-     * branch's DEMO_SYNC_GRACE_MS loop below, reused here because
+     * branch's barrier below (see DEMO_SYNC_LOG_INTERVAL_MS's doc,
+     * top of file, for why it's unbounded), reused here because
      * omitting it is exactly what turned two power-timing tests into
      * collisions: successful ID negotiation only means both robots
      * agreed on element_id/n_total once, at negotiation time — it does
@@ -319,7 +416,8 @@ int main(void)
      * starting distance and ~238 mm/s closing speed, that opening window
      * is not negligible — it can be most of the approach.
      */
-    for (uint32_t waited = 0; waited < DEMO_SYNC_GRACE_MS; waited += WM_CYCLE_MS) {
+    uint32_t peers_ready_ms = 0;
+    for (uint32_t waited_ms = 0; ; waited_ms += WM_CYCLE_MS) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
         substrate_set_signal(SUBSTRATE_SIGNAL_NONE);
@@ -332,7 +430,19 @@ int main(void)
             }
         }
         if (fresh >= n_total - 1) {
-            break;
+            peers_ready_ms += WM_CYCLE_MS;
+            if (peers_ready_ms >= DEMO_SYNC_SETTLE_MS) {
+                break;
+            }
+        } else {
+            peers_ready_ms = 0;
+        }
+
+        if (waited_ms % DEMO_SYNC_LOG_INTERVAL_MS == 0) {
+            LOG_INF("id=%u still waiting for peer: %d/%d fresh (%u ms, "
+                    "stable %u/%u ms)", (unsigned)element_id, fresh,
+                    n_total - 1, (unsigned)waited_ms,
+                    (unsigned)peers_ready_ms, (unsigned)DEMO_SYNC_SETTLE_MS);
         }
 
         gossip_accum += WM_CYCLE_MS;
@@ -365,7 +475,12 @@ int main(void)
 #ifdef CONFIG_I2C
         cutebot_line_sample_t line;
         cutebot_line_poll(&line);
+#ifdef CONFIG_DEMO_GRID_CORRECTION
         demo_grid_correct(&odo, (line.left_edges > 0) || (line.right_edges > 0));
+        demo_grid_heading_correct(&odo, speed_cmd,
+                                   line.left_entered, line.left_entry_ms,
+                                   line.right_entered, line.right_entry_ms);
+#endif
         trace_left_edges  += line.left_edges;
         trace_right_edges += line.right_edges;
 #endif
@@ -429,8 +544,136 @@ int main(void)
 
         k_msleep(WM_CYCLE_MS);
     }
-#else /* !CONFIG_DEMO_MODE_STRAIGHT_LINE / !CONFIG_DEMO_MODE_CONVERGE_TEST
-       * — the normal swarm demo */
+#elif defined(CONFIG_DEMO_MODE_WHEEL_CHARACTERIZE)
+    /*
+     * Per-wheel actuator characterization — see Kconfig's help text.
+     * Deliberately bypasses formation.c's whole force model (no odometry,
+     * no grid correction, no arena fence): the point is to observe the
+     * REAL physical response with your eyes/a ruler, uncontaminated by
+     * anything the firmware infers about its own position or heading —
+     * an odometry-based judgment of "did it go straight" would just fold
+     * the same wheel asymmetry this test exists to find into a
+     * self-consistent (wrong) heading estimate instead of surfacing it.
+     *
+     * raw_wheel_twist() below is the exact algebraic inverse of
+     * substrate_cutebot.c's to_pct() mapping (left_pct = (linear.x -
+     * angular.z)*100, right_pct = (linear.x + angular.z)*100), so the
+     * left_pct/right_pct requested here are what actually reaches
+     * cutebot_drive(), not an approximation of it.
+     *
+     * NOT run through the arena fence — this can drive a robot well past
+     * the chessboard's edge at the higher sweep percentages. Run this on
+     * a long clear stretch of floor, not necessarily the board, and stay
+     * ready to pick the robot up.
+     */
+    LOG_INF("WHEEL CHARACTERIZATION MODE — no fence, no odometry, raw "
+            "left/right percentages only. Clear floor, not the board.");
+
+    typedef struct {
+        const char *label;
+        float       left_pct;
+        float       right_pct;
+        uint32_t    hold_ms;
+    } wheel_test_step_t;
+
+    /* Phase 1: per-wheel stiction ramp, one wheel at a time (the OTHER
+     * wheel held at exactly 0) — watch for the exact step at which THAT
+     * wheel visibly starts to turn/creep. Low percentages, short holds:
+     * at this level any real motion is a pivot around the stationary
+     * wheel, not a long straight run, so this phase is safe indoors. */
+    static const wheel_test_step_t k_steps[] = {
+        { "L-stiction  8", 8,  0, 1200 }, { "L-stiction 12", 12,  0, 1200 },
+        { "L-stiction 16", 16, 0, 1200 }, { "L-stiction 20", 20,  0, 1200 },
+        { "L-stiction 24", 24, 0, 1200 }, { "L-stiction 28", 28,  0, 1200 },
+        { "L-stiction 30", 30, 0, 1200 }, { "L-stiction 32", 32,  0, 1200 },
+        { "L-stiction 34", 34, 0, 1200 },
+        { "R-stiction  8", 0,  8, 1200 }, { "R-stiction 12", 0, 12, 1200 },
+        { "R-stiction 16", 0, 16, 1200 }, { "R-stiction 20", 0, 20, 1200 },
+        { "R-stiction 24", 0, 24, 1200 }, { "R-stiction 28", 0, 28, 1200 },
+        { "R-stiction 30", 0, 30, 1200 }, { "R-stiction 32", 0, 32, 1200 },
+        { "R-stiction 34", 0, 34, 1200 },
+
+        /* Phase 2: straight-line sweep, both wheels equal, increasing
+         * speed. Short holds even at low %, since nothing here bounds
+         * travel distance — measure lateral drift + distance physically
+         * (a ruler on the floor, or the chessboard's own gridlines) after
+         * each step while the robot is stopped in the pause that follows. */
+        { "straight 22", 22, 22, 1000 },
+        { "straight 35", 35, 35, 1000 },
+        { "straight 50", 50, 50,  800 },
+
+        /* Phase 3: in-place rotation, both directions — a DIFFERENT
+         * asymmetry axis than straight-line drift: does turning speed
+         * match between CW and CCW for the same equal-and-opposite
+         * command? */
+        { "rotate CW ",  40, -40, 1000 },
+        { "rotate CCW",  -40, 40, 1000 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(k_steps); i++) {
+        const wheel_test_step_t *s = &k_steps[i];
+
+        LOG_INF("step %u/%u: %s  L=%.0f%% R=%.0f%%  hold=%u ms",
+                (unsigned)(i + 1), (unsigned)ARRAY_SIZE(k_steps), s->label,
+                (double)s->left_pct, (double)s->right_pct,
+                (unsigned)s->hold_ms);
+
+        substrate_twist_t twist = {
+            .linear  = { .x = (s->left_pct + s->right_pct) / 200.0f },
+            .angular = { .z = (s->right_pct - s->left_pct) / 200.0f },
+        };
+        substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+        substrate_move(&twist);
+        k_msleep(s->hold_ms);
+
+        substrate_twist_t stop = {0};
+        substrate_move(&stop);
+        substrate_set_signal(SUBSTRATE_SIGNAL_IDLE);
+
+        /* Pause between steps — time to note/measure the result and, for
+         * the straight-line sweep, reposition before the next step, WITHOUT
+         * the robot drifting on a nonzero residual command. */
+        k_msleep(2000);
+    }
+
+    LOG_INF("WHEEL CHARACTERIZATION COMPLETE — motors off, halting.");
+    substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);   /* red: done, not an error */
+    while (true) {
+        k_msleep(1000);
+    }
+#elif defined(CONFIG_DEMO_MODE_LINE_SENSOR_BENCH)
+    /*
+     * Raw 4-pin sensor bring-up — see Kconfig's help text. No motors, no
+     * odometry, no interrupts: just log what P11/P12/P13/P14 actually
+     * read, unfiltered, so materials/angles/heights can be tested by eye
+     * against a live log instead of inferring anything from driving
+     * behavior.
+     */
+    if (cutebot_line_bench_init() != 0) {
+        LOG_ERR("cutebot_line_bench_init failed — one or more of "
+                "P11/P12/P13/P14 not ready. Check bbc_microbit_v2.overlay "
+                "matches this board's actual wiring.");
+        substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);
+        while (true) {
+            k_msleep(1000);
+        }
+    }
+
+    LOG_INF("LINE SENSOR BENCH MODE — logging P11/P12/P13/P14 raw levels "
+            "every 500 ms. No inversion: 1/0 exactly as the pin reads.");
+
+    while (true) {
+        cutebot_line_bench_sample_t s;
+        cutebot_line_bench_read(&s);
+
+        LOG_INF("P11: %d  P12: %d  P13: %d  P14: %d",
+                s.p11, s.p12, s.p13, s.p14);
+
+        k_msleep(500);
+    }
+#else /* !CONFIG_DEMO_MODE_STRAIGHT_LINE / !CONFIG_DEMO_MODE_CONVERGE_TEST /
+       * !CONFIG_DEMO_MODE_WHEEL_CHARACTERIZE /
+       * !CONFIG_DEMO_MODE_LINE_SENSOR_BENCH — the normal swarm demo */
 
     if (transport_init() != 0) {
         LOG_WRN("transport init failed — no peer awareness");
@@ -538,15 +781,16 @@ int main(void)
 
     /*
      * Convergence hold: wait until all n_total-1 expected peers are visible
-     * and fresh in the world model before starting movement.  Prevents robots
-     * that finished the ID window early from driving into a partial formation
-     * while later robots are still exiting their own windows. See
-     * DEMO_SYNC_GRACE_MS's doc (top of file, shared with
-     * DEMO_MODE_CONVERGE_TEST) for the cap.  Runs identically in both
-     * Choreo/Showcase modes — Choreo isn't ticked yet, so there is
-     * nothing mode-specific here.
+     * and fresh in the world model before starting movement — a true
+     * barrier, unbounded (see DEMO_SYNC_LOG_INTERVAL_MS's doc, top of
+     * file, for why the old fixed cap here was exactly what let robots
+     * that finished early start moving while later ones were still
+     * negotiating/gossiping). Runs identically in both Choreo/Showcase
+     * modes — Choreo isn't ticked yet, so there is nothing mode-specific
+     * here.
      */
-    for (uint32_t waited = 0; waited < DEMO_SYNC_GRACE_MS; waited += WM_CYCLE_MS) {
+    uint32_t peers_ready_ms = 0;
+    for (uint32_t waited_ms = 0; ; waited_ms += WM_CYCLE_MS) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
         demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
@@ -559,7 +803,19 @@ int main(void)
             }
         }
         if (fresh >= n_total - 1) {
-            break;
+            peers_ready_ms += WM_CYCLE_MS;
+            if (peers_ready_ms >= DEMO_SYNC_SETTLE_MS) {
+                break;
+            }
+        } else {
+            peers_ready_ms = 0;
+        }
+
+        if (waited_ms % DEMO_SYNC_LOG_INTERVAL_MS == 0) {
+            LOG_INF("id=%u still waiting for peers: %d/%d fresh (%u ms, "
+                    "stable %u/%u ms)", (unsigned)element_id, fresh,
+                    n_total - 1, (unsigned)waited_ms,
+                    (unsigned)peers_ready_ms, (unsigned)DEMO_SYNC_SETTLE_MS);
         }
 
         gossip_accum += WM_CYCLE_MS;
@@ -588,7 +844,12 @@ int main(void)
          * WM_CYCLE_MS — it never misses a crossing between polls. */
         cutebot_line_sample_t line;
         cutebot_line_poll(&line);
+#ifdef CONFIG_DEMO_GRID_CORRECTION
         demo_grid_correct(&odo, (line.left_edges > 0) || (line.right_edges > 0));
+        demo_grid_heading_correct(&odo, speed_cmd,
+                                   line.left_entered, line.left_entry_ms,
+                                   line.right_entered, line.right_entry_ms);
+#endif
 
         /* Accumulated for the 1 Hz trace below — a single 100 ms poll
          * usually shows 0 edges even seconds after a real crossing

@@ -141,6 +141,82 @@ void demo_grid_correct(demo_odometry_t *odo, bool crossed)
     }
 }
 
+/* ── Grid-based heading correction (see formation.h's doc) ───────────────── */
+
+float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
+                                 bool left_entered, uint32_t left_entry_ms,
+                                 bool right_entered, uint32_t right_entry_ms)
+{
+    if (!left_entered || !right_entered) {
+        /* Need both sensors' edges from the SAME poll to form a pair —
+         * see the header doc for why this is deliberately stateless.
+         * Only log when at least ONE side fired (a real, if incomplete,
+         * event) — logging every tick neither sensor sees anything would
+         * be pure per-tick noise at LOG_INF, unlike the rare cases below. */
+        if (left_entered || right_entered) {
+            LOG_INF("heading correct: SKIP unpaired entry (L=%d R=%d)",
+                    (int)left_entered, (int)right_entered);
+        }
+        return 0.0f;
+    }
+
+    float ac = fabsf(cosf(odo->heading));
+    float as = fabsf(sinf(odo->heading));
+    if (ac < DEMO_GRID_AXIS_COS_MIN && as < DEMO_GRID_AXIS_COS_MIN) {
+        LOG_INF("heading correct: SKIP off-axis heading=%.1f deg",
+                (double)(odo->heading * (180.0f / M_PI_F)));
+        return 0.0f;   /* same diagonal-ambiguity gate as demo_grid_correct() */
+    }
+
+    int32_t dt_ms = (int32_t)(right_entry_ms - left_entry_ms);
+    if (dt_ms > (int32_t)DEMO_HEADING_MAX_PAIR_MS ||
+        dt_ms < -(int32_t)DEMO_HEADING_MAX_PAIR_MS) {
+        LOG_INF("heading correct: SKIP pair too far apart dt=%d ms (max %u)",
+                (int)dt_ms, (unsigned)DEMO_HEADING_MAX_PAIR_MS);
+        return 0.0f;   /* too far apart to plausibly be the same crossing */
+    }
+
+    float v = fabsf(speed_norm) * DEMO_MAX_SPEED;   /* logical units/s */
+    if (v < 0.01f) {
+        LOG_INF("heading correct: SKIP not moving (speed_norm=%.3f)",
+                (double)speed_norm);
+        return 0.0f;   /* not moving — no distance to convert the delta into */
+    }
+
+    float dt_s        = (float)dt_ms * 0.001f;
+    float heading_err = -(v * dt_s) / DEMO_LINE_SENSOR_SEPARATION;
+
+    if (fabsf(heading_err) > DEMO_HEADING_MAX_CORRECTION_RAD) {
+        LOG_INF("heading correct: SKIP implausible err=%.1f deg (dt=%d ms v=%.2f)",
+                (double)(heading_err * (180.0f / M_PI_F)), (int)dt_ms, (double)v);
+        return 0.0f;   /* implausible for a real crossing — likely a mispair */
+    }
+
+    /* Full re-anchor to (nearest cardinal axis) + measured error, not an
+     * incremental nudge to whatever odo->heading currently is — see the
+     * header doc for why. */
+    float nearest_axis = roundf(odo->heading / (M_PI_F * 0.5f)) * (M_PI_F * 0.5f);
+    odo->heading = nearest_axis + heading_err;
+
+    while (odo->heading >  M_PI_F) { odo->heading -= 2.0f * M_PI_F; }
+    while (odo->heading < -M_PI_F) { odo->heading += 2.0f * M_PI_F; }
+
+    /* LOG_INF, not LOG_DBG: this fires only on an actual paired crossing
+     * (sparse, not per-tick noise like formation.c's other LOG_DBG
+     * traces), and being visible at the default log level is the whole
+     * point on a bench test verifying this correction's sign — see
+     * formation.h's doc. Degrees, not radians, so a bench test doesn't
+     * need mental radian math to read the sign/magnitude. */
+    LOG_INF("heading correct: R-L dt=%d ms v=%.2f units/s err=%.1f deg "
+            "-> heading=%.1f deg (was axis %.1f deg)",
+            (int)dt_ms, (double)v,
+            (double)(heading_err * (180.0f / M_PI_F)),
+            (double)(odo->heading * (180.0f / M_PI_F)),
+            (double)(nearest_axis * (180.0f / M_PI_F)));
+
+    return heading_err;
+}
+
 /* ── Force → twist projection (shared by demo_compute_drive and
  * demo_track_target) ─────────────────────────────────────────────────────
  *

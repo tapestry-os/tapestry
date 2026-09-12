@@ -300,21 +300,31 @@ static const float seed_h[4] = { 0.3f, 2.1f, -1.0f, 1.7f };
 
 ZTEST(choreo_script, test_ring_script_end_to_end)
 {
-    /* Verified via the standalone host build (see top-of-file comment):
-     *   element 0: final (99.07, 58.55)  radius from centroid 29.31
-     *   element 1: final (32.05, 95.99)  radius from centroid 29.50
-     *   element 2: final (18.14, 33.53)  radius from centroid 30.18
-     *   element 3: final (35.00,  6.05)  radius from centroid 20.46 (fenced)
-     * Elements 0-2's ideal circle vertex (radius 30 from the centroid of
-     * self + the 3 static peers) lies inside [0, WORLD_SIZE] and they
-     * reach it within ~1 unit. Element 3's ideal vertex does NOT — the
-     * math wants y ~ -4, off the board — so demo_arena_fence() correctly
-     * vetoes the outward force once y is within DEMO_ARENA_FENCE_MARGIN
-     * of the edge, and it holds there instead of pinning at y=0 (which
-     * is what happened before that fence existed: see formation.c's
-     * demo_odometry_update() comment on why the raw position_clamp
-     * alone cannot stop a robot from being commanded past the true
-     * edge). This is therefore also the regression test for that fence.
+    /* ring.choreo.toml uses frame="absolute", target=[50,50,0] (changed
+     * 2026-09-11 from "collective" — see that file's comment for why).
+     * Verified via this same host build:
+     *   element 0: final (79.82, 49.89)  radius from (50,50) 29.82
+     *   element 1: final (50.82, 78.57)  radius from (50,50) 28.58
+     *   element 2: final (19.69, 51.47)  radius from (50,50) 30.34
+     *   element 3: final (50.11, 20.25)  radius from (50,50) 29.75
+     * DEMO_TRACK_ARRIVE_EPS (formation.h) and this script's own
+     * achieve_eps were briefly relaxed (2.0->6.0, 4.0->8.0) the same day
+     * to chase a "settle, then correct a little" hunting symptom, then
+     * both reverted to tight values (2.0, 3.0) once the REAL cause was
+     * fixed instead — the "settled" HOLD step below, which actually
+     * stops the live rank/count recompute that was causing it. These are
+     * the tight-tolerance numbers again, byte-for-byte what this test
+     * originally saw before any of that. Unlike the old
+     * collective-frame version of this test, no element needs the
+     * arena-fence special case anymore: a radius-30 circle centered at
+     * (50,50) stays inside [20,80] on both axes for every rank angle,
+     * comfortably inside [0,100], regardless of these seeds' own
+     * positions (seeds only affect wm's peer freshness/count here, never
+     * the target itself, now that it isn't derived from a live
+     * centroid). The arena fence itself (demo_arena_fence(),
+     * formation.c) is still exercised elsewhere — see
+     * DEMO_MODE_STRAIGHT_LINE's own hardware validation — this test just
+     * no longer happens to trigger it.
      */
     for (int who = 0; who < 4; who++) {
         demo_odometry_t odo;
@@ -323,13 +333,22 @@ ZTEST(choreo_script, test_ring_script_end_to_end)
 
         scr_state_t scr;
         choreo_init((element_id_t)who);
-        scr_init(&scr, (element_id_t)who, 1, 1, SCR_CAP_ACTUATOR);
+        scr_init(&scr, (element_id_t)who, 1, 1,
+                 SCR_CAP_ACTUATOR | SCR_CAP_ABS_POSITION);
         choreo_register_scr(&scr);
         zassert_equal(choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN), 0,
                       "submit failed for element %d", who);
 
+        /* Success is reaching the "settled" step (index 2 — see
+         * ring.choreo.toml: hold(0) -> form "ring"(1) -> hold "settled"(2)),
+         * not choreo_script_complete(): "settled" only completes the
+         * script after its own 300s duration fallback elapses (or a real
+         * element_lost/joined event, neither of which this single-mover
+         * test triggers), far past what's worth spending on a unit test —
+         * reaching the step at all already proves FORM achieved and
+         * transitioned correctly. */
         int ticks = 0;
-        while (ticks < 2000 && !choreo_script_complete()) {
+        while (ticks < 2000 && choreo_script_step() != 2) {
             wm_reset();
             wm_set_self(who, (element_id_t)who, odo.x, odo.y);
             for (int j = 0; j < 4; j++) {
@@ -340,8 +359,9 @@ ZTEST(choreo_script, test_ring_script_end_to_end)
             sim_tick(&scr, &odo, (element_id_t)who);
             ticks++;
         }
-        zassert_true(choreo_script_complete(),
-                     "element %d script did not complete in %d ticks", who, ticks);
+        zassert_equal(choreo_script_step(), 2,
+                     "element %d did not reach the settled step in %d ticks "
+                     "(stuck at step %d)", who, ticks, choreo_script_step());
 
         /* Sanity floor every element must clear regardless of fencing:
          * stay on the board at all. Trivially true given
@@ -353,38 +373,25 @@ ZTEST(choreo_script, test_ring_script_end_to_end)
                      "element %d ended at (%.2f,%.2f), outside [0,%.0f]",
                      who, (double)odo.x, (double)odo.y, (double)WORLD_SIZE);
 
-        float cx = odo.x, cy = odo.y;
-        for (int j = 0; j < 4; j++) {
-            if (j != who) { cx += seed_x[j]; cy += seed_y[j]; }
-        }
-        cx /= 4.0f;
-        cy /= 4.0f;
-        float radius = dist2d(odo.x, odo.y, cx, cy);
+        /* frame="absolute", not "collective" (ring.choreo.toml, changed
+         * 2026-09-11) — radius is measured from the script's fixed
+         * target (50,50), not a live centroid computed from odo + peer
+         * seeds. Unlike collective (where an asymmetric live centroid
+         * could push a vertex off-board — element 3 used to need the
+         * arena-fence special case below), a circle of radius 30 fixed
+         * at the arena's own center (50,50) stays inside [20,80] on
+         * both axes for every rank angle, comfortably inside [0,100] —
+         * so all four elements are expected to converge normally now. */
+        float radius = dist2d(odo.x, odo.y, 50.0f, 50.0f);
 
-        if (who == 3) {
-            /* The one element whose ideal vertex is off-board: verify
-             * the fence actually engaged (radius well short of 30, not
-             * a coincidence) and held it near the margin rather than
-             * pinned at the raw edge (y=0) or run away past it. */
-            zassert_true(radius < 25.0f,
-                         "element 3 reached radius %.2f — expected the "
-                         "arena fence to hold it well short of 30",
-                         (double)radius);
-            zassert_true(odo.y > 1.0f,
-                         "element 3 ended at y=%.2f — fence should hold "
-                         "it near the %.1f-unit margin, not pinned at "
-                         "the raw edge", (double)odo.y,
-                         (double)DEMO_ARENA_FENCE_MARGIN);
-        } else {
-            /* 3.0 units, not a tight 1.0: the controller's own arrival
-             * snap (DEMO_TRACK_ARRIVE_EPS) and the script's achieve_eps
-             * (ring.choreo.toml) both allow settling short of the exact
-             * radius — verified empirically (max observed error ~0.7
-             * units for these 3) via the standalone host build. */
-            zassert_true(fabsf(radius - 30.0f) < 3.0f,
-                         "element %d reached radius %.2f from its own "
-                         "centroid, expected ~30", who, (double)radius);
-        }
+        /* 3.0 units, matching ring.choreo.toml's own achieve_eps (not
+         * DEMO_TRACK_ARRIVE_EPS's tighter 2.0 — achieve_eps stays the
+         * wider of the two by design, see that constant's doc). Back to
+         * the original tight tolerance — see top-of-test comment for why
+         * this was briefly 8.0 and no longer needs to be. */
+        zassert_true(fabsf(radius - 30.0f) < 3.0f,
+                     "element %d reached radius %.2f from the fixed "
+                     "target (50,50), expected ~30", who, (double)radius);
     }
 }
 
