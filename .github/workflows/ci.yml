@@ -421,28 +421,19 @@ jobs:
             tapestry/tapestry-scr-hw
 
       # ── cutebot-formation example ─────────────────────────────────────
-      # Compile-only (flashing requires physical hardware). Two Kconfig
-      # modes (DEMO_MODE choice, see examples/cutebot-formation/Kconfig):
-      # DEMO_MODE_CHOREO (default, L5/L6/L7 — run on real hardware, which
-      # reached and held the grid; see that example's README) and
-      # DEMO_MODE_SHOWCASE (the original, hardware-validated L4-only
-      # spring field). Both built here so a
-      # regression in either mode is caught, not just whichever is default.
+      # Compile-only (flashing requires physical hardware). DEMO_MODE_CHOREO
+      # is the only normal build mode (see examples/cutebot-formation/Kconfig)
+      # — L5/L6/L7 driving ring.choreo.toml ("choreo-1"), run on real
+      # hardware, which reached and held the ring; see that example's
+      # README. The original L4-only spring-field showcase mode was removed
+      # 2026-09-13 once choreo-1 matched and surpassed its hardware
+      # behavior — there is no second mode to build here anymore.
 
       - name: Build cutebot-formation (DEMO_MODE_CHOREO, default) — bbc_microbit_v2
         working-directory: ${{ github.workspace }}
         run: |
           west build -b bbc_microbit_v2 \
             --build-dir tapestry/examples/cutebot-formation/build/hw-mb \
-            tapestry/examples/cutebot-formation
-
-      - name: Build cutebot-formation (DEMO_MODE_SHOWCASE) — bbc_microbit_v2
-        working-directory: ${{ github.workspace }}
-        run: |
-          printf 'CONFIG_DEMO_MODE_SHOWCASE=y\n' > /tmp/ci_showcase.conf
-          west build -b bbc_microbit_v2 \
-            --build-dir tapestry/examples/cutebot-formation/build/hw-mb-showcase \
-            --extra-conf /tmp/ci_showcase.conf \
             tapestry/examples/cutebot-formation
 
       # ── Crazyflie 2.1 Brushless (STM32F405 / Cortex-M4F) ────────────────

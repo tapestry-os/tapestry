@@ -86,63 +86,152 @@ static float dist2d(float ax, float ay, float bx, float by)
     return sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by));
 }
 
-/* ── demo_compute_drive regression (unchanged spring field, now routed
- * through the extracted demo_force_to_twist helper) ─────────────────────── */
-
-ZTEST(formation_field, test_spring_repels_when_too_close)
-{
-    wm_reset();
-    wm_set_peer(1, 5.0f, 0.0f, false);   /* well inside DEMO_TARGET_SPACING */
-
-    demo_odometry_t odo;
-    demo_odometry_init(&odo, 0.0f, 0.0f);
-    odo.heading = 0.0f;   /* facing the peer: escape is directly behind */
-
-    float speed, rate;
-    /* Two ticks: force must exceed FORCE_START before movement engages. */
-    demo_compute_drive(&wm, &odo, &speed, &rate);
-    demo_compute_drive(&wm, &odo, &speed, &rate);
-    zassert_true(odo.moving, "strong repulsion must clear FORCE_START");
-    zassert_true(speed < 0.0f,
-                 "facing the (too-close) peer, repulsion must reverse away");
-}
-
-ZTEST(formation_field, test_spring_attracts_when_too_far)
-{
-    wm_reset();
-    wm_set_peer(1, DEMO_TARGET_SPACING + 40.0f, 0.0f, false);
-
-    demo_odometry_t odo;
-    demo_odometry_init(&odo, 0.0f, 0.0f);
-    odo.heading = 0.0f;   /* facing the peer */
-
-    float speed, rate;
-    demo_compute_drive(&wm, &odo, &speed, &rate);
-    demo_compute_drive(&wm, &odo, &speed, &rate);
-    zassert_true(odo.moving, "large spacing error must clear FORCE_START");
-    zassert_true(speed > 0.0f, "too far must attract (drive forward)");
-}
-
 /* ── demo_track_target ────────────────────────────────────────────────────── */
 
+/* odo starts at (0, 50), not (0, 0): a differential-drive robot turns
+ * and drives simultaneously (not turn-then-drive), so approaching this
+ * ~157-degree off-axis heading drifts off the direct line to the target
+ * (visible as a real y-excursion before it straightens out). With the
+ * target at y=0 (the previous version of this test), that drift lands
+ * inside DEMO_ARENA_FENCE_MARGIN, and demo_arena_fence() (correctly, by
+ * its own design) permanently vetoes the negative-fy correction needed
+ * to close the last few units — indistinguishable, from the fence's
+ * point of view, from driving off the board. That produced a stable
+ * ~5-unit-short standoff that looked like a control-law limit cycle but
+ * wasn't one: the identical heading/turn challenge, target moved to
+ * (30, 50) — nowhere near an edge — converges cleanly in 17 ticks
+ * (1.7s), zero code changes. Real ring.choreo.toml targets (radius 30
+ * around center (50,50), staying inside [20,80]) are nowhere near this
+ * zone either — this was a test-fixture bug, not a production risk. */
 ZTEST(formation_field, test_track_converges_off_axis)
 {
     wm_reset();
     demo_odometry_t odo;
-    demo_odometry_init(&odo, 0.0f, 0.0f);
+    demo_odometry_init(&odo, 0.0f, 50.0f);
     odo.heading = M_PI_F - 0.4f;   /* mostly facing away, off-axis */
 
     float speed, rate;
-    demo_track_target(&wm, &odo, 30.0f, 0.0f, &speed, &rate);
+    demo_track_target(&wm, &odo, 30.0f, 50.0f, &speed, &rate);
     zassert_true(fabsf(rate) > 0.01f, "must turn when facing away");
 
     bool converged = false;
     for (int i = 0; i < 400 && !converged; i++) {
-        demo_track_target(&wm, &odo, 30.0f, 0.0f, &speed, &rate);
+        demo_track_target(&wm, &odo, 30.0f, 50.0f, &speed, &rate);
         demo_odometry_update(&odo, speed, rate, DT_MS);
-        converged = dist2d(odo.x, odo.y, 30.0f, 0.0f) < DEMO_TRACK_ARRIVE_EPS + 0.5f;
+        converged = dist2d(odo.x, odo.y, 30.0f, 50.0f) < DEMO_TRACK_ARRIVE_EPS + 0.5f;
     }
     zassert_true(converged, "did not converge onto target within 40s");
+}
+
+/* Real numbers, not an estimate: does a mid-show re-form's ACTUAL turn
+ * requirement (not the synthetic ~157-degree heading above) also fail to
+ * converge? Computed directly from bse.c's FORM circle formula
+ * (angle = 2*PI*rank/count, tgt = center + radius*(cos,sin)) and
+ * main.c's compute_start_pos() seed formula, not guessed.
+ *
+ * The INITIAL FORM never needs this: with all 4 robots fresh, task_slot
+ * (rank) == element_id (ascending sort of {0,1,2,3}), so every robot's
+ * target angle exactly matches its own boot heading — required turn is
+ * always 0 degrees. This is why the 2026-09-12 hardware validation run
+ * settled cleanly; it never exercised an off-axis turn at all.
+ *
+ * A departure changes this: losing id=1 from a settled 4-ring shifts
+ * id=2's rank 2->1 (of the surviving 3), so its post-departure target
+ * angle (2*PI*1/3 = 120 deg) no longer lines up with its settled
+ * heading (180 deg, unchanged from boot since the initial FORM required
+ * no turn) — a real ~120-degree turn, the same order of magnitude as
+ * the ~157-degree heading that produced the persistent limit cycle
+ * above. This test starts at that exact settled position/heading and
+ * the exact new target (not the synthetic angle) to check whether the
+ * already-hardware-validated drive law actually handles a real re-form
+ * turn — it does not exercise choreo.c's element_lost debounce plumbing
+ * itself (test_ring_script_end_to_end and the hardware runs cover that),
+ * only the geometry. */
+ZTEST(formation_field, test_track_reform_after_departure_id2_of_4)
+{
+    wm_reset();
+    demo_odometry_t odo;
+    demo_odometry_init(&odo, 20.0f, 50.0f);   /* id=2's settled position (rank 2 of 4) */
+    odo.heading = M_PI_F;                     /* settled heading — unchanged from boot,
+                                                * since the initial FORM needed no turn */
+
+    /* rank 1 of 3 (ascending sort of surviving {0,2,3}), radius 30,
+     * center (50,50) — bse.c's exact circle-placement formula. */
+    float target_x = 50.0f + 30.0f * cosf(2.0f * M_PI_F / 3.0f);   /* 35.0 */
+    float target_y = 50.0f + 30.0f * sinf(2.0f * M_PI_F / 3.0f);   /* ~75.98 */
+
+    float speed, rate;
+    bool converged = false;
+    for (int i = 0; i < 400 && !converged; i++) {
+        demo_track_target(&wm, &odo, target_x, target_y, &speed, &rate);
+        demo_odometry_update(&odo, speed, rate, DT_MS);
+        converged = dist2d(odo.x, odo.y, target_x, target_y) < DEMO_TRACK_ARRIVE_EPS + 0.5f;
+    }
+    zassert_true(converged,
+                 "id=2's real ~120-degree re-form turn (losing id=1 from a "
+                 "4-ring) did not converge within 40s — see comment above");
+}
+
+/* Second real data point, same departure (losing id=1): id=3's rank
+ * shifts 3->2 (of 3), a ~105-degree turn from its settled heading. */
+ZTEST(formation_field, test_track_reform_after_departure_id3_of_4)
+{
+    wm_reset();
+    demo_odometry_t odo;
+    demo_odometry_init(&odo, 50.0f, 20.0f);   /* id=3's settled position (rank 3 of 4) */
+    odo.heading = -M_PI_F / 2.0f;             /* settled heading (270 deg) */
+
+    /* rank 2 of 3, radius 30, center (50,50). */
+    float target_x = 50.0f + 30.0f * cosf(4.0f * M_PI_F / 3.0f);   /* 35.0 */
+    float target_y = 50.0f + 30.0f * sinf(4.0f * M_PI_F / 3.0f);   /* ~24.02 */
+
+    float speed, rate;
+    bool converged = false;
+    for (int i = 0; i < 400 && !converged; i++) {
+        demo_track_target(&wm, &odo, target_x, target_y, &speed, &rate);
+        demo_odometry_update(&odo, speed, rate, DT_MS);
+        converged = dist2d(odo.x, odo.y, target_x, target_y) < DEMO_TRACK_ARRIVE_EPS + 0.5f;
+    }
+    zassert_true(converged,
+                 "id=3's real ~105-degree re-form turn (losing id=1 from a "
+                 "4-ring) did not converge within 40s — see comment above");
+}
+
+/* Worst-case NON-degenerate re-form turn, found by exhaustively computing
+ * every single-departure and single-rejoin transition reachable from the
+ * 4-ring (see conversation history — a small Python enumeration over
+ * bse.c's exact rank/angle formula, not hand-picked): losing id=0 leaves
+ * id=1 needing a real ~135-degree turn (rank 1 of 4 -> rank 0 of 3).
+ * Exactly-180-degree transitions also exist in that enumeration (e.g. a
+ * SECOND departure down to 2 survivors) but that degenerate case is
+ * already covered by test_track_reverses_when_exactly_behind and known
+ * to converge cleanly — 135 degrees is the largest non-degenerate turn
+ * choreo-1's actual departure/rejoin graph can produce, and the closest
+ * real number to the ~157-degree heading that broke
+ * test_track_converges_off_axis. */
+ZTEST(formation_field, test_track_reform_after_departure_id1_of_4_worst_case)
+{
+    wm_reset();
+    demo_odometry_t odo;
+    demo_odometry_init(&odo, 50.0f, 80.0f);   /* id=1's settled position (rank 1 of 4) */
+    odo.heading = M_PI_F / 2.0f;              /* settled heading (90 deg) */
+
+    /* rank 0 of 3 (ascending sort of surviving {1,2,3} after losing id=0),
+     * radius 30, center (50,50). */
+    float target_x = 80.0f;
+    float target_y = 50.0f;
+
+    float speed, rate;
+    bool converged = false;
+    for (int i = 0; i < 400 && !converged; i++) {
+        demo_track_target(&wm, &odo, target_x, target_y, &speed, &rate);
+        demo_odometry_update(&odo, speed, rate, DT_MS);
+        converged = dist2d(odo.x, odo.y, target_x, target_y) < DEMO_TRACK_ARRIVE_EPS + 0.5f;
+    }
+    zassert_true(converged,
+                 "id=1's real ~135-degree re-form turn (losing id=0 from a "
+                 "4-ring, the worst non-degenerate case in choreo-1's "
+                 "departure/rejoin graph) did not converge within 40s");
 }
 
 /* Regression: target exactly 180 deg behind is a degenerate case for the
@@ -187,47 +276,62 @@ ZTEST(formation_field, test_track_arrival_zeroes_output)
  * as the exactly-behind test above), so repulsion's observable effect is
  * on SPEED — it must override forward attraction with reverse rather than
  * drive through the too-close peer toward the distant target. */
+/* odo starts at (25, 50), not (0, 0): the repulsion this test checks
+ * points AWAY from the peer, i.e. toward -x here — at the literal (0,0)
+ * corner that direction falls inside DEMO_ARENA_FENCE_MARGIN and
+ * demo_arena_fence() (correctly, by its own design) vetoes it, silently
+ * zeroing the exact force this test exists to observe. (25, 50) keeps
+ * the peer, self, and the 50-unit-distant target all comfortably clear
+ * of every edge, so the fence never fires and the repulsion math is
+ * actually being tested. Real ring.choreo.toml positions never come
+ * near (0,0) either (radius-30 ring centered on (50,50), staying inside
+ * [20,80]) — this was a test-fixture bug, not a finding about
+ * production behavior. */
 ZTEST(formation_field, test_track_repulsion_overpowers_attraction_collinear)
 {
     wm_reset();
-    wm_set_peer(1, 2.0f, 0.0f, false);   /* well inside DEMO_TRACK_MIN_SEP */
+    wm_set_peer(1, 27.0f, 50.0f, false);   /* 2 units ahead, well inside DEMO_TRACK_MIN_SEP */
 
     demo_odometry_t odo;
-    demo_odometry_init(&odo, 0.0f, 0.0f);
+    demo_odometry_init(&odo, 25.0f, 50.0f);
     odo.heading = 0.0f;
 
     float speed, rate;
-    demo_track_target(&wm, &odo, 50.0f, 0.0f, &speed, &rate);
+    demo_track_target(&wm, &odo, 75.0f, 50.0f, &speed, &rate);
     zassert_true(speed < 0.0f,
                  "a peer dead ahead inside MIN_SEP must override forward "
                  "attraction with reverse");
 
     wm_reset();   /* baseline: no peer -> forward */
-    demo_track_target(&wm, &odo, 50.0f, 0.0f, &speed, &rate);
+    demo_track_target(&wm, &odo, 75.0f, 50.0f, &speed, &rate);
     zassert_true(speed > 0.0f, "without the peer, attraction alone drives forward");
 }
 
+/* See the arena-fence note above test_track_repulsion_overpowers_
+ * attraction_collinear — same fix, same reason (this peer's repulsion
+ * also points toward -x/-y, which (0,0) sits inside the fence margin
+ * for on both axes). */
 ZTEST(formation_field, test_track_repulsion_steers_off_axis)
 {
     wm_reset();
-    wm_set_peer(1, 5.0f, 1.0f, false);   /* just off the +x line, close */
+    wm_set_peer(1, 30.0f, 51.0f, false);   /* just off the +x line, close */
 
     demo_odometry_t odo;
-    demo_odometry_init(&odo, 0.0f, 0.0f);
+    demo_odometry_init(&odo, 25.0f, 50.0f);
     odo.heading = 0.0f;
 
     float speed, rate;
-    demo_track_target(&wm, &odo, 50.0f, 0.0f, &speed, &rate);
+    demo_track_target(&wm, &odo, 75.0f, 50.0f, &speed, &rate);
     zassert_true(fabsf(rate) > 0.01f,
                  "an off-axis close peer must perturb the heading command");
 }
 
 ZTEST(formation_field, test_track_ignores_stale_peer_repulsion)
 {
-    /* Unlike demo_compute_drive, demo_track_target has no hold-on-stale
-     * gate (staleness handling belongs to the caller's quorum mapping —
-     * see formation.h) — a stale peer must simply not contribute
-     * repulsion, not silently freeze the drive. */
+    /* demo_track_target has no hold-on-stale gate (staleness handling
+     * belongs to the caller's quorum mapping — see formation.h) — a
+     * stale peer must simply not contribute repulsion, not silently
+     * freeze the drive. */
     wm_reset();
     wm_set_peer(1, 2.0f, 0.0f, /* stale = */ true);
 

@@ -11,39 +11,34 @@ config DEMO_MODE_CHOREO
 	bool "Choreo script (L5/L6/L7): hold, form a ring, hold"
 	help
 	  The robots execute a declarative L7 Choreo script through a real L5
-	  SCR and the L6 BSE.  The currently compiled script is
-	  ../ring.choreo.toml: hold the boot-time station, then hold one long
-	  FORM (shape=circle, frame=collective) in which the ring re-divides
-	  itself live as robots leave and rejoin, then a closing hold.
+	  SCR and the L6 BSE. The currently compiled script is
+	  ../ring.choreo.toml ("choreo-1"): hold the boot-time station, FORM
+	  an equidistant ring (shape=circle, frame=absolute), then a named
+	  HOLD ("settled") that only re-forms on a debounced element_lost/
+	  element_joined — not on ordinary gossip jitter. See that file's own
+	  comments for the full design rationale.
 
-	  Two scripts live in this directory; src/choreo_script.h is generated
-	  from whichever one you compile, so switching shows means re-running
-	  the tool and rebuilding:
-
-	    ring.choreo.toml       equidistant ring, adapts to departures
-	    form-grid.choreo.toml  the earlier near-square grid
+	  A second script, form-grid.choreo.toml (the earlier near-square
+	  grid), also lives in this directory; src/choreo_script.h is
+	  generated from whichever one you compile, so switching scripts means
+	  re-running the tool and rebuilding:
 
 	    python3 sdk/tools/choreoc.py \
-	        examples/cutebot-formation/ring.choreo.toml
+	        examples/cutebot-formation/ring.choreo.toml \
+	        -o examples/cutebot-formation/src/choreo_script.h
 
 	  ONE BINARY for all robots — element IDs are negotiated at boot over
-	  BLE (transport_negotiate_id), same auto-ID protocol as the legacy
-	  showcase mode below.
+	  BLE (transport_negotiate_id).
 
-	  Ran end-to-end on four physical robots on 2026-08-24 (hold ->
-	  form(grid) -> hold): they reached and held the grid. Approach speed
-	  is untuned — see the README's "Known limitations". If problems
-	  arise, fall back to DEMO_MODE_SHOWCASE.
-
-config DEMO_MODE_SHOWCASE
-	bool "Legacy showcase (L4 spring field only, no SCR/L6/L7)"
-	help
-	  The original emergent formation behavior: a spring-field force
-	  computed directly from L4 world-model peer positions (repulsion when
-	  closer than DEMO_TARGET_SPACING, attraction when farther), no SCR,
-	  no Choreo. This is the hardware-validated behavior every prior
-	  revision of this example shipped — kept as a fallback and as a
-	  smaller reference for the L1-L4 stack in isolation.
+	  This is now the only "normal" build mode — the original L4-only
+	  spring-field showcase (no SCR/L6/L7) was removed 2026-09-13 once
+	  choreo-1 (ring.choreo.toml) matched and then surpassed it on real
+	  hardware: ran end-to-end on four physical robots on 2026-08-24
+	  (hold -> form(grid) -> hold), then again on 2026-09-12 with the
+	  ring script after the FORM/HOLD-debounce and sync-barrier fixes
+	  (see git history) — settled cleanly with no jitter, no fallback
+	  needed. See the README's "Known limitations" for the FORM/
+	  abs_position caveat (dead-reckoning drift).
 
 config DEMO_MODE_STRAIGHT_LINE
 	bool "Straight-line drive test (single robot, no swarm/Choreo/SCR)"

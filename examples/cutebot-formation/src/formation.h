@@ -1,7 +1,8 @@
 /*
- * formation.h — Demo: Collective Formation (L4 only)
+ * formation.h — Demo: Collective Formation (Choreo-driven ground rover)
  *
- * Spring-field repulsion/attraction over the L4 world model, with
+ * Differential-drive go-to-point control (demo_track_target(), driven by
+ * the L6/L7 Choreo directive in main.c) over the L4 world model, with
  * dead-reckoning odometry to keep own_state.position current.
  *
  * ARENA SCALE — read this before changing any spatial constant.
@@ -31,9 +32,11 @@
  *     reckoning itself and presents as drift, not as a bad constant.
  *
  * Formation tuning:
- *   DEMO_TARGET_SPACING — desired peer-to-peer spacing in logical units.
- *     Showcase (L4 spring) mode only; Choreo mode takes its geometry from
- *     the .choreo.toml script instead.
+ *   DEMO_TARGET_SPACING — normalizes demo_force_to_twist()'s lateral-
+ *     force-to-turn-rate gain (formation.c). Choreo takes its actual
+ *     formation geometry from the .choreo.toml script, not this constant
+ *     — it survives only as a turn-gain scale factor shared by every
+ *     drive function (demo_track_target, demo_drive_straight).
  *
  * Override any constant at compile time:
  *   west build ... -- -DDEMO_TARGET_SPACING=40.0f
@@ -131,11 +134,9 @@
 #define DEMO_MAX_OMEGA    (2.0f * DEMO_MAX_SPEED / DEMO_WHEEL_TRACK)
 
 #ifndef DEMO_TARGET_SPACING
-#define DEMO_TARGET_SPACING DEMO_MM(500.0f)  /* 39.5 units — showcase mode only.
-                                     * equilibrium side = T × 0.854 (4-robot square
-                                     * geometry) → ≈ 33.7 units = 427 mm, which keeps
-                                     * the whole square inside the checkered [10, 90]
-                                     * region with the border still free for turns. */
+#define DEMO_TARGET_SPACING DEMO_MM(500.0f)  /* 39.5 units — see doc above; only
+                                     * used as demo_force_to_twist's turn-gain
+                                     * denominator now, not a real spacing target. */
 #endif
 
 /* Boot-time placement radius about arena centre — see compute_start_pos()
@@ -173,13 +174,13 @@
 #endif
 
 /* ── Choreo target-tracking tuning ───────────────────────────────────────
- * demo_track_target() drives toward a single L6/L7-commanded point instead
- * of the spring field's peer-summed force — see that function's doc. */
+ * demo_track_target() drives toward a single L6/L7-commanded point — see
+ * that function's doc. */
 
 /* Attraction "force" magnitude commanded at full range (saturates
  * demo_force_to_twist's speed clamp — see FORCE_TO_SPEED in formation.c:
- * need force * FORCE_TO_SPEED >= 22 to reach the same forward-speed cap
- * demo_compute_drive uses, so 40 clears it with margin). */
+ * need force * FORCE_TO_SPEED >= 22 to reach demo_force_to_twist's
+ * max_speed cap, so 40 clears it with margin). */
 #define DEMO_TRACK_MAX_FORCE   40.0f
 
 /* Inside this range of the target, attraction force ramps down linearly
@@ -194,9 +195,8 @@
  * small to clear demo_force_to_twist's MIN_STICTION floor on its own, so
  * the floor would keep forcing a nonzero speed command and the robot
  * would creep/oscillate around the target indefinitely instead of
- * settling — the same problem demo_compute_drive's FORCE_STOP/FORCE_START
- * hysteresis solves for the spring field, expressed here as a distance
- * gate since attraction force is monotonic in distance (no sign to
+ * settling — a distance gate rather than a force-magnitude hysteresis
+ * band, since attraction force here is monotonic in distance (no sign to
  * hystrese around).
  *
  * 2.0 units (~6.7% of ring.choreo.toml's 30-unit radius) — briefly
@@ -282,7 +282,6 @@ typedef struct {
     float x;        /* Current position in logical world coords [0, WORLD_SIZE] */
     float y;
     float heading;  /* Radians, 0 = +x direction */
-    bool  moving;   /* Hysteresis state for demo_compute_drive */
 } demo_odometry_t;
 
 /* Initialize odometry at (x, y) with heading 0 (+x direction). */
@@ -292,7 +291,6 @@ void demo_odometry_init(demo_odometry_t *odo, float x, float y);
  * Update dead-reckoning estimate from the last motion command.
  *   speed_norm: forward velocity [-1.0, 1.0], passed to substrate_move().
  *   rate_norm:  yaw rate         [-1.0, 1.0], positive = CCW (turn left).
- *   Also resets odo->moving when peer count transitions from 0 → non-zero.
  *   dt_ms: elapsed milliseconds since last call (typically WM_CYCLE_MS).
  */
 void demo_odometry_update(demo_odometry_t *odo,
@@ -489,41 +487,21 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
 /* ── Formation control ──────────────────────────────────────────────────── */
 
 /*
- * Compute motion command from the L4 world model.
- *
- * For each active, non-stale, non-self peer in wm, a spring force is applied:
- *   force = (distance - TARGET_SPACING) * SPRING_K
- *   direction = unit vector from own position toward peer
- *
- * The summed force vector is projected onto the robot frame and written to
- * *speed_out (forward velocity) and *rate_out (yaw rate), both normalized
- * [-1.0, 1.0].  Pass these directly to substrate_move() via substrate_twist_t.
- * When no peers are visible, the robot holds position (both outputs zero).
- */
-void demo_compute_drive(const world_model_t *wm,
-                         demo_odometry_t *odo,
-                         float *speed_out,
-                         float *rate_out);
-
-/*
  * Choreo tracking (L6/L7): drive toward a single commanded world point
- * (target_x, target_y) — e.g. a FORM step's grid vertex or a HOLD step's
+ * (target_x, target_y) — e.g. a FORM step's ring vertex or a HOLD step's
  * captured station (tapestry/choreo.h's TAPESTRY_BSE_DIRECTIVE_MOVE_TO_
- * POINT target) — instead of demo_compute_drive's peer-summed spring
- * force. Turn-then-drive differential-drive law: attraction force points
- * straight at the target (ramping down inside DEMO_TRACK_SLOW_RADIUS,
+ * POINT target). Turn-then-drive differential-drive law: attraction force
+ * points straight at the target (ramping down inside DEMO_TRACK_SLOW_RADIUS,
  * zeroed inside DEMO_TRACK_ARRIVE_EPS), summed with an emergency-repulsion
  * backstop against any fresh peer closer than DEMO_TRACK_MIN_SEP, then
- * projected onto the robot frame the same way demo_compute_drive already
- * does (shared via demo_force_to_twist in formation.c) — turning force
- * dominates until the robot is roughly facing the target, same as the
- * spring field's own behavior, because both share the same projection.
- * Unlike demo_compute_drive there is no moving/stopped hysteresis state
- * (odo is read-only here): the arrival snap alone prevents dither at the
- * target, and there is no separate persisted setpoint to leash/glide —
- * every call recomputes fresh from odo's current dead-reckoning estimate
- * and whatever wm currently holds, since the differential-drive command
- * is instantaneous (no PID state to protect, unlike cf21bl-formation's
+ * projected onto the robot frame (shared via demo_force_to_twist in
+ * formation.c) — turning force dominates until the robot is roughly
+ * facing the target. There is no moving/stopped hysteresis state (odo is
+ * read-only here): the arrival snap alone prevents dither at the target,
+ * and there is no separate persisted setpoint to leash/glide — every call
+ * recomputes fresh from odo's current dead-reckoning estimate and
+ * whatever wm currently holds, since the differential-drive command is
+ * instantaneous (no PID state to protect, unlike cf21bl-formation's
  * demo_choreo_track counterpart).
  */
 void demo_track_target(const world_model_t *wm,

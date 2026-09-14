@@ -59,6 +59,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`formation.c` separation, `EXCHANGE`-occupied, `DISPERSE` spacing)
   deliberately still treat a departed peer as a real obstacle.
 
+### Changed
+- **`cutebot-formation`'s L4-only spring-field showcase mode removed.**
+  `DEMO_MODE_SHOWCASE` (`demo_compute_drive()`, `SPRING_K`,
+  `FORCE_START`/`FORCE_STOP`) was kept as a fallback in case the L5/L6/L7
+  Choreo path (`DEMO_MODE_CHOREO`) didn't pan out on real hardware. It
+  did: choreo-1 (`ring.choreo.toml`) ran cleanly on four physical robots
+  2026-09-12 after the FORM/HOLD-debounce and sync-barrier fixes below,
+  with no jitter and no fallback needed. `DEMO_MODE_CHOREO` is now the
+  only normal build mode; the diagnostic single-robot modes
+  (`STRAIGHT_LINE`, `CONVERGE_TEST`, `WHEEL_CHARACTERIZE`,
+  `LINE_SENSOR_BENCH`) are unaffected. CI's separate showcase-mode build
+  job is removed accordingly.
+
 ### Fixed
 - **`cf21bl-formation`'s `DEMO_MIN_SEP_M` separation check was inert whenever
   no peer was fresh.** `demo_compute_drive()` and `demo_choreo_track()` both

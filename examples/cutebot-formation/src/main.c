@@ -3,28 +3,26 @@
  *
  * Build modes (Kconfig choice DEMO_MODE, see Kconfig):
  *
- *   DEMO_MODE_CHOREO (default) — the L5/L6/L7 path. ONE BINARY for all
- *     robots: element IDs are negotiated at boot (transport_negotiate_id,
- *     unchanged from the original design). A real L5 SCR (scr_init()/
- *     scr_tick() below) drives quorum from the actual world model — this
- *     app previously had ZERO L5, not even a synthetic-quorum stand-in.
- *     A declarative L7 Choreo script (../form-grid.choreo.toml) drives the
- *     robots through the L6 BSE:
+ *   DEMO_MODE_CHOREO (default) — the L5/L6/L7 path, the only "normal"
+ *     build mode (the original L4-only spring-field showcase was removed
+ *     2026-09-13 — see git history). ONE BINARY for all robots: element
+ *     IDs are negotiated at boot (transport_negotiate_id). A real L5 SCR
+ *     (scr_init()/scr_tick() below) drives quorum from the actual world
+ *     model. A declarative L7 Choreo script (../ring.choreo.toml,
+ *     "choreo-1") drives the robots through the L6 BSE:
  *       1. hold — station-keep at the boot-time position (coordinate-free)
- *       2. form (shape=grid) — arrange into a near-square grid centered on
- *          the arena, via demo_track_target()'s differential-drive
+ *       2. form (shape=circle, frame=absolute) — arrange into an
+ *          equidistant ring via demo_track_target()'s differential-drive
  *          go-to-point controller (formation.c) — the FIRST real-hardware
- *          consumer of Choreo's FORM goal anywhere in this repo (every
- *          other example either doesn't use it or only exercises it in
- *          host-side unit tests)
- *       3. hold — settle on the finished grid
+ *          consumer of Choreo's FORM goal anywhere in this repo
+ *       3. hold ("settled") — freezes the achieved ring; only re-forms on
+ *          a debounced element_lost/element_joined, not on ordinary
+ *          gossip jitter (see ring.choreo.toml's own comments — this is
+ *          what fixed the "settle, then keep re-adjusting" hunting seen
+ *          on real hardware before 2026-09-12)
  *     Script completion → directive IDLE → quiescence: this platform maps
  *     it to simply holding still (no takeoff/landing concept for a ground
  *     rover, unlike cf21bl-formation).
- *
- *   DEMO_MODE_SHOWCASE — the original, hardware-validated L4-only spring
- *     field (demo_compute_drive(), unchanged): pure emergent behavior, no
- *     SCR/L6/L7. Kept as a fallback — see Kconfig's help text.
  *
  *   DEMO_MODE_STRAIGHT_LINE — single-robot motion-primitive test, no
  *     transport/auto-ID/SCR/Choreo at all: demo_drive_straight() (constant
@@ -51,12 +49,12 @@
  *     See Kconfig's help text.
  *
  * DEMO_MODE_CHOREO ran end-to-end on four physical robots on 2026-08-24
- * (hold -> form(grid) -> hold, BLE gossip, real L5 quorum); approach speed
- * is untuned.  The tests/ suite covers the same path host-side.  The
- * boot/negotiation/sync-hold path and DEMO_MODE_SHOWCASE are unchanged
- * from the hardware-validated original — only the choice of what drives
- * speed_cmd/rate_cmd in the main loop is new. See the README's "Known
- * limitations" for the FORM/abs_position caveat (dead-reckoning drift).
+ * (hold -> form(grid) -> hold, BLE gossip, real L5 quorum) and again on
+ * 2026-09-12 with the ring script (hold -> form(circle) -> settled hold),
+ * which settled cleanly with no jitter after the FORM/HOLD-debounce and
+ * sync-barrier fixes. The tests/ suite covers the same path host-side.
+ * See the README's "Known limitations" for the FORM/abs_position caveat
+ * (dead-reckoning drift).
  *
  * ID assignment is handled by transport_negotiate_id() — see transport.h and
  * CONFIG_TAPESTRY_AUTO_ID_WINDOW_MS for the auto-ID protocol details.
@@ -172,13 +170,11 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
  * was written for and only 38 mm here: a seed the robots could not
  * physically occupy without overlapping.
  *
- * The heading is set to the outward angle so every robot's spring force
- * projects fully forward on tick 1.  Without this, robots whose force
- * points opposite to heading 0 drive backward and collide with neighbors.
- * DEMO_MODE_CHOREO's FORM step doesn't need this property (demo_track_
- * target's go-to-point law works from any starting heading), but the
- * shared boot/sync-hold path runs before Choreo is submitted, so both
- * modes still benefit from a non-degenerate start.
+ * The heading is set to the outward angle to match the physical placement
+ * convention (see README) — a deterministic, non-degenerate starting
+ * orientation, not a functional requirement: demo_track_target's
+ * go-to-point law (FORM, and DEMO_MODE_CONVERGE_TEST's fixed-target swap)
+ * works from any starting heading.
  *
  * Physical placement: orient each robot so its physical forward direction
  * matches its assigned heading (see README for per-ID compass directions).
@@ -741,19 +737,17 @@ int main(void)
     demo_odometry_init(&odo, sx, sy);
     odo.heading = shead;
 
-#ifdef CONFIG_DEMO_MODE_CHOREO
     /* Real L5 SCR. quorum_min/quorum_target default to 1/1 (Kconfig) —
      * this script only ever needs one fresh peer, same threshold
      * cf21bl-formation and webots-formation use for the same reason.
      * SCR_CAP_ACTUATOR satisfies the script's CHOREO_CAP_LOCOMOTION
      * requirement. SCR_CAP_ABS_POSITION satisfies FORM's derived
-     * CHOREO_CAP_ABS_POSITION requirement (frame=absolute, the default —
-     * see choreo.c's derived_caps()) — see form-grid.choreo.toml's own
-     * comment for why this is an honest but weaker claim than
-     * cf21bl-formation's real lighthouse fix: cutebot's "absolute
-     * position" is dead reckoning from compute_start_pos()'s shared seed
-     * formula, not a real absolute sensor, and drifts over a long
-     * mission. */
+     * CHOREO_CAP_ABS_POSITION requirement (frame=absolute) — see
+     * ring.choreo.toml's own comment for why this is an honest but
+     * weaker claim than cf21bl-formation's real lighthouse fix: cutebot's
+     * "absolute position" is dead reckoning from compute_start_pos()'s
+     * shared seed formula, not a real absolute sensor, and drifts over a
+     * long mission. */
     scr_state_t scr;
     scr_init(&scr, element_id,
         (uint8_t)CONFIG_TAPESTRY_QUORUM_MIN,
@@ -773,7 +767,6 @@ int main(void)
             (unsigned)element_id, CHOREO_NAME,
             (unsigned)CHOREO_SCRIPT_LEN,
             (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
-#endif
 
     float    speed_cmd    = 0.0f;
     float    rate_cmd     = 0.0f;
@@ -785,9 +778,8 @@ int main(void)
      * barrier, unbounded (see DEMO_SYNC_LOG_INTERVAL_MS's doc, top of
      * file, for why the old fixed cap here was exactly what let robots
      * that finished early start moving while later ones were still
-     * negotiating/gossiping). Runs identically in both Choreo/Showcase
-     * modes — Choreo isn't ticked yet, so there is nothing mode-specific
-     * here.
+     * negotiating/gossiping). Choreo isn't ticked yet, so there is
+     * nothing mode-specific here.
      */
     uint32_t peers_ready_ms = 0;
     for (uint32_t waited_ms = 0; ; waited_ms += WM_CYCLE_MS) {
@@ -836,10 +828,9 @@ int main(void)
         demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
 
 #ifdef CONFIG_I2C
-        /* Grid-based drift correction — runs in both DEMO_MODE_CHOREO
-         * and DEMO_MODE_SHOWCASE (it only touches odo, nothing goal-
-         * specific), before the corrected estimate is broadcast below.
-         * cutebot_line_poll() is read-and-clear and interrupt-driven
+        /* Grid-based drift correction — it only touches odo, nothing
+         * goal-specific, before the corrected estimate is broadcast
+         * below. cutebot_line_poll() is read-and-clear and interrupt-driven
          * (see cutebot_line.h), so this is exact regardless of
          * WM_CYCLE_MS — it never misses a crossing between polls. */
         cutebot_line_sample_t line;
@@ -866,7 +857,6 @@ int main(void)
         own_state.position.y = odo.y;
         wm_update_self(&wm, &own_state);
 
-#ifdef CONFIG_DEMO_MODE_CHOREO
         /* Real L5: recompute quorum from the actual world model.
          * scr_set_quorum_hold_ms() above means scr.quorum_state is
          * already the held view — see that call site's comment. */
@@ -972,20 +962,13 @@ int main(void)
             trace_right_edges = 0;
 #endif
         }
-#else
-        demo_compute_drive(&wm, &odo, &speed_cmd, &rate_cmd);
-#endif
 
         substrate_twist_t twist = {
             .linear  = { .x = speed_cmd },
             .angular = { .z = rate_cmd  },
         };
         substrate_move(&twist);
-#ifdef CONFIG_DEMO_MODE_CHOREO
         demo_set_leds(&wm, choreo_current_indicator());
-#else
-        demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
-#endif
         demo_display_position(&odo);
 
         gossip_accum += WM_CYCLE_MS;

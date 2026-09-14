@@ -1,5 +1,5 @@
 /*
- * formation.c — Demo: spring-field formation control + dead-reckoning
+ * formation.c — Demo: Choreo-driven differential-drive control + dead-reckoning
  */
 
 #include "formation.h"
@@ -12,11 +12,6 @@ LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
 
 #define M_PI_F      3.14159265f
 
-/* Spring constant — force per logical unit of spacing error.
- * Must be large enough that typical displacements (5–10 units) produce
- * a net force that exceeds FORCE_DEADBAND and commands above stiction. */
-#define SPRING_K        8.0f
-
 /* Maps resultant force magnitude to motor speed percent. */
 #define FORCE_TO_SPEED  0.6f
 
@@ -26,17 +21,6 @@ LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
 /* Minimum motor % that overcomes stiction (measured). Any non-zero
  * speed command is snapped up to this so the motors actually turn. */
 #define MIN_STICTION    22
-
-/* Hysteresis thresholds on net spring force magnitude.
- * A stopped robot only starts moving when force exceeds FORCE_START.
- * A moving robot stops when force drops below FORCE_STOP.
- * The gap between them prevents oscillation near equilibrium: a small
- * correction that slightly overshoots does not immediately trigger a
- * counter-correction, and gossip-propagated micro-adjustments from
- * neighbors do not restart a robot that has just settled. */
-#define FORCE_STOP   25.0f   /* ~3 units / 24 mm from equilibrium (800 mm arena)  */
-#define FORCE_START  50.0f   /* > FORCE_STOP; initial cluster forces are 300+ so FORCE_START
-                              * is easily exceeded at boot */
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -80,7 +64,6 @@ void demo_odometry_init(demo_odometry_t *odo, float x, float y)
     odo->x       = x;
     odo->y       = y;
     odo->heading = 0.0f;
-    odo->moving  = false;
 }
 
 void demo_odometry_update(demo_odometry_t *odo,
@@ -102,9 +85,9 @@ void demo_odometry_update(demo_odometry_t *odo,
 
     /* Clamp the STORED ESTIMATE to world bounds — this keeps the number
      * gossiped to peers sane, nothing more. It does NOT stop the robot:
-     * speed_cmd/rate_cmd are computed independently (demo_track_target /
-     * demo_compute_drive) from whatever force this tick's estimate and
-     * target produce, and this clamp cannot see or influence that. If
+     * speed_cmd/rate_cmd are computed independently (demo_track_target)
+     * from whatever force this tick's estimate and target produce, and
+     * this clamp cannot see or influence that. If
      * the commanded force still points outward when the estimate pins
      * here, the estimate stops advancing while the real robot keeps
      * driving — see demo_arena_fence(), which is the actual command-
@@ -217,14 +200,13 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
     return heading_err;
 }
 
-/* ── Force → twist projection (shared by demo_compute_drive and
+/* ── Force → twist projection (shared by demo_drive_straight and
  * demo_track_target) ─────────────────────────────────────────────────────
  *
  * Projects a world-frame force/velocity vector (fx, fy) onto the robot
  * frame and converts it to a normalized [-1,1] speed/rate twist, applying
- * the same stiction floor both callers need — this is the part of the
- * old demo_compute_drive that has nothing to do with WHERE the force came
- * from (peer springs vs. a single tracked target), so it is written once.
+ * the same stiction floor both callers need — written once since it has
+ * nothing to do with WHERE the force came from.
  *
  *   Robot forward axis in world frame: (cos h, sin h)
  *   Robot left    axis in world frame: (-sin h, cos h)
@@ -264,93 +246,6 @@ static void demo_force_to_twist(const demo_odometry_t *odo, float fx, float fy,
 
     *speed_out = speed / 100.0f;
     *rate_out  = turn  / 100.0f;
-}
-
-/* ── Formation control ────────────────────────────────────────────────────── */
-
-void demo_compute_drive(const world_model_t *wm,
-                         demo_odometry_t *odo,
-                         float *speed_out, float *rate_out)
-{
-    /* Require all active peers to be fresh before moving.
-     * A stale entry means the world model is incomplete — forces computed
-     * from partial data are asymmetric and will drive the formation wrong.
-     * This makes the green/yellow LED state the hard gate on actuation. */
-    for (int i = 0; i < MAX_ELEMENTS; i++) {
-        const wm_entry_t *e = &wm->entries[i];
-        if (e->is_active && !e->is_self && e->is_stale) {
-            odo->moving = false;
-            *speed_out  = 0.0f;
-            *rate_out   = 0.0f;
-            return;
-        }
-    }
-
-    float fx         = 0.0f;
-    float fy         = 0.0f;
-    int   peer_count = 0;
-
-    for (int i = 0; i < MAX_ELEMENTS; i++) {
-        const wm_entry_t *e = &wm->entries[i];
-
-        if (!e->is_active || e->is_self || e->is_stale) {
-            continue;
-        }
-
-        float dx   = e->state.position.x - odo->x;
-        float dy   = e->state.position.y - odo->y;
-        float dist = sqrtf(dx * dx + dy * dy);
-
-        if (dist < 0.01f) {
-            continue;
-        }
-
-        /*
-         * Spring force along the line between self and peer.
-         * Positive force  = toward peer (attraction, dist > target).
-         * Negative force = away from peer (repulsion, dist < target).
-         */
-        float force = (dist - DEMO_TARGET_SPACING) * SPRING_K;
-
-        fx += force * (dx / dist);
-        fy += force * (dy / dist);
-        peer_count++;
-    }
-
-    if (peer_count == 0) {
-        /* No peers visible: hold position and wait for BLE gossip.
-         * BLE scanning is passive — physical movement does not help
-         * discovery, and wandering corrupts the dead-reckoning origin.
-         * Reset moving so the robot re-evaluates force when peers return. */
-        odo->moving = false;
-        *speed_out  = 0.0f;
-        *rate_out   = 0.0f;
-        return;
-    }
-
-    demo_arena_fence(odo, &fx, &fy);
-
-    /* Hysteresis: require a larger force to start moving than to stop.
-     * Prevents oscillation and gossip-cascade near equilibrium. */
-    float force_mag = sqrtf(fx * fx + fy * fy);
-
-    if (!odo->moving && force_mag >= FORCE_START) {
-        odo->moving = true;
-    } else if (odo->moving && force_mag < FORCE_STOP) {
-        odo->moving = false;
-    }
-
-    if (!odo->moving) {
-        *speed_out = 0.0f;
-        *rate_out  = 0.0f;
-        return;
-    }
-
-    demo_force_to_twist(odo, fx, fy, 22.0f, 15.0f, speed_out, rate_out);
-
-    LOG_DBG("fx=%.2f fy=%.2f spd=%.2f rate=%.2f peers=%d",
-            (double)fx, (double)fy,
-            (double)*speed_out, (double)*rate_out, peer_count);
 }
 
 /* ── Straight-line drive (isolated motion-primitive testing) ─────────────── */
