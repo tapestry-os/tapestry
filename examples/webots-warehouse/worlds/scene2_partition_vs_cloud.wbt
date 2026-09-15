@@ -1,0 +1,378 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+EXTERNPROTO "../protos/WarehouseAMR.proto"
+
+WorldInfo {
+  info [
+    "Scene 2 -- Tapestry vs. a centralized coordinator, same deck,"
+    "same partition, watched side by side. 8 orange vs. 8 blue -- an"
+    "apples-to-apples fleet size, so the only variable is the"
+    "coordination architecture."
+    "West (orange): the Tapestry fleet, running its own decentralized"
+    "script with no cloud awareness whatsoever -- it"
+    "splits under the deck and keeps working on both sides, no"
+    "coordinator anywhere."
+    "East (blue): a comparison fleet under a single 'cloud' coordinator"
+    "(see controllers/cloud_bot/, controllers/cloud_coordinator/ -- an"
+    "honest architectural analog, not a port of any specific real"
+    "framework). It is commanded to cross the SAME deck; the instant a"
+    "robot loses line of sight to its one authority it has"
+    "nothing else to fall back on, and freezes -- for as long as the"
+    "deck is between it and the coordinator, which for this one-shot"
+    "crossing is the rest of the run."
+  ]
+  title "Tapestry warehouse -- scene 2: partition recovery vs. cloud coordination"
+  # 16 ms rather than the drone example's 8 ms: a ground vehicle at 0.9 m/s
+  # needs nothing like a rotorcraft's attitude-loop rate, and halving the
+  # step count matters with 8 controller processes plus a supervisor sharing
+  # one machine. The L4-L7 coordination cadence is unaffected either way --
+  # main.c accumulates sim time to WM_CYCLE_MS (100 ms) independently.
+  basicTimeStep 16
+  contactProperties [
+    # The AMR's fore/aft casters (contactMaterial "caster" in
+    # ../protos/WarehouseAMR.proto) must not scrub against the floor, or the
+    # robot veers under a pure-rotation command instead of turning in place.
+    ContactProperties {
+      material1 "caster"
+      material2 "default"
+      coulombFriction [ 0 ]
+    }
+  ]
+}
+Viewpoint {
+  # Top view, looking straight down over the center of the floor. 35 m
+  # comfortably fits the full 24x18 m floor (racking pushes the y-extent to
+  # ~18.2 m) under Webots' default 45-degree field of view, with margin.
+  orientation 0.577 -0.577 -0.577 4.19
+  position 0 0 35
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+Floor {
+  size 24.0 18.0
+  tileSize 7 7
+}
+
+Solid {
+  translation -11.7 0 0.6
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.45 0.42 0.38
+        roughness 0.9
+        metalness 0
+      }
+      geometry Box {
+        size 0.4 17 1.2
+      }
+    }
+  ]
+  name "dock wall"
+  boundingObject Box {
+    size 0.4 17 1.2
+  }
+}
+
+Solid {
+  translation 0 8.6 1.25
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.28 0.3 0.34
+        roughness 0.85
+        metalness 0.6
+      }
+      geometry Box {
+        size 22 1.0 2.5
+      }
+    }
+  ]
+  name "racking north"
+  boundingObject Box {
+    size 22 1.0 2.5
+  }
+}
+
+Solid {
+  translation 0 -8.6 1.25
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.28 0.3 0.34
+        roughness 0.85
+        metalness 0.6
+      }
+      geometry Box {
+        size 22 1.0 2.5
+      }
+    }
+  ]
+  name "racking south"
+  boundingObject Box {
+    size 22 1.0 2.5
+  }
+}
+
+# -- The steel mezzanine deck ---------------------------------------------
+# This is the entire cause of scene 2's network partition, and it is a
+# PHYSICAL object rather than a scripted fault. AMRs drive underneath it
+# freely (its underside is at z = 0.6, the robots are 0.15 m tall); 2.4 GHz
+# does not get through it.
+#
+# Its footprint MUST match RF_DECK_X_MIN/MAX and RF_DECK_Y_MIN/MAX in
+# controllers/rover/rf_occlusion.h -- x in [-10, 10], y in [1.4, 2.6]. The
+# two are not linked at build time, so ../ci-check/rf_geom_check.c asserts
+# that the split this produces is still the 3/5 the script intends.
+Solid {
+  translation 0 2.0 1.5
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.4 0.42 0.45
+        roughness 0.7
+        metalness 0.9
+      }
+      geometry Box {
+        size 20 1.2 0.5
+      }
+    }
+  ]
+  name "steel mezzanine deck"
+  boundingObject Box {
+    size 20 1.2 0.5
+  }
+}
+# Support legs, placed at the far ends so they are nowhere near any station
+# either island occupies (scene 2's elements span x in [-9, 3.4]).
+Solid {
+  translation -9.5 2.0 0.62
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.35 0.37 0.4
+        roughness 0.7
+        metalness 0.9
+      }
+      geometry Box {
+        size 0.3 1.2 1.25
+      }
+    }
+  ]
+  name "mezzanine leg west"
+  boundingObject Box {
+    size 0.3 1.2 1.25
+  }
+}
+Solid {
+  translation 9.5 2.0 0.62
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.35 0.37 0.4
+        roughness 0.7
+        metalness 0.9
+      }
+      geometry Box {
+        size 0.3 1.2 1.25
+      }
+    }
+  ]
+  name "mezzanine leg east"
+  boundingObject Box {
+    size 0.3 1.2 1.25
+  }
+}
+
+
+# -- The fleet ------------------------------------------------------------
+# controllerArgs: <element_id> <n_elements> <scene> [fail_at_s] -- read by
+# controllers/rover/main.c, and by the transceiver's per-element UDP port
+# fan-out. n_elements and scene must match across every node in this file.
+#
+# Staging is per-scene and deliberate; see the generator note in the README.
+
+WarehouseAMR {
+  translation -11.00 -7.00 0.08
+  rotation 0 0 1 0
+  name "amr0"
+  controllerArgs [ "0" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -8.00 -7.00 0.08
+  rotation 0 0 1 0
+  name "amr1"
+  controllerArgs [ "1" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -5.00 -7.00 0.08
+  rotation 0 0 1 0
+  name "amr2"
+  controllerArgs [ "2" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -11.00 -4.00 0.08
+  rotation 0 0 1 0
+  name "amr3"
+  controllerArgs [ "3" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -8.00 -4.00 0.08
+  rotation 0 0 1 0
+  name "amr4"
+  controllerArgs [ "4" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -5.00 -4.00 0.08
+  rotation 0 0 1 0
+  name "amr5"
+  controllerArgs [ "5" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -11.00 -1.00 0.08
+  rotation 0 0 1 0
+  name "amr6"
+  controllerArgs [ "6" "8" "2" ]
+}
+
+WarehouseAMR {
+  translation -8.00 -1.00 0.08
+  rotation 0 0 1 0
+  name "amr7"
+  controllerArgs [ "7" "8" "2" ]
+}
+
+
+# -- The cloud comparison fleet (east side, same deck) --------------------
+# The cloud fleet's sole coordinating authority -- a fixed access
+# point. Not a fleet member: it never moves and carries no drive
+# hardware. See controllers/cloud_coordinator/main.c for why the whole
+# cloud fleet's intelligence lives in this one process.
+Robot {
+  translation 6.5 -7.5 0.0
+  name "cloud coordinator"
+  controller "cloud_coordinator"
+  controllerArgs [ "-1" "0" "999999" "0" "10" "0" "10" "8" "16:5.0:-6.0" "17:6.0:-6.0" "18:7.0:-6.0" "19:8.0:-6.0" "20:4.0:-6.0" "21:3.0:-6.0" "22:2.0:-6.0" "23:1.0:-6.0" ]
+  children [
+    Solid {
+      translation 0 0 0.6
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.2 0.2 0.22
+            roughness 0.6
+            metalness 0.7
+          }
+          geometry Cylinder {
+            radius 0.06
+            height 1.2
+          }
+        }
+      ]
+    }
+    Solid {
+      translation 0 0 1.25
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.75 0.15 0.15
+            roughness 0.4
+            metalness 0.3
+            emissiveColor 0.3 0.05 0.05
+          }
+          geometry Box {
+            size 0.3 0.3 0.15
+          }
+        }
+      ]
+    }
+  ]
+  boundingObject Cylinder {
+    radius 0.06
+    height 1.2
+  }
+}
+WarehouseAMR {
+  translation 5.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud16"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "16" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 6.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud17"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "17" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 7.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud18"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "18" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 8.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud19"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "19" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 9.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud20"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "20" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 10.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud21"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "21" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 11.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud22"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "22" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+WarehouseAMR {
+  translation 12.00 -6.00 0.08
+  rotation 0 0 1 0
+  name "cloud23"
+  bodyColor 0.15 0.35 0.75
+  controller "cloud_bot"
+  controllerArgs [ "23" "6.5" "-7.5" "6.5" "-7.5" "1" ]
+}
+
+# Presentation only -- reads each element's status datagrams and paints
+# on-screen labels. It has NO authority: it never writes to a robot, never
+# relays between them, and nothing in L3-L7 reads it. See
+# controllers/rover/status_tx.h.
+Robot {
+  name "warehouse supervisor"
+  controller "warehouse_supervisor"
+  supervisor TRUE
+}

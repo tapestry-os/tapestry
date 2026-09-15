@@ -88,3 +88,12 @@ examples/webots-formation/controllers/cf21bl/cf21bl
 
 # ci-check/ (header-stub compile check, no Webots install — see that dir)
 examples/webots-formation/ci-check/build/
+
+# examples/webots-warehouse/ — same pattern: per-user project-state cache,
+# the compiled controller binaries, and the ci-check build tree.
+examples/webots-warehouse/worlds/.*.wbproj
+examples/webots-warehouse/controllers/rover/rover
+examples/webots-warehouse/controllers/warehouse_supervisor/warehouse_supervisor
+examples/webots-warehouse/controllers/cloud_bot/cloud_bot
+examples/webots-warehouse/controllers/cloud_coordinator/cloud_coordinator
+examples/webots-warehouse/ci-check/build/

@@ -34,6 +34,7 @@
 #ifndef TAPESTRY_TRANSCEIVER_UDP_POSIX_H
 #define TAPESTRY_TRANSCEIVER_UDP_POSIX_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <tapestry/transceiver.h>
 
@@ -51,6 +52,34 @@ extern const tapestry_transceiver_t transceiver_udp_posix;
  * base_port and n_elements for this to form a complete mesh.
  */
 void udp_posix_configure(uint8_t element_id, uint8_t n_elements, uint16_t base_port);
+
+/*
+ * udp_posix_set_rx_filter — install a predicate consulted for every received
+ * gossip datagram.  Returning false drops the frame as if it had never
+ * arrived; the transceiver then reads the next queued datagram rather than
+ * reporting an empty socket.  NULL (the default) accepts everything, so an
+ * example that never calls this is completely unaffected —
+ * examples/webots-formation does not call it.
+ *
+ * This exists to model physical RF obstruction.  It is a RECEIVE-side hook
+ * and not a transmit mask, which is a deliberate and slightly
+ * counter-intuitive choice: obstruction depends on where BOTH endpoints
+ * actually are, and only the receiver has both — its own live position, and
+ * the sender's position carried inside the frame.  A transmitter can only
+ * consult what it last HEARD about a peer, and that belief necessarily
+ * freezes at the moment the peer became unreachable, i.e. while the peer was
+ * still on the near side.  A transmit-side model therefore cannot produce a
+ * symmetric partition: the side that stayed put keeps believing the link is
+ * clear and keeps being heard, yielding a stable one-way link.  That bug is
+ * why this is shaped this way.
+ *
+ * It is NOT a general link-quality or packet-loss knob: the predicate is
+ * binary and applies to the gossip socket only.  Its only user today is
+ * examples/webots-warehouse/controllers/rover/rf_occlusion.c.
+ */
+typedef bool (*udp_posix_rx_filter_fn)(const uint8_t *data, uint16_t len);
+
+void udp_posix_set_rx_filter(udp_posix_rx_filter_fn fn);
 
 /* Added to base_port for the directive socket's port range — see the
  * header comment above.  Chosen well clear of any plausible n_elements

@@ -1,0 +1,183 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackgroundLight.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+EXTERNPROTO "../protos/WarehouseAMR.proto"
+
+WorldInfo {
+  info [
+    "Scene 1 -- Decentralized task allocation without a cloud."
+    "Eight AMRs are staged in a tight block at the dock and settle into"
+    "pick zones."
+    "Each robot derives its own zone from scr_get_task_slot() over its"
+    "own L4 world model. No coordinator, no cloud, no assignment"
+    "message -- see ../scene1-zone-allocation.choreo.toml."
+  ]
+  title "Tapestry warehouse -- scene 1: decentralized zone allocation (N=8)"
+  # 16 ms rather than the drone example's 8 ms: a ground vehicle at 0.9 m/s
+  # needs nothing like a rotorcraft's attitude-loop rate, and halving the
+  # step count matters with 8 controller processes plus a supervisor sharing
+  # one machine. The L4-L7 coordination cadence is unaffected either way --
+  # main.c accumulates sim time to WM_CYCLE_MS (100 ms) independently.
+  basicTimeStep 16
+  contactProperties [
+    # The AMR's fore/aft casters (contactMaterial "caster" in
+    # ../protos/WarehouseAMR.proto) must not scrub against the floor, or the
+    # robot veers under a pure-rotation command instead of turning in place.
+    ContactProperties {
+      material1 "caster"
+      material2 "default"
+      coulombFriction [ 0 ]
+    }
+  ]
+}
+Viewpoint {
+  # Top view, looking straight down over the center of the floor. 35 m
+  # comfortably fits the full 24x24 m floor (racking pushes the y-extent to
+  # ~24.2 m) under Webots' default 45-degree field of view, with margin.
+  orientation 0.577 -0.577 -0.577 4.19
+  position 0 0 35
+}
+TexturedBackground {
+}
+TexturedBackgroundLight {
+}
+Floor {
+  size 24.0 24.0
+  tileSize 7 7
+}
+
+Solid {
+  translation -11.8 0 0.6
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.45 0.42 0.38
+        roughness 0.9
+        metalness 0
+      }
+      geometry Box {
+        size 0.4 22 1.2
+      }
+    }
+  ]
+  name "dock wall"
+  boundingObject Box {
+    size 0.4 22 1.2
+  }
+}
+
+Solid {
+  translation 0 11.5 1.25
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.28 0.3 0.34
+        roughness 0.85
+        metalness 0.6
+      }
+      geometry Box {
+        size 22 1.0 2.5
+      }
+    }
+  ]
+  name "racking north"
+  boundingObject Box {
+    size 22 1.0 2.5
+  }
+}
+
+Solid {
+  translation 0 -11.5 1.25
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.28 0.3 0.34
+        roughness 0.85
+        metalness 0.6
+      }
+      geometry Box {
+        size 22 1.0 2.5
+      }
+    }
+  ]
+  name "racking south"
+  boundingObject Box {
+    size 22 1.0 2.5
+  }
+}
+
+
+# -- The fleet ------------------------------------------------------------
+# controllerArgs: <element_id> <n_elements> <scene> [fail_at_s] -- read by
+# controllers/rover/main.c, and by the transceiver's per-element UDP port
+# fan-out. n_elements and scene must match across every node in this file.
+#
+# Staging is per-scene and deliberate; see the generator note in the README.
+
+WarehouseAMR {
+  translation -10.90 -1.65 0.08
+  rotation 0 0 1 0
+  name "amr0"
+  controllerArgs [ "0" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -10.90 -0.55 0.08
+  rotation 0 0 1 0
+  name "amr1"
+  controllerArgs [ "1" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -10.90 0.55 0.08
+  rotation 0 0 1 0
+  name "amr2"
+  controllerArgs [ "2" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -10.90 1.65 0.08
+  rotation 0 0 1 0
+  name "amr3"
+  controllerArgs [ "3" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -9.80 -1.65 0.08
+  rotation 0 0 1 0
+  name "amr4"
+  controllerArgs [ "4" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -9.80 -0.55 0.08
+  rotation 0 0 1 0
+  name "amr5"
+  controllerArgs [ "5" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -9.80 0.55 0.08
+  rotation 0 0 1 0
+  name "amr6"
+  controllerArgs [ "6" "8" "1" ]
+}
+
+WarehouseAMR {
+  translation -9.80 1.65 0.08
+  rotation 0 0 1 0
+  name "amr7"
+  controllerArgs [ "7" "8" "1" ]
+}
+
+# Presentation only -- reads each element's status datagrams and paints
+# on-screen labels. It has NO authority: it never writes to a robot, never
+# relays between them, and nothing in L3-L7 reads it. See
+# controllers/rover/status_tx.h.
+Robot {
+  name "warehouse supervisor"
+  controller "warehouse_supervisor"
+  supervisor TRUE
+}

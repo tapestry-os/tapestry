@@ -1,0 +1,116 @@
+# scene3-failover.choreo.toml — "Element failure and automatic task
+# reallocation", and the ONLY file to edit to change scene 3. Regenerate
+# the committed header:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/webots-warehouse/scene3-failover.choreo.toml \
+#       -o tapestry/examples/webots-warehouse/controllers/rover/scene3/choreo_script.h
+#
+# Units are METERS in the Webots world frame — see scene 1's script header.
+#
+# THE POINT OF THIS SCENE: element 3 dies mid-pick (worlds/
+# scene3_failover_vs_cloud.wbt gives it --fail-at; this scene runs
+# exclusively as its cloud-comparison variant; controllers/rover/main.c
+# stops gossiping and exits, with NO departure flag — a hard failure is
+# silence, not a goodbye). Its peers notice on their own.
+#
+# The reallocation latency is WM_STALE_THRESHOLD_MS = 1500 ms (csm.h), and
+# it is worth being precise about why that number and not the other one:
+# both scr.c's candidate scan and bse.c's collect_participants() filter on
+# !is_stale, so a silent element leaves swarm_size / task_slot / the FORM
+# participant set 1.5 s after its last gossip frame. WM_EXPIRE_THRESHOLD_MS
+# (5 s) is a LATER, separate transition that clears is_active; it governs
+# when the corpse stops voting in choreo_collective_achieved(), not when
+# its work is redistributed.
+#
+# CIRCLE, not LINE. An earlier version of this script used FORM/LINE, and
+# the reallocation logic worked correctly, but almost nobody could actually
+# SEE it happen: 8 points on a line respacing from 2.33 m to 2.33 m
+# increments reads, at a glance, as "the line looks the same". A ring makes
+# the same reallocation an order of magnitude more legible — losing 1 of 8
+# evenly-spaced points changes EVERY survivor's angular position by a
+# visibly different amount, not a small linear nudge — see the per-element
+# numbers below.
+
+choreo = "wh-failover"
+
+# Settle at the dock; gossip converges to swarm_size 8.
+[[steps]]
+hold = { duration = "5s", requires = ["locomotion"] }
+
+# Form a ring around (-5, 0), radius 4 m. FORM/CIRCLE places `count`
+# elements evenly around the circle at angle = 2*pi*rank/count (bse.c), so
+# 8 robots land at:
+#   id0 (-1.00, 0.00)   id1 (-2.17, 2.83)   id2 (-5.00, 4.00)
+#   id3 (-7.83, 2.83)   id4 (-9.00, 0.00)   id5 (-7.83,-2.83)
+#   id6 (-5.00,-4.00)   id7 (-2.17,-2.83)
+# Advances once the whole ring has settled.
+[[steps]]
+[steps.form]
+target   = [-5.0, 0.0, 0.0]
+shape    = "circle"
+radius   = 4.0
+until    = "achieved"
+scope    = "all"
+timeout  = "50s"
+eps      = 0.4
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Hold the ring LIVE while element 3 fails. This is a second FORM step, not
+# a HOLD: HOLD captures a fixed station per element and would ignore the
+# loss entirely, so the reallocation would be invisible. Bounded by
+# `duration` instead of `until = "achieved"` precisely so it does NOT
+# advance when the ring settles — it keeps re-solving the layout from
+# swarm_size every tick, which is what lets the failure land inside it.
+#
+# spin makes the ring actually orbit rather than sit still — matching
+# scene 3's cloud fleet, which is doing a continuous orbit of its own
+# (controllers/cloud_coordinator/main.c's MODE_ORBIT) the whole time it's
+# alive. Same angular rate (2*pi/40s, the cloud orbit's own period), so
+# side by side the two rings visibly stay in lockstep right up to the
+# moment the cloud one freezes — a static Tapestry ring next to a moving
+# cloud one would read as two different demos, not one comparison. bse.c's
+# SPIN motion rotates the shape's offset shape-agnostically and achievement
+# tracks the moving vertex, so this composes with the reallocation below
+# for free — no separate handling needed for "spinning AND down a member."
+# spin_theta resets to 0 at every new goal (bse.c's activate_intent()), and
+# step 2 above never spins, so this step's spin starts exactly where the
+# settled static ring left off — no visible snap at the transition.
+#
+# When element 3 (at -7.83, 2.83) goes silent, the 7 survivors re-rank onto
+# a 7-point ring at the SAME center and radius — positions below are the
+# instant of reallocation; both rings keep turning after that, not holding
+# these points:
+#   id0 (-1.00, 0.00) unchanged   id1 (-2.51, 3.13)   id2 (-5.89, 3.90)
+#   id4 (-8.60, 1.75)             id5 (-8.60,-1.75)   id6 (-5.89,-3.90)
+#   id7 (-2.51,-3.13)
+# Every survivor's angular slot shifts — nobody is told to do this and
+# nobody is asked for permission.
+#
+# The corpse is a physical obstacle the collective can no longer SEE (the
+# tracker's repulsion acts on fresh peers only, and a dead element goes
+# stale 1.5 s after its last frame), so it is worth checking, not assuming,
+# that no survivor's path passes close to where element 3 died. The
+# nearest approach is id4's move from (-9,0) to (-8.60,1.75), whose
+# straight-line path comes no closer than 1.34 m to (-7.83,2.83) — clear
+# of the 0.8 m emergency-repulsion floor (DEMO_MIN_SEP_M,
+# controllers/rover/sources.mk) with margin to spare. Every other
+# survivor's path clears by 2.2 m or more. That margin was computed for the
+# STATIC ring; the spinning ring's own clearance is checked empirically
+# below rather than re-derived by hand — see the validation run.
+[[steps]]
+[steps.form]
+target   = [-5.0, 0.0, 0.0]
+shape    = "circle"
+radius   = 4.0
+duration = "40s"
+spin     = "0.15708rad/s"
+eps      = 0.4
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Quiescence on the reallocated ring, 7 elements covering what 8 were
+# covering a minute ago.
+[[steps]]
+hold = { duration = "10s", requires = ["locomotion"] }

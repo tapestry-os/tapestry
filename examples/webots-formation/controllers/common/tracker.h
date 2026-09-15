@@ -40,20 +40,37 @@
  * version of this file shrank these to chase a slow-convergence problem
  * that turned out to be unrelated — see the WEBOTS FORK NOTE in
  * ../../change-partners.choreo.toml for the real cause and fix.) */
+/* #ifndef-guarded, like DEMO_MAX_SPEED_MPS above, so a substrate whose
+ * physical scale genuinely differs can set them from its own build without
+ * forking this file.  Unset, they are exactly the flight-validated cf21bl
+ * values this example has always used — examples/webots-formation overrides
+ * none of them.  examples/webots-warehouse overrides all of them (its arena
+ * is ~10x larger and its elements are 0.5 m ground vehicles, not 0.1 m
+ * airframes); see that example's controllers/rover/sources.mk. */
+#ifndef DEMO_MIN_SEP_M
 #define DEMO_MIN_SEP_M      0.5f
+#endif
+#ifndef EMERGENCY_K
 #define EMERGENCY_K         4.0f
+#endif
 
 /* Maps net repulsion force magnitude to a commanded speed fraction. */
+#ifndef FORCE_TO_SPEED
 #define FORCE_TO_SPEED      0.15f
+#endif
 
 /* Arena clamp for the commanded target — a Webots-sized default, generous
  * relative to the ~1 m swap distances change-partners.choreo.toml uses. */
+#ifndef DEMO_ARENA_LIMIT_M
 #define DEMO_ARENA_LIMIT_M  5.0f
+#endif
 
 /* Target leash: the virtual target may never be further than this from the
  * drone's REAL position — see formation.c's original comment (2026-07-11
  * flight incident) for why this exists. */
+#ifndef DEMO_TARGET_LEASH_M
 #define DEMO_TARGET_LEASH_M   0.75f
+#endif
 
 typedef struct {
     float x;   /* commanded X setpoint, meters, world frame */

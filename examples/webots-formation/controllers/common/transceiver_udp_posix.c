@@ -19,6 +19,18 @@ static uint16_t g_base_port;
 static int      g_sock = -1;
 static int      g_dir_sock = -1;   /* directive frames — own port range, see .h */
 
+/* Optional receive filter — see udp_posix_set_rx_filter() in the header.
+ * NULL (accept everything) by default, so a caller that never sets one sees
+ * exactly the previous behavior; examples/webots-formation does not set one.
+ * Its only user is examples/webots-warehouse/controllers/rover/
+ * rf_occlusion.c. */
+static udp_posix_rx_filter_fn g_rx_filter;
+
+void udp_posix_set_rx_filter(udp_posix_rx_filter_fn fn)
+{
+    g_rx_filter = fn;
+}
+
 void udp_posix_configure(uint8_t element_id, uint8_t n_elements, uint16_t base_port)
 {
     g_element_id = element_id;
@@ -104,15 +116,25 @@ static int udp_posix_rx(uint8_t *buf, uint16_t max_len)
         return 0;
     }
 
-    ssize_t n = recvfrom(g_sock, buf, max_len, 0, NULL, NULL);
-    if (n < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return 0;
+    /* Loops rather than returning 0 on a filtered frame: returning 0 means
+     * "nothing to read", which would leave any datagrams queued behind the
+     * dropped one unread until the next poll and throttle delivery to one
+     * frame per call.  Keep reading until a frame is accepted or the socket
+     * is genuinely empty. */
+    for (;;) {
+        ssize_t n = recvfrom(g_sock, buf, max_len, 0, NULL, NULL);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return 0;
+            }
+            return -1;
         }
-        return -1;
+        if (g_rx_filter != NULL &&
+            !g_rx_filter(buf, (uint16_t)n)) {
+            continue;   /* obstructed — drop and try the next datagram */
+        }
+        return (int)n;
     }
-
-    return (int)n;
 }
 
 static void udp_posix_set_power(float level)

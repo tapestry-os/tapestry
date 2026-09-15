@@ -6,6 +6,31 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- **Warehouse AMR example** (`examples/webots-warehouse/`) — eight simulated
+  differential-drive warehouse robots running the real, unmodified L3-L7
+  stack against Webots physics, in three scenes with no coordinator in any
+  of them (decentralized pick-zone allocation, RF partition recovery, and
+  hard-failure task reallocation — the latter uses a ring formation, not a
+  line, so losing 1 of 8 evenly-spaced points is actually visible rather than
+  a sub-meter nudge along a face), plus two comparison scenes (2B, 3B) that
+  put a small centrally-coordinated "cloud" fleet on the same floor under the
+  same fault, side by side with the Tapestry fleet. The comparison fleet
+  (`controllers/cloud_bot/`, `controllers/cloud_coordinator/`) is an
+  honestly-labeled architectural analog for centralized/cloud-dependent
+  coordination, not a reimplementation of any specific real framework, and
+  links no Tapestry L3-L7 source at all, by design. Scene 2B crosses the same
+  RF-opaque steel deck as scene 2; its robots freeze permanently the instant
+  they lose line of sight to their one coordinator, while the Tapestry fleet
+  keeps working on both sides of the split. Scene 3B orbits a second ring
+  under continuous coordinator control and kills the coordinator itself (not
+  a peer) at the same instant scene 3 kills a Tapestry peer: all four cloud
+  robots freeze permanently mid-orbit within the same 1500 ms grace period
+  Tapestry uses for its own peer-staleness detection, while the Tapestry
+  fleet loses one of eight and self-heals. Two additive
+  changes to `webots-formation/controllers/common/`, both no-ops for the
+  drone build: `udp_posix_set_rx_filter()` (a receive-side predicate,
+  default NULL) and `#ifndef` guards around `tracker.h`'s `DEMO_*` constants
+  so a substrate at a different physical scale can override them.
 - **Remote L6 directive path over the wire** (`TAPESTRY_MSG_DIRECTIVE`, wire
   v5) — an edge/cloud BSE host (or an elected `SCR_CAP_BSE_HOST` element)
   can now stream per-element directives that steer an element directly,

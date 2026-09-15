@@ -1,0 +1,138 @@
+# scene2-partition.choreo.toml — "Partition recovery in a warehouse", and
+# the ONLY file to edit to change scene 2. Regenerate the committed header:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/webots-warehouse/scene2-partition.choreo.toml \
+#       -o tapestry/examples/webots-warehouse/controllers/rover/scene2/choreo_script.h
+#
+# Units are METERS in the Webots world frame — see scene 1's script header.
+#
+# THE POINT OF THIS SCENE: nothing below injects a fault. The RF partition
+# is caused by the fleet doing its job — the `move` step at step 3 drives
+# part of the formation under a steel mezzanine deck (worlds/
+# scene2_partition_vs_cloud.wbt — this scene runs exclusively as its
+# cloud-comparison variant), and controllers/rover/rf_occlusion.c refuses to
+# transmit across it. The fleet splits into a 5-element island north of the
+# deck and a 3-element island south of it, each keeps executing, and they
+# reconcile on the `converge` at step 5 when the north island comes back
+# under the deck. AP is the default (consistency_bias 0.0, see
+# controllers/rover/main.c); set CONSISTENCY_BIAS=1.0 to watch the MINORITY
+# island freeze instead, which is the comparison this scene exists to make.
+#
+# Step ordering here is load-bearing, not cosmetic. See the `move` step.
+
+choreo = "wh-partition"
+
+# Settle at the inbound dock. Every robot is south of the deck and the
+# fleet is fully connected: swarm_size 8, quorum HEALTHY.
+[[steps]]
+hold = { duration = "5s", requires = ["locomotion"] }
+
+# Form up at the dock end, still entirely south of the deck. 3x3 grid at
+# 3.0 m spacing centered on (-6.0, -4.0) puts every element in
+# y = {-7.0, -4.0, -1.0}, all well clear of the deck band (y in [1.4, 2.6]).
+# Doing the FORM here, before any partition exists, is deliberate: FORM
+# recomputes its layout from swarm_size EVERY tick, so a FORM step that
+# straddled the deck would reflow the grid the instant the fleet split,
+# which would drive the reflowed elements back across the boundary, which
+# would re-merge the fleet, which would reflow it again. That feedback loop
+# is real (absolute-frame FORM + a position-dependent partition) and this
+# script avoids it by construction rather than by tuning.
+[[steps]]
+[steps.form]
+target   = [-6.0, -4.0, 0.0]
+shape    = "grid"
+radius   = 3.0
+until    = "achieved"
+scope    = "all"
+timeout  = "50s"
+eps      = 0.4
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Drive the formed grid north to the pick faces, crossing the deck. THIS
+# is the step that partitions the fleet, and MOVE is the goal that can
+# survive doing so: MOVE snapshots each element's offset from the
+# participant centroid ONCE at activation (bse.c's move_captured /
+# move_offset) and thereafter commands eff_target + that frozen offset. A
+# mid-step change in swarm_size therefore cannot re-assign anybody — which
+# is exactly what makes it safe to run across a partition, and exactly what
+# FORM (step 2) could not have done.
+#
+# The frozen offsets are taken from the participant centroid at
+# (-6.375, -4.375) — note the grid is 8 elements in a 3x3, so it is NOT
+# symmetric and the centroid is not the grid's nominal center. Rows
+# therefore land at y = {0.575, 3.575, 6.575}: the 3 elements of the bottom
+# row stay SOUTH of the deck, the 5 above it end up NORTH. The tightest
+# clearance to the band is 0.825 m, so neither group parks inside it and
+# the split is unambiguous once the move settles. (Links do flap while
+# elements transit the band — that is what QUORUM_UP_MS in main.c damps.
+# See the README.)
+#
+# scope="all" still holds across the split, and costs a bounded delay
+# rather than a deadlock: choreo_collective_achieved() counts a peer that
+# has merely gone stale (1.5 s) as still voting its last-known bit, and
+# only stops counting it at expiry (WM_EXPIRE_THRESHOLD_MS, 5 s). So each
+# island blocks on the other for ~5 s, then advances on its own members.
+# The timeout below is sized with that 5 s in it.
+[[steps]]
+[steps.move]
+target   = [0.0, 3.2, 0.0]
+until    = "achieved"
+scope    = "all"
+timeout  = "60s"
+eps      = 0.5
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Work the pick faces while partitioned. HOLD is self-referential — it
+# captures each element's own station and needs no peers at all (see
+# choreo.h's per-goal quorum note on CHOREO_STATE_SUSPENDED), so both
+# islands station-keep here regardless of what quorum says. This is the
+# beat to watch: two islands, no shared world model between them, both
+# still executing the same script step.
+[[steps]]
+hold = { duration = "15s", requires = ["locomotion"] }
+
+# Recall to the dock formation. The north island comes back under the deck,
+# RF is restored, and the two world models reconcile by Lamport clock
+# (wm_reconcile) — swarm_size returns to 8 on both sides and quorum recovers.
+#
+# FORM back to step 2's grid, deliberately NOT converge. CONVERGE sends every
+# element to the SAME point, and for eight 0.5 m ground vehicles that is a
+# pile-up rather than a rendezvous — an early version of this script ended on
+# a converge and logged 434 separation-violation ticks in ten seconds as the
+# fleet stacked onto one dock coordinate. Its emergency repulsion was the
+# only thing spacing them, which is not what repulsion is for. FORM gives
+# each element its own station and the arrival is orderly.
+#
+# It also demonstrates the reconciliation better than converge could. This
+# grid's shape is a function of swarm_size, so while the fleet is still split
+# the two islands lay out a 5-cell and a 3-cell grid respectively, and you
+# watch them resolve into ONE 8-element grid at the moment the world models
+# merge. A converge would have looked identical partitioned or not.
+#
+# Safe against the reflow feedback loop that step 2's comment warns about,
+# and for a checkable reason rather than by luck: every cell of this grid is
+# south of the deck (y in {-7, -4, -1}), so a reflow can only ever move an
+# element toward the healed side. Crossing back never re-splits the fleet.
+#
+# SAFETY NOTE, stated rather than hidden: for the first seconds of this step
+# the two islands are still RF-blind to each other, and both avoid.c and
+# tracker.c's repulsion act only on FRESH peers. Cross-island separation is
+# therefore unguarded until the deck is cleared. See the README.
+[[steps]]
+[steps.form]
+target   = [-6.0, -4.0, 0.0]
+shape    = "grid"
+radius   = 3.0
+until    = "achieved"
+scope    = "all"
+timeout  = "70s"
+eps      = 0.4
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Quiescence in the dock formation, as one reconciled fleet of 8.
+[[steps]]
+hold = { duration = "10s", requires = ["locomotion"] }

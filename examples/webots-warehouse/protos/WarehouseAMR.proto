@@ -1,0 +1,278 @@
+#VRML_SIM R2025a utf8
+# license: Apache License 2.0
+# license url: https://www.apache.org/licenses/LICENSE-2.0
+# documentation url: https://github.com/tapestry-os/tapestry/blob/main/examples/webots-warehouse/README.md
+# tags: static
+# A differential-drive warehouse AMR (autonomous mobile robot) for the
+# Tapestry warehouse example.
+#
+# Written by hand rather than reusing a stock Webots robot PROTO for two
+# reasons: nothing Webots ships is a warehouse AMR (the closest are lab
+# robots at the wrong scale), and a self-contained PROTO means the worlds
+# load with no EXTERNPROTO fetch for the robot itself.
+#
+# DEVICE NAMES ARE AN API. controllers/rover/substrate_webots.c looks these
+# up by name in substrate_init():
+#   "left wheel motor", "right wheel motor"  RotationalMotor, velocity mode
+#   "gps"                                    absolute position ground truth
+#   "inertial unit"                          absolute attitude ground truth
+#   "status led"                             substrate_set_signal() output
+#
+# GEOMETRY IS ALSO AN API. The differential-drive conversion in
+# substrate_webots.c needs the wheel radius and the track width, and the
+# controller API cannot read PROTO fields back, so both are duplicated there
+# as WHEEL_RADIUS_M and TRACK_WIDTH_M. Change one, change the other:
+#
+#   WHEEL_RADIUS_M 0.08  <-> the wheelRadius field below
+#   TRACK_WIDTH_M  0.36  <-> TWICE the +/-0.18 wheel anchor/translation below
+#
+# Track width is not a field because Webots rejects a declared PROTO field
+# that is never bound with IS, and VRML has no arithmetic to turn a
+# trackWidth field into the half-track the anchors actually need.
+
+PROTO WarehouseAMR [
+  field SFVec3f    translation     0 0 0.08
+  field SFRotation rotation        0 0 1 0
+  field SFString   name            "amr"
+  field SFColor    bodyColor       0.85 0.45 0.05
+  field SFString   controller      "rover"
+  field MFString   controllerArgs  []
+  field SFFloat    wheelRadius     0.08     # must match WHEEL_RADIUS_M
+]
+{
+  Robot {
+    translation IS translation
+    rotation IS rotation
+    name IS name
+    controller IS controller
+    controllerArgs IS controllerArgs
+    children [
+      # ── Chassis ─────────────────────────────────────────────────────────
+      Shape {
+        appearance PBRAppearance {
+          baseColor IS bodyColor
+          roughness 0.6
+          metalness 0.2
+        }
+        geometry Box {
+          size 0.5 0.34 0.14
+        }
+      }
+      # Load deck — makes the robot's facing direction readable at a glance
+      # from the default overhead-ish viewpoint, which matters when eight of
+      # them are maneuvering.
+      Transform {
+        translation 0.12 0 0.09
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0.15 0.15 0.17
+              roughness 0.8
+              metalness 0
+            }
+            geometry Box {
+              size 0.22 0.3 0.04
+            }
+          }
+        ]
+      }
+
+      # ── Status LED ──────────────────────────────────────────────────────
+      # Webots LED semantics: wb_led_set(tag, 0) is OFF, and any value N > 0
+      # selects color[N-1]. substrate_webots.c passes substrate_signal_t
+      # straight through, so this array must be ordered to match that enum
+      # from its value 1 upward:
+      #   1 SUBSTRATE_SIGNAL_IDLE      white
+      #   2 SUBSTRATE_SIGNAL_ACTIVE    green    (goal running, quorum healthy)
+      #   3 SUBSTRATE_SIGNAL_DEGRADED  amber    (goal running, peers stale)
+      #   4 SUBSTRATE_SIGNAL_FAILED    red      (quorum lost / unachievable)
+      # SUBSTRATE_SIGNAL_NONE (0) is the OFF case and needs no entry.
+      LED {
+        name "status led"
+        color [
+          1 1 1
+          0.1 0.9 0.2
+          1 0.7 0
+          1 0.1 0.1
+        ]
+        children [
+          Transform {
+            translation -0.15 0 0.09
+            children [
+              Shape {
+                appearance PBRAppearance {
+                  baseColor 1 1 1
+                  emissiveColor 0.4 0.4 0.4
+                  roughness 0.4
+                  metalness 0
+                }
+                geometry Cylinder {
+                  radius 0.05
+                  height 0.03
+                }
+              }
+            ]
+          }
+        ]
+      }
+
+      # ── Sensors ─────────────────────────────────────────────────────────
+      # Absolute ground truth, both of them. This is what makes the example's
+      # SCR_CAP_ABS_POSITION claim honest — see substrate_webots.h.
+      GPS {
+        name "gps"
+      }
+      InertialUnit {
+        name "inertial unit"
+      }
+
+      # ── Drive wheels ────────────────────────────────────────────────────
+      # Axle along Y; a Webots Cylinder's height axis is already Y, so the
+      # wheel geometry needs no rotation of its own.
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0 0.18 0
+        }
+        device [
+          RotationalMotor {
+            name "left wheel motor"
+            # Matches MAX_WHEEL_RADPS in substrate_webots.c. Webots clamps
+            # per wheel, which would distort a commanded turn; the substrate
+            # rescales both wheels proportionally to stay under this instead.
+            maxVelocity 14
+          }
+        ]
+        endPoint Solid {
+          translation 0 0.18 0
+          children [
+            Shape {
+              appearance PBRAppearance {
+                baseColor 0.1 0.1 0.1
+                roughness 0.9
+                metalness 0
+              }
+              geometry Cylinder {
+                radius IS wheelRadius
+                height 0.05
+              }
+            }
+          ]
+          name "left wheel"
+          boundingObject Cylinder {
+            radius IS wheelRadius
+            height 0.05
+          }
+          physics Physics {
+            density -1
+            mass 0.8
+          }
+        }
+      }
+      HingeJoint {
+        jointParameters HingeJointParameters {
+          axis 0 1 0
+          anchor 0 -0.18 0
+        }
+        device [
+          RotationalMotor {
+            name "right wheel motor"
+            maxVelocity 14
+          }
+        ]
+        endPoint Solid {
+          translation 0 -0.18 0
+          children [
+            Shape {
+              appearance PBRAppearance {
+                baseColor 0.1 0.1 0.1
+                roughness 0.9
+                metalness 0
+              }
+              geometry Cylinder {
+                radius IS wheelRadius
+                height 0.05
+              }
+            }
+          ]
+          name "right wheel"
+          boundingObject Cylinder {
+            radius IS wheelRadius
+            height 0.05
+          }
+          physics Physics {
+            density -1
+            mass 0.8
+          }
+        }
+      }
+
+      # ── Casters ─────────────────────────────────────────────────────────
+      # Two frictionless spheres fore and aft turn the two driven wheels into
+      # a stable three-plus-point stance without adding steering drag. They
+      # carry contactMaterial "caster", which every world in this example
+      # pairs with the floor at coulombFriction 0 — see the ContactProperties
+      # node in each .wbt. Without that pairing they would scrub and the
+      # robot would veer under pure-rotation commands.
+      Solid {
+        translation 0.19 0 -0.045
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0.3 0.3 0.3
+              roughness 0.3
+              metalness 0.5
+            }
+            geometry Sphere {
+              radius 0.035
+              subdivision 2
+            }
+          }
+        ]
+        name "front caster"
+        contactMaterial "caster"
+        boundingObject Sphere {
+          radius 0.035
+          subdivision 2
+        }
+        physics Physics {
+          density -1
+          mass 0.1
+        }
+      }
+      Solid {
+        translation -0.19 0 -0.045
+        children [
+          Shape {
+            appearance PBRAppearance {
+              baseColor 0.3 0.3 0.3
+              roughness 0.3
+              metalness 0.5
+            }
+            geometry Sphere {
+              radius 0.035
+              subdivision 2
+            }
+          }
+        ]
+        name "rear caster"
+        contactMaterial "caster"
+        boundingObject Sphere {
+          radius 0.035
+          subdivision 2
+        }
+        physics Physics {
+          density -1
+          mass 0.1
+        }
+      }
+    ]
+    boundingObject Box {
+      size 0.5 0.34 0.14
+    }
+    physics Physics {
+      density -1
+      mass 12
+    }
+  }
+}

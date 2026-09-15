@@ -1,0 +1,79 @@
+# scene1-zone-allocation.choreo.toml — "Decentralized task allocation
+# without a cloud", and the ONLY file to edit to change scene 1.
+# Regenerate the committed header afterwards:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/webots-warehouse/scene1-zone-allocation.choreo.toml \
+#       -o tapestry/examples/webots-warehouse/controllers/rover/scene1/choreo_script.h
+#
+# Units are METERS in the Webots world frame (bare numbers pass through
+# parse_length_m() unitless — see sdk/python/tapestry/script_toml.py), NOT
+# cutebot-formation's abstract [0, WORLD_SIZE] units. The AMR's position
+# comes from a Webots GPS, which is genuine absolute ground truth, so
+# abs_position below is an honest capability claim rather than
+# cutebot-formation's dead-reckoning stand-in.
+#
+# THE POINT OF THIS SCENE: no step below names an element, a zone, or a
+# fleet size. Each robot derives its own pick zone from scr_get_task_slot()
+# / scr_get_swarm_size() (tapestry-os/subsys/scr/scr.c) — its ordinal in
+# the ID-sorted set of trusted, non-stale peers in its OWN L4 world model,
+# built purely from L3 gossip. Every robot computes the same sorted order
+# from its own converged copy with no extra messaging, no election for the
+# assignment itself, and no coordinator anywhere in the loop.
+#
+# An earlier version of this script opened with a DISPERSE step (a
+# MAINTAIN_SPRING spacing field, no assignment, before FORM/GRID handed out
+# the actual zones) meant to show a second, different decentralized
+# primitive — coverage-by-spacing alongside rank-based assignment. It was
+# dropped: it added nothing to THIS scene's own claim (FORM/GRID alone
+# already shows a fleet spreading from a tight start to its assigned zones
+# with no coordinator), while its own dynamics — an all-pairs spring that
+# needs the fleet to start CLOSER than its target spacing, and whose
+# equilibrium shape is sensitive to the starting geometry in ways that
+# aren't obvious until tested — were a real, recurring source of fragility
+# (see git history for the wall-drift and geofence-breach debugging this
+# cost). If you want to see that spacing-only primitive demonstrated
+# instead, `controllers/rover/spring_track.c` still implements it — the
+# BSE's DISPERSE intent is unchanged and unused rather than removed.
+
+choreo = "wh-zone-allocation"
+
+# Settle at the inbound dock before moving — the same opening beat
+# cf21bl-formation and cutebot-formation both use, and the window in which
+# gossip converges so swarm_size is 8 rather than whatever subset has been
+# heard from on tick one.
+[[steps]]
+hold = { duration = "5s", requires = ["locomotion"] }
+
+# Settle into discrete pick zones. FORM/GRID lays out a near-square
+# (cols = ceil(sqrt(count)), see bse.c) and hands each element the cell at
+# its own task_slot. With 8 robots that is a 3x3 with the last cell empty;
+# the layout is recomputed from swarm_size every tick, so it is the fleet
+# size that is actually GOSSIPING right now that decides the shape — never
+# a number written down here.
+#
+# radius is reused 1:1 as cell spacing (bse.c's GRID case), so 3.5 m
+# spacing over 3 columns spans 7 m of floor, centered on the origin and
+# comfortably inside the 24x24 m arena.
+#
+# scope="all" makes the step wait for every participating peer's gossiped
+# achieved bit (choreo_collective_achieved()), not just this robot's own —
+# the fleet advances together or not at all.
+[[steps]]
+[steps.form]
+target   = [0.0, 0.0, 0.0]
+shape    = "grid"
+radius   = 3.5
+until    = "achieved"
+scope    = "all"
+timeout  = "60s"
+eps      = 0.4
+settle   = "2s"
+requires = ["locomotion", "abs_position"]
+
+# Hold the assigned zones. Script completion is quiescence, which this
+# platform maps to sitting still with zero commanded wheel velocity —
+# there is no "land" for a ground AMR (same mapping cutebot-formation
+# makes; see controllers/rover/main.c).
+[[steps]]
+hold = { duration = "20s", requires = ["locomotion"] }
