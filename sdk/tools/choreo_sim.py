@@ -13,12 +13,12 @@ Choreo engine (sdk/python/tapestry). Two modes, one tick loop, one plotter:
       recorded. A clean replay (0 divergences) means the C engine that
       produced the recording and the current Python engine agree
       tick-for-tick on real flight/simulation data — see
-      sdk/CHOREO_SCRIPTS.md's "Parity" section. No Webots, no C build, no
-      live network — just the L6/L7 state machine re-run against frozen
-      inputs.
+      sdk/CHOREO_AUTHORING.md's "Parity and regression replay" section.
+      No Webots, no C build, no live network — just the L6/L7 state
+      machine re-run against frozen inputs.
 
   --simulate --script <name>.choreo.toml --elements N
-      Script-authoring mode. Instantiates N in-process Choreo objects —
+      Choreo-authoring mode. Instantiates N in-process Choreo objects —
       no C, no Zephyr, no network, no Webots — and drives them through
       the same script with a synthetic multi-element world: each tick,
       every element sees every other element's current (synthetic)

@@ -10,7 +10,7 @@ hardware anywhere in this repo.
 Two build modes (Kconfig choice `DEMO_MODE`, see `Kconfig`):
 
 - **`DEMO_MODE_CHOREO` (default)** — a real L5 SCR + a declarative L7
-  Choreo script (`form-grid.choreo.toml`) driven through the L6 BSE: hold
+  Choreo (`form-grid.choreo.toml`) driven through the L6 BSE: hold
   the boot-time station, arrange into a near-square grid, hold the
   finished grid. **Run on real Cutebot hardware, which reached and held
   the grid.** Read "Known limitations" below for what that run does and
@@ -43,10 +43,10 @@ active peers are fresh:
 This means the LEDs return to green after a removal and redistribution,
 regardless of how many robots remain.
 
-### `DEMO_MODE_CHOREO` — L5/L6/L7 script
+### `DEMO_MODE_CHOREO` — L5/L6/L7 Choreo
 
 A real L5 SCR (`scr_init()`/`scr_tick()`) tracks quorum from the actual
-world model, and a declarative L7 Choreo script
+world model, and a declarative L7 Choreo
 (`form-grid.choreo.toml`, compiled to `src/choreo_script.h` by
 `sdk/tools/choreoc.py`) drives the robots through the L6 BSE:
 
@@ -60,14 +60,14 @@ world model, and a declarative L7 Choreo script
    repo.
 3. **hold** — settle on the finished grid.
 
-Script completion (quiescence) maps to simply holding still — there is no
+Choreo completion (quiescence) maps to simply holding still — there is no
 takeoff/landing concept for a ground rover.
 
 LEDs follow the active step's declared indicator effect
 (`choreo_current_indicator()`) when one is set, falling back to the same
 peer-freshness heuristic as showcase mode otherwise.
 
-To change the script: edit `form-grid.choreo.toml`, then regenerate:
+To change the Choreo: edit `form-grid.choreo.toml`, then regenerate:
 
 ```sh
 python3 sdk/tools/choreoc.py tapestry/examples/cutebot-formation/form-grid.choreo.toml
@@ -254,7 +254,7 @@ per robot before running the formation demo.
 `tests/` is a host-buildable ztest suite (no BLE, no hardware) covering
 `demo_track_target()`'s go-to-point law (arrival snap, trapezoidal
 approach, the exact-180°-behind reverse case, the emergency repulsion
-backstop) and the form-grid script end-to-end, driven through real
+backstop) and the form-grid Choreo end-to-end, driven through real
 `demo_odometry_t` + `demo_track_target` + `demo_odometry_update`
 integration (not a teleporting perfect tracker) — matches
 `cf21bl-formation/tests`'s pattern.

@@ -5,7 +5,7 @@ controller and running it against simulated physics instead of real hardware. `c
 substrate-agnostic; `controllers/cf21bl/` is the one element this example currently ships
 a substrate for. See "Porting to a different element" below for adding another.
 
-The demonstrated script is [`examples/cf21bl-formation`](../cf21bl-formation/README.md)'s
+The demonstrated Choreo is [`examples/cf21bl-formation`](../cf21bl-formation/README.md)'s
 `change-partners.choreo.toml`, read directly from that example (no forked copy) — the
 exact same L4-L7 stack and L3 gossip framing, compiled unmodified into a plain Webots C
 controller instead of onto real cf21bl hardware. N simulated drones (the default
@@ -124,13 +124,13 @@ What a new element needs, in a new `controllers/<substrate>/`:
   the part worth copying directly.
 - A `.wbt` world instantiating that element's proto instead of `Crazyflie {}`.
 
-## Running a different choreo script
+## Running a different Choreo
 
-To fly a different script: write your own `<name>.choreo.toml` (goal/parameter reference:
-[`sdk/CHOREO_SCRIPTS.md`](../../sdk/CHOREO_SCRIPTS.md)), then compile it to the
+To fly a different Choreo: write your own `<name>.choreo.toml` (goal/parameter reference:
+[`sdk/CHOREO_AUTHORING.md`](../../sdk/CHOREO_AUTHORING.md)), then compile it to the
 **same** header path — the generated symbol names (`k_choreo_script`, `CHOREO_NAME`,
-etc.) are fixed regardless of the script's own name, since `main.c` always
-`#include`s `"choreo_script.h"`. For example, Running this choreo with the 
+etc.) are fixed regardless of the Choreo's own name, since `main.c` always
+`#include`s `"choreo_script.h"`. For example, running this Choreo with the
 `cf21bl` substrate:
 
 ```sh
@@ -193,7 +193,7 @@ stays LOST; the trigger fires on the edge into that state, not on every tick it 
 
 Set `TAPESTRY_TELEMETRY_DIR` before launching Webots to record each drone's
 per-tick L6/L7 inputs and outputs (position, wm_entries snapshot, quorum,
-script step, directive, achievement) to `<dir>/choreo_<element_id>.csv` —
+`script_step`, directive, achievement) to `<dir>/choreo_<element_id>.csv` —
 see `controllers/cf21bl/choreo_telemetry.h`. Unset (the default), this is a
 complete no-op — no file, no overhead.
 
@@ -207,7 +207,7 @@ TAPESTRY_TELEMETRY_DIR=/tmp/telemetry \
 Replay a captured CSV through the Python L6/L7 engine offline (no Webots, no
 C build) and diff every tick against the recording — a regression test for
 `sdk/python/tapestry` against real captured flight data, not just a bare
-script rehearsal:
+Choreo rehearsal:
 
 ```sh
 python3 ../../sdk/tools/choreo_sim.py --replay \
@@ -215,13 +215,13 @@ python3 ../../sdk/tools/choreo_sim.py --replay \
     --telemetry /tmp/telemetry/choreo_0.csv
 ```
 
-See sdk/CHOREO_SCRIPTS.md's "Parity" section for what a clean replay (0
-divergences) actually establishes.
+See sdk/CHOREO_AUTHORING.md's "Parity and regression replay" section for
+what a clean replay (0 divergences) actually establishes.
 
 `choreo_sim.py` also has a `--simulate` mode — no CSV, no Webots, no C
 build at all: it drives a synthetic multi-element run of a `.choreo.toml`
-directly through `sdk/python/tapestry` for sub-second script feedback
-while authoring. See sdk/CHOREO_SCRIPTS.md's "Script-authoring
+directly through `sdk/python/tapestry` for sub-second Choreo feedback
+while authoring. See sdk/CHOREO_AUTHORING.md's "Choreo-authoring
 simulation" section.
 
 ## Known limitations

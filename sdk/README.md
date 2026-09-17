@@ -23,24 +23,21 @@ below it is managed by Tapestry; application code calls only into this SDK.
 > feedback controller — the per-element achievement predicate
 > (`choreo_goal_achieved` / `bse_goal_achieved`) plus its collective
 > aggregation (`choreo_collective_achieved`, `scope = "all"` in TOML — see
-> [`CHOREO_SCRIPTS.md`](CHOREO_SCRIPTS.md)). A TOML script authoring/compiler
-> toolchain also exists (`sdk/tools/choreoc.py`,
-> `sdk/python/tapestry/script_toml.py`).
->
-> Deliberately out of the open-core tier (a licensing boundary, not a gap):
-> optimization across the swarm (a physics-aware planner, ML inference — the
-> EXCHANGE arc is a fixed geometric rule, not a planner), priority/preemption
-> across goals, a simulation/replay bridge, the monitor stage's telemetry
-> export, and the `scope = "all"` barrier/lockstep upgrade (collective
-> achievement here is eventually consistent, bounded by gossip latency — not
-> a synchronization guarantee). See `tapestry-os/include/tapestry/bse.h` and
-> `sdk/include/tapestry/choreo.h` for the itemized contract this
+> [`CHOREO_AUTHORING.md`](CHOREO_AUTHORING.md); eventually consistent,
+> bounded by gossip latency, not a synchronization guarantee). A TOML Choreo
+> authoring/compiler toolchain (`sdk/tools/choreoc.py`,
+> `sdk/python/tapestry/script_toml.py`), an offline replay/regression
+> harness and synthetic simulator (`sdk/tools/choreo_sim.py`), and a Webots
+> hardware-in-the-loop bridge (`examples/webots-formation`) round out the
+> authoring and validation loop. See `tapestry-os/include/tapestry/bse.h`
+> and `sdk/include/tapestry/choreo.h` for the itemized contract this
 > implementation satisfies.
 
-> **Writing a multi-step show?** Scripts (ordered, time-bounded goal
+> **Writing a multi-step show?** Choreos (ordered, time-bounded goal
 > sequences) are authored once in TOML and either compiled to a C header or
-> loaded directly in Python — see [`CHOREO_SCRIPTS.md`](CHOREO_SCRIPTS.md).
-> The quick starts below cover the single-goal API scripts are built from.
+> loaded directly in Python — see [`CHOREO_AUTHORING.md`](CHOREO_AUTHORING.md).
+> The quick starts below cover the single-goal API a Choreo's steps are
+> built from.
 
 ## Quick start — Python (simulation / research)
 
@@ -131,10 +128,10 @@ sdk/
   include/tapestry/choreo.h        L7 SDK API header (Goal / lifecycle / directive)
   python/tapestry/choreo.py        L7 Python mirror
   python/tapestry/bse.py           L6 Python mirror
-  python/tapestry/script_toml.py   Choreo script (TOML) parser/validator
-  tools/choreoc.py                 Choreo script compiler: TOML -> C header
+  python/tapestry/script_toml.py   Choreo (TOML) parser/validator
+  tools/choreoc.py                 Choreo compiler: TOML -> C header
   examples/hello_swarm.py          Minimal worked example (no sim required)
-  CHOREO_SCRIPTS.md                Script authoring + compilation guide
+  CHOREO_AUTHORING.md              Choreo authoring + compilation guide
 
 tapestry-os/
   include/tapestry/choreo.h        L7 C header (choreo_init, choreo_tick, etc.)

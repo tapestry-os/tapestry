@@ -6,7 +6,7 @@ nRF51822's syslink P2P radio channel.  Two build modes (Kconfig choice
 `DEMO_MODE`):
 
 - **Choreo mode (default)** — the first flight of the L6/L7 layers: a
-  declarative L7 Choreo script ("hold stations → exchange places → rest")
+  declarative L7 Choreo ("hold stations → exchange places → rest")
   drives the drones through the L6 Behavior Synthesis Engine.  **One
   binary for every drone** — element IDs are negotiated at boot over the
   radio (same auto-ID protocol as `examples/cutebot-formation`).  See
@@ -26,10 +26,10 @@ positioning alone.
 
 The entire application-level "program" is
 **`change-partners.choreo.toml`** in this directory — a three-step,
-coordinate-free script a non-programmer can edit cold. (The
-`<name>.choreo.toml` naming — name matching the script's own
-`choreo = "<name>"` key — is the project-wide convention for Choreo
-scripts; see `sdk/CHOREO_SCRIPTS.md`.)
+coordinate-free Choreo a non-programmer can edit cold. (The
+`<name>.choreo.toml` naming — name matching the Choreo's own
+`choreo = "<name>"` key — is the project-wide convention for Choreos;
+see `sdk/CHOREO_AUTHORING.md`.)
 
 ```toml
 choreo = "change-partners"
@@ -68,9 +68,9 @@ python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cf21bl-formation/change-
 ```
 
 `choreoc` is standard-library-only Python (>= 3.11, system python3 — no
-venv, nothing to install) and validates the script before emitting
+venv, nothing to install) and validates the Choreo before emitting
 anything: every step must be time-bounded (the timeout is the robustness
-net that keeps a script from stalling in flight — stricter than the C
+net that keeps a Choreo from stalling in flight — stricter than the C
 API on purpose), coordinate goals must have coordinates, and hold /
 exchange must NOT (they reference the collective's own configuration).
 The Python SDK reads the same file directly, no generation step:
@@ -94,22 +94,22 @@ What the steps mean:
 3. `hold` (8 s, the "bow") — a deliberate settle beat on the new stations
    before landing, not a sync mechanism (that's `scope = "all"` above).
 
-The script never says "take off", "land", or any altitude: script
+The Choreo never says "take off", "land", or any altitude: Choreo
 completion → directive IDLE → **quiescence**, which this platform maps to
 landing in place and disarming.  Takeoff is the same mapping in reverse —
 a parked drone holding a MOVE directive activates.  Altitude is
 Choreo-commanded (`directive.target.z`, ramped gently by `main.c`) rather
-than a platform-hardcoded per-drone constant, but this script doesn't
+than a platform-hardcoded per-drone constant, but this Choreo doesn't
 command any particular altitude — every drone just ramps to the same
 `ALT_BASE_M` default and stays there; see "Known limitations" below for
-why that makes the vertical dimension something this script does not
+why that makes the vertical dimension something this Choreo does not
 lean on for safety.
 
 Safety layers are unchanged from the showcase (see "Safety layer" below);
-the mission-duration backstop in choreo mode is derived from the script
+the mission-duration backstop in choreo mode is derived from the Choreo
 (hold + exchange timeout + bow + 40 s margin) and only fires if the
-script stalls, e.g. the partner is lost mid-show (quorum loss suspends
-the script — frozen timers — and freezes the target).
+Choreo stalls, e.g. the partner is lost mid-show (quorum loss suspends
+the Choreo — frozen timers — and freezes the target).
 
 ### Build + fly (2 drones, ONE build for both)
 
@@ -124,7 +124,7 @@ Two build flags matter for a readable multi-drone flight:
 | --- | --- | --- |
 | `CONFIG_DEMO_CONSOLE_VERBOSE` | `n` | `y` adds the full per-tick tracking traces (10 Hz), the lighthouse per-fix lines, and the stabilizer's 2 Hz pos/alt. Off, the console is roughly just the 1 Hz status line. See "The console is not free" below. |
 | `CONFIG_CF21BL_RADIO_ADDR_OVERRIDE` / `_LSB` | `n` / `231` | Give this element its own CRTP console address (`0xE7E7E7E7xx`, LSB in decimal: 232 = `0xE8`). Every Crazyflie ships on `0xE7E7E7E7E7`; two on one address both auto-ACK every host poll, and the colliding ACKs collapse the link. Not persisted — a power-cycle into the bootloader returns to the factory address, so `cfloader` keeps working. |
-| `CONFIG_DEMO_MISSION_MARGIN_S` | `90` | Seconds added to the script's own time bound for the mission backstop. Step timers freeze while the Choreo is SUSPENDED, so wall-clock runtime exceeds the script bound by however long the link was down. Raise it when chasing script behavior on a poor link. |
+| `CONFIG_DEMO_MISSION_MARGIN_S` | `90` | Seconds added to the Choreo's own time bound for the mission backstop. Step timers freeze while the Choreo is SUSPENDED, so wall-clock runtime exceeds the Choreo's time bound by however long the link was down. Raise it when chasing Choreo behavior on a poor link. |
 
 The 1 Hz status line carries both facts that one-shot log lines keep
 losing to console splicing:
@@ -134,10 +134,10 @@ id=0 LANDED peers 1/1 pos=(0.72,0.77) tgt=(0.72,0.93) alt=0.30 cmd_z=-1.00
      min_d=1.42 step=-1 q=L why=complete
 ```
 
-- `why=` — how the flight ended: `complete` (script ran out, the good
+- `why=` — how the flight ended: `complete` (Choreo ran out, the good
   case), `backstop` (`mission duration elapsed`), `fixloss`, `geofence`.
   Absent while still flying. From the ground `complete` and `backstop`
-  look identical, so read this before concluding a script finished.
+  look identical, so read this before concluding a Choreo finished.
 - `min_d=` — distance to the nearest fresh peer, the separation margin
   against `DEMO_MIN_SEP_M` (0.50 m). `-1.00` means no fresh peer in view:
   separation UNKNOWN, not known-safe.
@@ -156,7 +156,7 @@ Console output rides the same USART6 syslink link as P2P gossip, and the
 STM32F4's 1-byte UART FIFO makes every byte an interrupt competing with the
 1 kHz control loop. Logging therefore consumes the gossip the swarm runs on.
 
-Measured on one script, one pair of drones, changing only the console:
+Measured on one Choreo, one pair of drones, changing only the console:
 
 | Console | syslink `ck_fail` | Landing gap |
 | --- | --- | --- |
@@ -212,14 +212,14 @@ minutes after a console-less boot still tells the whole story.
    (the firmware logs a warning at first contact if the peers are closer
    than 1 m in the shared frame; that warning also fires if a biased
    lighthouse frame merely *believes* they are close — either way, do not
-   fly the script through it).
+   fly the Choreo through it).
 2. Power both on **within ~4 s of each other** — the 6 s auto-ID windows
    must overlap.  Watch the consoles for the `auto_id:` lines: each drone
    must report a **unique id** and `n_total=2` before flight.  A drone
-   that heard nobody claims id=0 and will fly a solo script — if
+   that heard nobody claims id=0 and will fly a solo Choreo — if
    `n_total` is wrong, power-cycle both and retry.
 3. Each drone waits for its lighthouse fix, counts down 5 s, arms, ramps
-   to the default altitude, and the script runs: 10 s of station hold,
+   to the default altitude, and the Choreo runs: 10 s of station hold,
    ~21 s arc-path swap, 8 s bow, then both land in place — each on its
    partner's original mark — and disarm.
 
@@ -248,8 +248,8 @@ position CCW).
 
 ### Choreo unit tests (native_sim)
 
-The `tests/` suite now also covers the script engine end-to-end: the
-hold→exchange→bow script with a perfect-tracking mirrored partner (swap
+The `tests/` suite now also covers the Choreo engine end-to-end: the
+hold→exchange→bow Choreo with a perfect-tracking mirrored partner (swap
 completes in ~26 s, separation never below 0.9 m, final station exact,
 IDLE directive at completion), suspension freezing step timers,
 exchange's hold-until-snapshot behavior, and rejection of unadvanceable
@@ -496,7 +496,7 @@ parameters). Override at build time with `-- -D<CONSTANT>=<value>`.
   Choreo/BSE's goal-tracking math (`tapestry-os/subsys/bse/bse.c`) is full
   3D, and `formation.c`'s peer-distance check folds in z, but its repulsion
   *force* stays horizontal-only by explicit, separate design. Vertical
-  separation, if a show wants it, is something the script expresses
+  separation, if a show wants it, is something the Choreo expresses
   (distinct `z` per track or element); nothing in the runtime supplies it.
 - **No attitude-estimate accessor.** `own_state.orientation` gossips
   `orientation_identity()` (no rotation) rather than a real IMU-derived

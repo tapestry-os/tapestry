@@ -29,64 +29,53 @@ as the platform to write it.
   L1  Physical Substrate Interface HAL motor drivers, sensor buses, communication transceivers
 ```
 
-L1–L5 execute on each physical element; L6–L7 execute on external compute (developer workstation, edge node, or cloud) or a sufficiently capable element within the collective. 
-The public API (L6–L7) is designed to remain stable as
-physical scale decreases from centimeters to nanometers.
+L1–L5 execute on each physical element; L6–L7 execute on external compute (developer workstation,
+edge node, or cloud) or a sufficiently capable element within the collective. The public API
+(L6–L7) — what application code actually codes against — is designed to remain stable as
+physical scale decreases from centimeters to nanometers, and is where day-to-day development
+happens; L1–L5 are the coordination substrate it's built on.
 
 The current L1–L2 runtime is built on the [Zephyr RTOS](https://docs.zephyrproject.org), used in the same
 way Android uses Linux. Everything from L3 upward is Tapestry's sole responsibility with no Zephyr
 dependency.
 
-## Quickstart — L5 swarm sim in under 5 minutes
+## Quickstart — write and fly a Choreo
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for prerequisites and workspace setup, then run from the
-workspace root (`tapestry-workspace/`):
-
-```bash
-# Build the L5 simulation element
-west build -b native_sim/native/64 \
-    --build-dir tapestry/tapestry-scr-sim/build/element \
-    tapestry/tapestry-scr-sim/zephyr/element
-
-# Run a 5-element swarm through the leader_loss scenario
-cd tapestry/tapestry-scr-sim/orchestrator
-python main.py --elements 5 --scenario leader_loss --duration 30 --out run.csv
-
-# Plot the results
-python plot.py run.csv --out run.png
-```
-
-`run.png` shows five panels: fleet-mean quorum state (LOST/DEGRADED/HEALTHY), fraction of
-elements agreeing on the same leader, elements with LEADER role, fleet-mean fresh peer count,
-and minimum element separation. You should see all elements elect element 0 as leader, then
-re-elect element 1 at t≈7.5 s when the partition fires at t=5 s, then recover back to element 0
-at t≈16.5 s when the partition heals at t=15 s.
-
-To explore the L4 consistency dial (AP vs. CP tradeoff):
+The full stack in one command, no build toolchain required — a synthetic four-element run of the
+same station-swap show that flies for real on hardware (below). Run from the repo root
+(`tapestry/`):
 
 ```bash
-# Build the L4 simulation element
-west build -b native_sim/native/64 \
-    --build-dir tapestry/tapestry-csm-sim/build/element \
-    tapestry/tapestry-csm-sim/zephyr/element
-
-cd tapestry/tapestry-csm-sim/orchestrator
-
-# AP mode: elements keep moving through the partition (bias=0.0, default)
-python main.py --elements 5 --scenario default --duration 60 --out ap.csv
-
-# CP mode: elements freeze on quorum loss (bias=1.0)
-CONSISTENCY_BIAS=1.0 python main.py --elements 5 --scenario default --duration 60 --out cp.csv
-
-python plot.py ap.csv cp.csv --labels AP CP --out ap_vs_cp.png
+python3 sdk/tools/choreo_sim.py --simulate \
+    --script examples/cf21bl-formation/change-partners.choreo.toml \
+    --elements 4 --plot
 ```
 
-In AP mode, no element ever sets the degraded flag; the fleet keeps moving and mean position
-error peaks at 2.4 units during the partition. In CP mode, the minority island freezes in place —
-40% of the fleet degrades for ~3.8 s — but position error peaks at only 1.9 units (20% lower).
-Both modes fully reconverge by t≈20 s.
+A **Choreo** is an ordered, time-bounded sequence of goals — hold, form, converge, exchange,
+disperse — authored once in TOML and either compiled to a C header for embedded/Zephyr targets or
+loaded directly in Python for simulation. See [`sdk/CHOREO_AUTHORING.md`](sdk/CHOREO_AUTHORING.md)
+for the full authoring reference, or [`sdk/README.md`](sdk/README.md) for the underlying
+single-goal C/Python API a Choreo's steps are built from.
+
+This is the same Choreo, unmodified, in three places:
+
+- **Real hardware** — [`examples/cf21bl-formation`](examples/cf21bl-formation/README.md): two
+  Crazyflie 2.1 quadrotors hold station, swap places, and land, coordinating over real gossip with
+  real lighthouse positioning. A second Choreo (`form-grid`) drives
+  [`examples/cutebot-formation`](examples/cutebot-formation/README.md)'s ground rovers into a grid
+  on real micro:bit + Cutebot hardware.
+- **Simulation, same stack** — [`examples/webots-formation`](examples/webots-formation/README.md)
+  compiles the identical, unmodified L3–L7 core into a Webots controller against simulated
+  physics — useful for iterating on swarm-scale behavior faster and more cheaply than re-flying
+  real drones between changes.
+- **Sub-second authoring feedback** — `sdk/tools/choreo_sim.py --simulate` (above), for checking a
+  Choreo while you're still writing it, before a substrate exists or a build toolchain is set up.
 
 ## Repository layout
+
+`sdk/` and `examples/` are what application code is written against; `tapestry-os/` and the
+`*-sim`/`*-hw` trees below it are the coordination substrate (L1–L5) those examples are built on,
+independently developed and validated.
 
 ```
 tapestry/
@@ -96,14 +85,32 @@ tapestry/
 │   ├── python/tapestry/
 │   │   ├── choreo.py              L7 Python mirror
 │   │   ├── bse.py                 L6 Python mirror (tick-for-tick equivalent to bse.c)
-│   │   └── script_toml.py         Choreo script (TOML) parser/validator
+│   │   └── script_toml.py         Choreo (TOML) parser/validator
 │   ├── tools/
-│   │   ├── choreoc.py             Choreo script compiler: TOML -> C header
+│   │   ├── choreoc.py             Choreo compiler: TOML -> C header
 │   │   └── choreo_sim.py          Offline capture/replay + no-C/no-Zephyr simulate mode
 │   ├── examples/
 │   │   └── hello_swarm.py         Minimal worked example (no sim required)
 │   ├── tests/                     pytest suite (bse/choreo/script_toml/choreoc/choreo_sim)
-│   └── CHOREO_SCRIPTS.md          Script authoring + compilation guide
+│   └── CHOREO_AUTHORING.md        Choreo authoring + compilation guide
+│
+├── examples/                      Worked examples and hardware bring-up demos
+│   ├── cf21bl-formation/          Flagship demo: real L3-L7 stack on Crazyflie 2.1
+│   │   │                          hardware (lighthouse positioning, Choreos)
+│   │   ├── src/                   main.c / formation.c (SCR + BSE + choreo wiring)
+│   │   ├── change-partners.choreo.toml
+│   │   └── tests/                 ztest coverage (native_sim)
+│   ├── webots-formation/          Flagship demo: the same unmodified L3-L7 core
+│   │   │                          (controllers/common/) compiled into a Webots
+│   │   │                          hardware-in-the-loop controller, no real hardware
+│   │   ├── controllers/cf21bl/    Webots-specific substrate + main loop
+│   │   ├── ci-check/              Compile-only CI harness (no Webots install needed)
+│   │   └── worlds/change_partners.wbt
+│   ├── cutebot-formation/         Formation demo on micro:bit V2 + Cutebot chassis
+│   └── altitude-hold-bench/, altitude-hold-tether/, baro-test/, imu-test/,
+│       lighthouse-test/, motor-test/
+│                                  Single-sensor/actuator hardware bring-up examples
+│                                  (each independently buildable; see each README.md)
 │
 ├── tapestry-os/                   Tapestry OS framework
 │   ├── include/tapestry/
@@ -141,24 +148,6 @@ tapestry/
 │   │   └── gen_wire_protocol.py   Generates Python wire-struct mirrors from wire.h
 │   └── tests/                     ztest suite (world_model, scr, bse, choreo, transport)
 │
-├── examples/                      Worked examples and hardware bring-up demos
-│   ├── cf21bl-formation/          Flagship demo: real L3-L7 stack on Crazyflie 2.1
-│   │   │                          hardware (lighthouse positioning, choreo scripts)
-│   │   ├── src/                   main.c / formation.c (SCR + BSE + choreo wiring)
-│   │   ├── change-partners.choreo.toml
-│   │   └── tests/                 ztest coverage (native_sim)
-│   ├── webots-formation/          Flagship demo: the same unmodified L3-L7 core
-│   │   │                          (controllers/common/) compiled into a Webots
-│   │   │                          hardware-in-the-loop controller, no real hardware
-│   │   ├── controllers/cf21bl/    Webots-specific substrate + main loop
-│   │   ├── ci-check/              Compile-only CI harness (no Webots install needed)
-│   │   └── worlds/change_partners.wbt
-│   ├── cutebot-formation/         Formation demo on micro:bit V2 + Cutebot chassis
-│   └── altitude-hold-bench/, altitude-hold-tether/, baro-test/, imu-test/,
-│       lighthouse-test/, motor-test/
-│                                  Single-sensor/actuator hardware bring-up examples
-│                                  (each independently buildable; see each README.md)
-│
 ├── docs/
 │   └── Tapestry_System_Architecture_v1p1.pdf
 │                                  System architecture paper (see CHANGELOG for where
@@ -166,7 +155,7 @@ tapestry/
 │
 ├── patches/                       Upstream Zephyr/HAL patches applied by west.yml
 │
-├── tapestry-csm-sim/              L4 simulation harness
+├── tapestry-csm-sim/              L4 coordination-substrate simulation harness
 │   ├── sim_protocol.h             Sim-only additions: ports, control protocol,
 │   │                              compat aliases over <tapestry/wire.h>
 │   ├── tests/                     ztest unit tests for L4
@@ -183,7 +172,7 @@ tapestry/
 │       ├── scenarios.py           Timed partition/power injection scripts
 │       └── plot.py                5-panel matplotlib efficacy visualizer
 │
-├── tapestry-scr-sim/              L5 simulation harness
+├── tapestry-scr-sim/              L5 coordination-substrate simulation harness
 │   ├── tests/                     ztest unit tests for L5
 │   ├── zephyr/element/            Zephyr native_sim element (L4 + L5)
 │   │   └── src/
@@ -213,7 +202,25 @@ tapestry/
 
 All `west build` commands run from the workspace root (`tapestry-workspace/`).
 
-### Unit tests
+### SDK and examples
+
+Run from the repo root (`tapestry/`):
+
+```bash
+# SDK unit tests (no west/Zephyr needed)
+pytest sdk/tests
+
+# Recompile a Choreo, or check every committed header is up to date
+python3 sdk/tools/choreoc.py examples/cf21bl-formation/change-partners.choreo.toml
+python3 sdk/tools/choreoc.py --check
+```
+
+Building and flashing an example (real hardware or Webots) is covered in that example's own
+README — [`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md),
+[`examples/cutebot-formation/README.md`](examples/cutebot-formation/README.md),
+[`examples/webots-formation/README.md`](examples/webots-formation/README.md).
+
+### Coordination-substrate (L4/L5) unit tests
 
 ```bash
 # L4 — gossip, Lamport clocks, staleness, quorum, reconciliation, spatial queries
@@ -243,7 +250,46 @@ west build -b native_sim/native/64 \
     tapestry/tapestry-scr-sim/zephyr/element
 ```
 
-## Simulation reference
+## Hardware validation
+
+**L6/L7 (BSE + Choreographer)** is flight-validated: a two-drone Crazyflie station-swap
+Choreo — authored in TOML and compiled via `sdk/tools/choreoc.py` — drives real aerial elements
+through hold/exchange/rest. Iterative flights found and fixed real bugs in identity negotiation,
+gossip delivery, and the exchange/landing interaction. A second Choreo on a second substrate
+class has since run on hardware too: `examples/cutebot-formation`'s `form-grid` Choreo drove
+differential-drive ground rovers into a grid they reached and held, so FORM and EXCHANGE are each
+hardware-exercised on the platform class they were written for. See
+[`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md) and
+[`examples/cutebot-formation/README.md`](examples/cutebot-formation/README.md) for the current
+state.
+
+The same `change-partners` Choreo also runs unmodified in simulation:
+[`examples/webots-formation/README.md`](examples/webots-formation/README.md) compiles the real
+L3-L7 stack into a Webots controller against simulated physics (no hardware required), with only
+an L1 substrate and L3 transceiver written for the sim — a reusable pattern, and new elements can
+be added at `controllers/common/`. Useful for iterating on swarm-scale behavior (elections,
+partitions, larger formations) faster and more cheaply than re-flying real drones between changes.
+Every replay against a real flight recording is also checked tick-for-tick against the Python
+engine — see [`sdk/CHOREO_AUTHORING.md`](sdk/CHOREO_AUTHORING.md)'s "Parity and regression replay"
+section.
+
+**L4/L5 (coordination substrate)** underneath it has been independently validated on physical
+hardware in two phases:
+
+- **Phase 1** — ztest suites run unchanged on real MCUs, confirming that `world_model.c` and
+  `scr.c` are pure C99 and compile for any Zephyr-supported target.
+- **Phase 2** — a two-element swarm gossiping via UDP broadcast over a shared LAN, demonstrating
+  partition detection (~1.5 s), autonomous leader election, and recovery with no simulation broker.
+
+See [`tapestry-scr-hw/README.md`](tapestry-scr-hw/README.md) for build, flash, and telemetry
+instructions.
+
+## Coordination-substrate (L4/L5) simulation reference
+
+The Choreo-level simulation and replay tools are covered in
+[`sdk/CHOREO_AUTHORING.md`](sdk/CHOREO_AUTHORING.md). This section is the lower-level harness that
+validates L4/L5 in isolation — quorum, leader election, and partition tolerance — under injected
+network faults, independent of any application-level behavior running on top.
 
 ### L4 — Collective State Manager
 
@@ -256,6 +302,13 @@ python plot.py ap_run.csv cp_run.csv --labels AP CP --out ap_vs_cp.png
 ```
 
 Available scenarios: `default`, `flapping`, `asymmetric`, `sleep`.
+
+Run a 5-element swarm and plot fleet-mean quorum state, fresh-peer count, and minimum
+separation as the fleet reconverges after a partition. To compare consistency modes:
+in AP mode (`bias=0.0`, default) no element ever sets the degraded flag and mean position
+error peaks at 2.4 units during a partition; in CP mode (`bias=1.0`) the minority island
+freezes in place — 40% of the fleet degrades for ~3.8 s — but position error peaks at only
+1.9 units (20% lower). Both modes fully reconverge by t≈20 s.
 
 **Telemetry columns**
 
@@ -282,6 +335,10 @@ python plot.py leader_loss.csv cascade.csv --labels "Leader loss" Cascade --out 
 Available scenarios: `leader_loss`, `cascade`, `default`, `flapping`, `asymmetric`, `sleep`.
 `--quorum-min` and `--quorum-target` set peer-count thresholds; `--bias` sets the L4 consistency dial.
 
+Run the `leader_loss` scenario and you should see all elements elect element 0 as leader, then
+re-elect element 1 at t≈7.5 s when the partition fires at t=5 s, then recover back to element 0
+at t≈16.5 s when the partition heals at t=15 s.
+
 **Telemetry columns** (in addition to all L4 columns above)
 
 | Column | Description |
@@ -292,36 +349,6 @@ Available scenarios: `leader_loss`, `cascade`, `default`, `flapping`, `asymmetri
 | `fresh_count` | Non-self trusted fresh peers visible this cycle |
 | `task_slot` | Ordinal in sorted fresh peer list (0 = leader); valid when quorum ≥ DEGRADED |
 | `election_count` | Cumulative leader changes since element startup |
-
-## Hardware validation
-
-The L4/L5 stack has been validated on physical hardware in two phases:
-
-- **Phase 1** — ztest suites run unchanged on real MCUs, confirming that `world_model.c` and
-  `scr.c` are pure C99 and compile for any Zephyr-supported target.
-- **Phase 2** — a two-element swarm gossiping via UDP broadcast over a shared LAN, demonstrating
-  partition detection (~1.5 s), autonomous leader election, and recovery with no simulation broker.
-
-See [`tapestry-scr-hw/README.md`](tapestry-scr-hw/README.md) for build, flash, and telemetry instructions.
-
-L6/L7 (BSE + Choreographer) is separately under active hardware flight-testing: a two-drone
-Crazyflie station-swap script — authored in TOML and compiled via `sdk/tools/choreoc.py` — driving
-real aerial elements through hold/exchange/rest. Iterative flights have found and fixed real bugs
-in identity negotiation, gossip delivery, and the exchange/landing interaction. A second script on a
-second substrate class has since run on hardware too: `examples/cutebot-formation`'s `form-grid`
-script drove differential-drive ground rovers into a grid they reached and held, so FORM and
-EXCHANGE are each hardware-exercised on the platform class they were written for. The envelope is
-two scripts on two platforms; L4/L5 above have been exercised more broadly. See
-[`examples/cf21bl-formation/README.md`](examples/cf21bl-formation/README.md) and
-[`examples/cutebot-formation/README.md`](examples/cutebot-formation/README.md) for the current state.
-
-The same `change-partners` script also runs unmodified in simulation:
-[`examples/webots-formation/README.md`](examples/webots-formation/README.md) compiles the real
-L3-L7 stack into a Webots controller against simulated physics (no hardware required), with only an L1 substrate and L3 transceiver written
-for the sim. That example is a reusable pattern, and new elements can be added here:
-`controllers/common/`.
-Useful for iterating on swarm-scale behavior (elections, partitions, larger formations) faster and
-more cheaply than re-flying real drones between changes.
 
 ## License
 

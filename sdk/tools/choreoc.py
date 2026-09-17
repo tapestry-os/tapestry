@@ -13,7 +13,7 @@ never need Python.
 
 Naming convention: a script file is named <name>.choreo.toml, where
 <name> matches its own "choreo = " key (e.g. change-partners.choreo.toml
-for choreo = "change-partners") — see sdk/CHOREO_SCRIPTS.md.
+for choreo = "change-partners") — see sdk/CHOREO_AUTHORING.md.
 
 Usage:
     python3 sdk/tools/choreoc.py <name.choreo.toml> [-o <out.h>]

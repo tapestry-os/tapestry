@@ -7,9 +7,9 @@
  * re-drive sdk/python/tapestry's Choreo engine against the exact same
  * inputs offline and diff its outputs against what really happened here.
  * This is capture infrastructure for the offline replay harness described
- * in ../../README.md and sdk/CHOREO_SCRIPTS.md's "Parity" section — not a
- * general logging facility, and not ML training (see tapestry/choreo.h's
- * status banner for that distinction).
+ * in ../../README.md and sdk/CHOREO_AUTHORING.md's "Parity and regression
+ * replay" section — not a general logging facility, and not ML training
+ * (see tapestry/choreo.h's status banner for that distinction).
  *
  * Opt-in only: set TAPESTRY_TELEMETRY_DIR to a writable directory before
  * launching Webots to enable capture. Unset (the default), this is a

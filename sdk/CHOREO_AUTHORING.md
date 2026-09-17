@@ -1,33 +1,74 @@
-# Choreo Scripts — authoring and compiling (L7)
+# Choreo — authoring and compiling
 
-This is the platform-agnostic guide to writing a **Choreo script**: an
-ordered, time-bounded sequence of goals that drives a collective through the
-L7 Choreographer / L6 BSE (see [`README.md`](README.md) for the full layer
-stack and the single-goal C/Python API). If you're looking for a worked,
-flying example, see `examples/cf21bl-formation/` (aerial swap) — this
-document is the general reference every Choreo script is written against,
-independent of any one example or platform.
+A **Choreo** is an ordered, time-bounded sequence of goals that drives
+every element of a collective. This document is the general reference
+every Choreo is written against, independent of any one example or
+platform — see [`README.md`](README.md) for the underlying single-goal
+C/Python API a Choreo's steps are built from. If you're looking for a
+worked, flying example instead, see `examples/cf21bl-formation/` (aerial
+swap).
 
-A script is authored **once**, in TOML, and consumed by whichever runtime(s)
-you target:
+**Reading order**: [Design principles](#design-principles) →
+[Quick start](#quick-start) → [Goal keys](#goal-keys) →
+[Common parameters](#common-parameters-every-goal) gets you to a working
+Choreo. Everything after [Frames and anchors](#frames-and-anchors) is
+progressively more advanced — reach for it as your Choreo needs it, not
+before.
 
-- **Embedded / Zephyr (C)** — compiled ahead-of-time into a committed C
+## Overview
+
+A Choreo is authored **once**, in TOML, and consumed by whichever
+runtime(s) you target:
+
+- **Embedded / Zephyr (C)** — compiled ahead of time into a committed C
   header by `sdk/tools/choreoc.py`. Firmware builds and CI never need Python.
 - **Python (simulation / research)** — read directly at runtime by
   `tapestry.script_toml.load_steps()`. No generation step.
 
 Both consume the identical `.toml` file and produce identical
-`choreo_step_t` / `ChoreoStep` sequences — there is one script, two runtimes.
+`choreo_step_t` / `ChoreoStep` sequences — there is one Choreo, two runtimes.
 
-## Naming convention
+**Naming convention**: a Choreo file is named `<name>.choreo.toml`, where
+`<name>` matches the Choreo's own `choreo = "<name>"` key (e.g.
+`change-partners.choreo.toml` for `choreo = "change-partners"`). The
+double extension makes the file kind self-identifying wherever it appears
+(a directory listing, a diff, a CI glob) and scales cleanly once a project
+holds more than one Choreo.
 
-A Choreo script file is named `<name>.choreo.toml`, where `<name>` matches
-the script's own `choreo = "<name>"` key (e.g. `change-partners.choreo.toml`
-for `choreo = "change-partners"`). The double extension makes the file kind
-self-identifying wherever it appears (a directory listing, a diff, a CI
-glob) and scales cleanly once a project holds more than one script.
+## Design principles
 
-## The file format
+Six invariants shape every rule below — worth knowing up front, since
+they explain *why*, not just *what*:
+
+- **Coordinate-free by default.** A goal references the collective's own
+  configuration unless you explicitly opt into absolute coordinates. This
+  is why `hold`/`exchange` refuse `target` outright, and why
+  `frame = "collective"`/`"element"` exist (see [Frames and
+  anchors](#frames-and-anchors)) — the same Choreo can fly regardless of
+  where the elements actually start.
+- **Time-bounded by construction.** Every step carries a time bound. A
+  Choreo cannot stall — this is why `duration`/`timeout` is required on
+  every step, no exceptions.
+- **Quiescence, not landing.** A Choreo never names platform physics
+  (take off, land, stop, altitude). Completion emits `IDLE`; each
+  platform maps that to its own inactive posture.
+- **Locally computable, symmetrically stated.** Every element holds the
+  same Choreo state and derives its own directive from its own view of
+  the world — no coordination messages beyond ordinary gossip. This is
+  why [tracks](#tracks) are filters each element evaluates on *itself*
+  rather than assignments handed out from elsewhere, and why
+  `scope = "all"` achievement (see [Common
+  parameters](#common-parameters-every-goal)) is eventually consistent
+  rather than a hard synchronization barrier.
+- **Deconfliction is invisible.** Separation floors, altitude staggering,
+  leashes, keep-out zones, and geofences are never named in a Choreo —
+  they're enforced underneath it. "Maintain 300 µm separation" is a
+  platform safety setting, not something you author here.
+- **Capability-gated.** Every goal declares what it demands of an element
+  via `requires`. Submission fails loudly — a clear rejection — on an
+  element that can't satisfy it, rather than degrading silently.
+
+## Quick start
 
 ```toml
 choreo = "change-partners"
@@ -58,7 +99,7 @@ hold = { duration = "8s", requires = ["locomotion"] }
   is no implicit "last step" behavior: when the final step completes, the
   Choreo emits the `IDLE` directive — **quiescence**. Each platform maps
   that to its own inactive posture (an aerial element lands and disarms, a
-  ground robot stops). Take-off and landing are never named in a script.
+  ground robot stops). Take-off and landing are never named in a Choreo.
 
 ## Goal keys
 
@@ -73,9 +114,9 @@ hold = { duration = "8s", requires = ["locomotion"] }
 | `orbit` | a preset — see [Motion](#motion) | `around`, `radius`, `rate` |
 
 `hold` and `exchange` are **coordinate-free by design** — they reference the
-collective's own configuration, not application-supplied coordinates, and
-the parser rejects `target`/`radius`/`shape` on them. This is what lets the
-same script fly regardless of where the elements actually start.
+collective's own configuration, not application-supplied coordinates. The
+parser rejects `target`/`radius`/`shape` on them, which is what lets the
+same Choreo fly regardless of where the elements actually start.
 
 `exchange` rotates stations by `shift` around the ID-sorted ring of fresh
 participants (frozen snapshots taken at step activation, never live-chasing
@@ -89,12 +130,72 @@ no altitude separation at all. `path = "direct"` beelines straight to the
 destination. See
 `examples/cf21bl-formation/change-partners.choreo.toml` for a worked case.
 
+`move` translates the formation to `target`, preserving each element's
+offset from the participant centroid (a rigid-body translation) — it does
+**not** collapse the formation. Use `converge` when gathering everyone at
+the same point is what you mean.
+
+## Common parameters (every goal)
+
+| Key | Meaning |
+|---|---|
+| `duration` / `timeout` | step time bound. **Required on every step** — this is the robustness net that keeps a Choreo from stalling; give exactly one of the two names (they're the same field). |
+| `until = "achieved"` | advance as soon as the achievement predicate fires (scope decides whose — see `scope` below), instead of waiting out the full duration. The timeout still applies as a fallback. Not allowed on `hold` — hold is trivially achieved, so hold steps are duration-governed (`until`/`eps`/`settle` on hold are rejected; reserved for future scoped-achievement semantics). |
+| `eps` | achievement radius (default: runtime default if omitted). |
+| `settle` | how long the error must stay within `eps` before achievement fires (default: runtime default). |
+| `scope = "self"` \| `"all"` | whose achievement `until = "achieved"` waits for (default `"self"`). `"all"` advances only once this element **and** every fresh peer have achieved — aggregated from an `achieved` bit each element gossips every cycle ("achieved-bit" item). Eventually consistent, bounded by gossip latency — not a synchronization barrier (that's the doc's separate `barrier = true`, not implemented). A lone element with no fresh peers is vacuously "all achieved", so it can't deadlock alone. Only valid alongside `until = "achieved"`; not allowed on `hold`. |
+| `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling", "abs_position"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
+
+**The derived floor** (Choreo SDK Design doc §11): some `requires`
+capabilities are implied by a goal's *other* fields, whether or not you
+write them yourself — the runtime unions them into what's actually
+checked at deploy time regardless:
+
+| If a step has... | it also requires... |
+|---|---|
+| `motion`/`spin` (i.e. `form` + `spin = ...`) | `locomotion` |
+| `frame = "absolute"` (the default, `form`/`converge` only) | `abs_position` |
+
+This is not optional and there is no way to opt out of it — it reflects
+what the goal mechanically needs, independent of whether `requires` says
+so. `choreoc` and `choreo_sim`'s `--simulate` **warn** (not reject) when
+a step's `requires` doesn't already cover its derived floor, e.g.:
+
+```
+choreoc: warning: steps[0]: frame = "absolute" (the default) requires
+abs_position at runtime (Choreo SDK Design doc §11) even though
+'requires' doesn't list it — add requires = ["abs_position", ...] to
+make it explicit, or opt into frame = "collective"/"element" if that's
+what was intended
+```
+
+The Choreo still compiles and the warning doesn't fail CI — the point is
+authoring-time visibility, not another gate. Without it, an author who
+forgets `requires = ["abs_position"]` (or leaves `frame` at its
+`"absolute"` default without meaning to) only finds out at flight time,
+when `choreo_configure()`/`choreo_submit_script()` rejects the goal with
+`-EPERM` on an element that doesn't have that hardware capability granted
+at startup.
+
+### Duration and length syntax
+
+**Duration**: `"30s"`, `"500ms"`, `"45min"`, `"2h"`, or a bare number
+(seconds). **Length**: `"25cm"`, `"250mm"`, `"500um"`, `"0.25m"`, or a bare
+number (meters).
+
+> **Unit footgun (TOML vs. C):** bare numbers mean different things on
+> the two authoring surfaces. In TOML, `duration = 2` is **2 seconds**;
+> in a hand-written `choreo_step_t`, `.max_duration_ms = 2` is
+> **2 milliseconds** (the field names carry the unit: `max_duration_ms`,
+> `achieve_hold_ms`). `choreoc` converts between them — one more reason
+> to author in TOML and never edit the generated header.
+
 ## Frames and anchors
 
 `form` and `converge` normally take an absolute `target = [x, y, z]` — a
 world-frame coordinate. `frame` lets you say what that point is defined
 *relative to* instead, for platforms without absolute positioning, or
-scripts that shouldn't care where the collective happens to be:
+Choreos that shouldn't care where the collective happens to be:
 
 | `frame` | Target is... | Needs |
 |---|---|---|
@@ -106,10 +207,10 @@ scripts that shouldn't care where the collective happens to be:
 
 | Select | Anchor is... |
 |---|---|
-| `"leader"` | the current L5-elected leader |
+| `"leader"` | the current elected leader |
 | `"self"` | this element (degenerate — station-keeps on itself) |
 | `"lowest-energy"` | the fresh peer (or self) with the lowest `energy_level` |
-| `"id:N"` | the explicit element `N` (testing/debug) |
+| `"id:N"` | the explicit element `N` (testing/debug only) |
 
 `"newest"`/`"oldest"` (most/longest recently joined) are named in the
 design doc but not implemented yet — they need join-order tracking the
@@ -217,7 +318,7 @@ event wins and its `goto` becomes the next step, before
 fallback for a step with no matching, or no declared, transition — every
 step written before this feature existed is unaffected). `goto` names
 another step's `name`, or the literal string `"end"` to complete the
-script from anywhere.
+Choreo from anywhere.
 
 Event vocabulary (a subset of the design doc's §8.2 — see that section
 for why `quorum_degraded`/`quorum_recovered` aren't here: no concrete use
@@ -234,7 +335,7 @@ case has been identified for either):
 At most 4 transitions per step (the runtime's fixed-size limit) — the
 parser rejects a 5th rather than silently truncating.
 
-**Cycles need `max_runtime`**: a script whose step graph loops back on
+**Cycles need `max_runtime`**: a Choreo whose step graph loops back on
 itself (like the welcome dance above — `triangle` and `welcome` transition
 into each other) can run indefinitely, so the parser requires a top-level
 `max_runtime = "..."` bound when it detects one:
@@ -245,29 +346,119 @@ max_runtime = "10min"
 ```
 
 `max_runtime` replaces the summed-step-durations bound
-(`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS`) for a cyclic script; an acyclic script
+(`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS`) for a cyclic Choreo; an acyclic Choreo
 keeps the sum as before and doesn't need it.
 
+## Tracks
+
+Events and transitions above still run every participant through the
+**same** step sequence. Tracks are the next step up: a Choreo is normally
+one `[[steps]]` list every element runs — the implicit "all" track.
+`[[tracks]]` (design doc §7) instead declares several **concurrent,
+participant-scoped** step sequences; an element runs exactly one of them,
+chosen by the **first** whose `filter` it matches:
+
+```toml
+choreo = "spill-response"
+
+[[tracks]]                          # perimeter watch: needs a sensor
+filter = { requires = ["sensing"] }
+[[tracks.steps]]
+hold = { duration = "300s" }
+
+[[tracks]]                          # everyone else: catch-all (no filter)
+[[tracks.steps]]
+form = { target = [0, 0, 3], radius = 5, duration = "300s" }
+```
+
+A file gives either `[[steps]]` or `[[tracks]]`, never both. Each track's
+`filter` table takes:
+
+| Key | Meaning |
+|---|---|
+| `requires` | list of capability names, exactly like a step's own `requires` — matches when this element's capabilities satisfy them. |
+| `energy_low` | `true`/`false` — matches when this element's own gossiped health state currently reports low battery. |
+
+An empty or omitted `filter` (`filter = {}`, or no `filter` key at all)
+matches **every** element — the catch-all a track table needs at least
+one of, declared last, so every element has somewhere to run. Filter
+membership is evaluated **locally**, against this element's own state
+only — never a peer's — so it needs no coordination messages (the
+locally-computable, symmetrically-stated principle, [above](#design-principles)).
+At most `CHOREO_MAX_TRACKS` (4) tracks; a Choreo that declares more is
+rejected at parse time, and `choreo_submit_tracks()` itself rejects a
+Choreo where no track matches this element.
+
+Because selection is first-match-wins, declaration order matters: a
+track whose filter only matches elements an **earlier** track's filter
+also matches can never be selected — its steps are dead weight (§8.4).
+The classic case is the catch-all declared first instead of last, which
+silently claims every element. The parser **warns** (not rejects, same
+contract as the derived-capability warnings above) when it detects this:
+
+```
+choreoc: warning: tracks[1]: unreachable — every element this track's
+filter matches is already claimed by tracks[0]'s filter (§8.4: selection
+is first-match-wins, ...) — reorder the tracks or tighten tracks[0]'s
+filter
+```
+
+Each track's `[[tracks.steps]]` is a full, independent step list with the
+same schema as `[[steps]]` above — including `name =` / `on = [...]`
+transitions and its own `max_runtime` for a cyclic track (§8.4 applies
+per-track: a cycle in one track doesn't bound the others). A `goto`
+target only resolves within the **same** track — one track's steps can't
+jump into another's.
+
+Migrating to a different track (a filter-boundary crossing, e.g. battery
+crossing the low-battery threshold) is debounced exactly like
+`element_joined`/`element_lost` above, and activates the new track's
+current step **fresh** — new snapshot, new timers, not a resumed state.
+Each track's own step index is remembered while inactive, though, so
+re-entering a track later resumes where it left off rather than
+restarting from step 0.
+
+**Why this matters to other elements**: an element gossips which track
+it's currently active in (`current_track`, wire v4) so peers running
+`frame = "collective"` or a `count_*`/`element_joined` event compute their
+centroid/count from elements actually doing the SAME thing — a peer that
+migrated off to charge its battery, say, is automatically excluded rather
+than skewing the group everyone else is coordinating around. A Choreo
+with no `[[tracks]]` gossips `current_track = 0` unconditionally — byte-
+identical to every Choreo written before this feature existed.
+
+Python:
+
+```python
+from tapestry.script_toml import load_tracks
+tracks = load_tracks("spill-response.choreo.toml")
+choreo.submit_tracks(wm_entries, tracks)
+```
+
 ## Isolation and quorum loss
+
+The rest of this document is about shaping what happens when the fleet
+itself isn't fully healthy — first the whole collective going isolated,
+then (next section) a single peer departing while everyone else is fine.
 
 Losing quorum (no fresh peers) automatically suspends whatever step is
 running — the runtime freezes it and resumes it unchanged once quorum
 recovers, so a partition pauses the show rather than timing it out. This
-is a blanket, non-negotiable policy: it isn't something a script opts
+is a blanket, non-negotiable policy: it isn't something a Choreo opts
 into or out of.
 
 That blanket freeze has one built-in exception: a `hold` step's own
 `duration`/`timeout` keeps counting down even while suspended (every
 other goal's timer stays frozen). Everything else about `hold` while
 isolated is unchanged — it still station-keeps on its own position, no
-peers required — but it's no longer possible for a script to get stuck
+peers required — but it's no longer possible for a Choreo to get stuck
 station-keeping forever with no peer left to ever revive it. This
 matters because nothing else in the platform can rescue an element in
 that state: there's no OTA/remote-push mechanism to intervene, so a
-`hold` step is the one place a script can always be authored to time out
+`hold` step is the one place a Choreo can always be authored to time out
 on its own and reach quiescence.
 
-The `quorum_lost` event (above) is how a script actively *chooses* a
+The `quorum_lost` event (above) is how a Choreo actively *chooses* a
 safe fallback instead of passively freezing wherever isolation happened
 to strike — e.g. an `exchange` step frozen mid-arc is a worse place to
 sit than a `hold` at the element's actual current position:
@@ -334,11 +525,11 @@ reasons           = ["fixloss", "geofence"]       # default ["*"]: every reason
 | Key | Meaning |
 |---|---|
 | `policy` | `"continue"` (default) — do nothing extra. `"hold"` — station-keep for up to 30s, then give up and land; does not resume the original show even if the situation "recovers" (departure is one-directional). `"land_in_place"` — land immediately, wherever this survivor currently is. `"recall"` — fly to this platform's own recall point (its own takeoff/home position — never a shared muster point), then land there; falls back to `"land_in_place"` if the platform has no recall point registered or available (no fix yet) rather than silently doing nothing. |
-| `min_participants` | `0` (default) — any departure is enough to trigger. A nonzero N is itself still an acceptable size (a script that "needs at least N" is satisfied by exactly N) — only a departure that drops the surviving count (self + still-participating peers) *strictly below* N fires. |
-| `reasons` | Which departure reasons count, by name: `"complete"`, `"backstop"`, `"fixloss"`, `"geofence"`, `"lost"` (the inferred-from-silence case), or `["*"]` (default) for all five. A reason not in this list never trips the policy, no matter how many peers leave for it — e.g. `reasons = ["fixloss", "geofence"]` means a peer finishing its script cleanly (`"complete"`) never triggers `land_in_place`, only a genuine emergency does. |
+| `min_participants` | `0` (default) — any departure is enough to trigger. A nonzero N is itself still an acceptable size (a Choreo that "needs at least N" is satisfied by exactly N) — only a departure that drops the surviving count (self + still-participating peers) *strictly below* N fires. |
+| `reasons` | Which departure reasons count, by name: `"complete"`, `"backstop"`, `"fixloss"`, `"geofence"`, `"lost"` (the inferred-from-silence case), or `["*"]` (default) for all five. A reason not in this list never trips the policy, no matter how many peers leave for it — e.g. `reasons = ["fixloss", "geofence"]` means a peer finishing its Choreo cleanly (`"complete"`) never triggers `land_in_place`, only a genuine emergency does. |
 
 A step's own `on_departure = "land_in_place"` replaces `policy` alone for
-THAT step only — `reasons`/`min_participants` always stay script-level.
+THAT step only — `reasons`/`min_participants` always stay Choreo-level.
 An `exchange` mid-swap is a more sensitive moment than a `hold`:
 
 ```toml
@@ -353,20 +544,20 @@ on_departure = "land_in_place"
 
 If the current step also declares an explicit `on = [...]` transition
 (e.g. reacting to `element_lost` itself) and that transition fires on the
-same tick a departure would otherwise trigger the policy, the script's
+same tick a departure would otherwise trigger the policy, the Choreo's
 own transition wins — an author's explicit handling always takes
 priority over the coarse dial.
 
 Neither `mode` nor `[on_departure]` given: `policy = "continue"`, every
-script written before this feature existed is unaffected.
+Choreo written before this feature existed is unaffected.
 
-**Not modeled by the Python `--simulate` tool** (`sdk/tools/
-choreo_sim.py`) — `mode`/`[on_departure]`/per-step `on_departure` parse
-and round-trip correctly but are silently inert there, the same
-disclaimer that tool already carries for other physics it deliberately
-omits (see "Script-authoring simulation" below). Only `choreoc.py`'s
-C-header codegen — the path that actually flies on hardware — acts on
-these fields today.
+> **Not modeled by the Python `--simulate` tool** (`sdk/tools/
+> choreo_sim.py`) — `mode`/`[on_departure]`/per-step `on_departure` parse
+> and round-trip correctly but are silently inert there, the same
+> disclaimer that tool already carries for other physics it deliberately
+> omits (see [Choreo-authoring simulation](#choreo-authoring-simulation)
+> below). Only `choreoc.py`'s C-header codegen — the path that actually
+> flies on hardware — acts on these fields today.
 
 ## Effects
 
@@ -391,17 +582,18 @@ telemetry_tag = "spraying_infected_zone"
 | `indicator` | `"idle"` \| `"active"` \| `"degraded"` \| `"failed"` — while this step is active, the application's `choreo_current_indicator()` (`choreo_current_indicator` in C, `current_indicator()` in Python) returns this value instead of "no override". Omit for no override (the default, and the behavior of every step written before this feature existed). |
 | `telemetry_tag` | An arbitrary non-empty string, surfaced verbatim by `choreo_current_telemetry_tag()` / `current_telemetry_tag()`. Omit for no tag (`NULL`/`None`, the default). |
 
-**What `indicator` does and doesn't do:** Choreo itself never touches L1 —
-it has no `substrate_set_signal()` call anywhere. The value above is only
-made available for the application's main loop to read once per tick and
-pass through, the same way it already reads `choreo_get_directive()` and
-passes it to `substrate_move()`. `examples/cf21bl-formation/src/
-formation.c`'s `demo_set_leds()` (and the identical, independently
-duplicated copy in `examples/webots-formation/controllers/common/
-tracker.c`) now take the step's declared indicator as an override,
-falling back to their existing quorum/freshness heuristic when a step
-leaves it unset — so a script that never sets `indicator` drives those
-two apps exactly as before this feature existed.
+**What `indicator` does and doesn't do:** Choreo itself never calls into
+hardware — it has no `substrate_set_signal()` call anywhere. The value
+above is only made available for the application's main loop to read once
+per tick and pass through, the same way it already reads
+`choreo_get_directive()` and passes it to `substrate_move()`.
+`examples/cf21bl-formation/src/formation.c`'s `demo_set_leds()` (and the
+identical, independently duplicated copy in
+`examples/webots-formation/controllers/common/tracker.c`) now take the
+step's declared indicator as an override, falling back to their existing
+quorum/freshness heuristic when a step leaves it unset — so a Choreo that
+never sets `indicator` drives those two apps exactly as before this
+feature existed.
 
 **What `telemetry_tag` does and doesn't do:** this is local capture only.
 `examples/webots-formation`'s `choreo_telemetry.h` CSV writer records it
@@ -410,148 +602,6 @@ can be identified by which authored step produced a given row without
 depending on step index alone. It is **not** a wire-delivery mechanism to
 an external consumer (e.g. a facility monitoring dashboard reading a live
 telemetry stream) — no such consumer exists anywhere in this repo.
-
-## Tracks
-
-A script is normally one `[[steps]]` list every element runs — the
-implicit "all" track. `[[tracks]]` (design doc §7) instead declares
-several **concurrent, participant-scoped** step sequences; an element runs
-exactly one of them, chosen by the **first** whose `filter` it matches:
-
-```toml
-choreo = "spill-response"
-
-[[tracks]]                          # perimeter watch: needs a sensor
-filter = { requires = ["sensing"] }
-[[tracks.steps]]
-hold = { duration = "300s" }
-
-[[tracks]]                          # everyone else: catch-all (no filter)
-[[tracks.steps]]
-form = { target = [0, 0, 3], radius = 5, duration = "300s" }
-```
-
-A file gives either `[[steps]]` or `[[tracks]]`, never both. Each track's
-`filter` table takes:
-
-| Key | Meaning |
-|---|---|
-| `requires` | list of capability names, exactly like a step's own `requires` — matches when this element's capabilities satisfy them. |
-| `energy_low` | `true`/`false` — matches when this element's own gossiped health state currently reports low battery. |
-
-An empty or omitted `filter` (`filter = {}`, or no `filter` key at all)
-matches **every** element — the catch-all a track table needs at least
-one of, declared last, so every element has somewhere to run. Filter
-membership is evaluated **locally**, against this element's own state
-only — never a peer's — so it needs no coordination messages (design
-doc's P4). At most `CHOREO_MAX_TRACKS` (4) tracks; a script that declares
-more is rejected at parse time, and `choreo_submit_tracks()` itself
-rejects a script where no track matches this element.
-
-Because selection is first-match-wins, declaration order matters: a
-track whose filter only matches elements an **earlier** track's filter
-also matches can never be selected — its steps are dead weight (§8.4).
-The classic case is the catch-all declared first instead of last, which
-silently claims every element. The parser **warns** (not rejects, same
-contract as the derived-capability warnings below) when it detects this:
-
-```
-choreoc: warning: tracks[1]: unreachable — every element this track's
-filter matches is already claimed by tracks[0]'s filter (§8.4: selection
-is first-match-wins, ...) — reorder the tracks or tighten tracks[0]'s
-filter
-```
-
-Each track's `[[tracks.steps]]` is a full, independent step list with the
-same schema as `[[steps]]` above — including `name =` / `on = [...]`
-transitions and its own `max_runtime` for a cyclic track (§8.4 applies
-per-track: a cycle in one track doesn't bound the others). A `goto`
-target only resolves within the **same** track — one track's steps can't
-jump into another's.
-
-Migrating to a different track (a filter-boundary crossing, e.g. battery
-crossing the low-battery threshold) is debounced exactly like
-`element_joined`/`element_lost` above, and activates the new track's
-current step **fresh** — new snapshot, new timers, not a resumed state.
-Each track's own step index is remembered while inactive, though, so
-re-entering a track later resumes where it left off rather than
-restarting from step 0.
-
-**Why this matters to other elements**: an element gossips which track
-it's currently active in (`current_track`, wire v4) so peers running
-`frame = "collective"` or a `count_*`/`element_joined` event compute their
-centroid/count from elements actually doing the SAME thing — a peer that
-migrated off to charge its battery, say, is automatically excluded rather
-than skewing the group everyone else is coordinating around. A script
-with no `[[tracks]]` gossips `current_track = 0` unconditionally — byte-
-identical to every script written before this feature existed.
-
-Python:
-
-```python
-from tapestry.script_toml import load_tracks
-tracks = load_tracks("spill-response.choreo.toml")
-choreo.submit_tracks(wm_entries, tracks)
-```
-
-## Common parameters (every goal)
-
-| Key | Meaning |
-|---|---|
-| `duration` / `timeout` | step time bound. **Required on every step** — this is the robustness net that keeps a script from stalling; give exactly one of the two names (they're the same field). |
-| `until = "achieved"` | advance as soon as the achievement predicate fires (scope decides whose — see `scope` below), instead of waiting out the full duration. The timeout still applies as a fallback. Not allowed on `hold` — hold is trivially achieved, so hold steps are duration-governed (`until`/`eps`/`settle` on hold are rejected; reserved for future scoped-achievement semantics). |
-| `eps` | achievement radius (default: BSE default if omitted). |
-| `settle` | how long the error must stay within `eps` before achievement fires (default: BSE default). |
-| `scope = "self"` \| `"all"` | whose achievement `until = "achieved"` waits for (default `"self"`). `"all"` advances only once this element **and** every fresh peer have achieved — aggregated from an `achieved` bit each element gossips every cycle ("achieved-bit" item). Eventually consistent, bounded by gossip latency — not a synchronization barrier (that's the doc's separate `barrier = true`, not implemented). A lone element with no fresh peers is vacuously "all achieved", so it can't deadlock alone. Only valid alongside `until = "achieved"`; not allowed on `hold`. |
-| `requires` | list of capability names the executing element must have: `["locomotion", "bonding", "sensing", "signaling", "abs_position"]`. A step whose requirements the registered element can't satisfy is rejected at submit time. |
-
-**Duration syntax**: `"30s"`, `"500ms"`, `"45min"`, `"2h"`, or a bare
-number (seconds).
-**Length syntax**: `"25cm"`, `"250mm"`, `"500um"`, `"0.25m"`, or a bare
-number (meters).
-
-**The derived floor** (Choreo SDK Design doc §11): some `requires`
-capabilities are implied by a goal's *other* fields, whether or not you
-write them yourself — the runtime unions them into what's actually
-checked at deploy time regardless:
-
-| If a step has... | it also requires... |
-|---|---|
-| `motion`/`spin` (i.e. `form` + `spin = ...`) | `locomotion` |
-| `frame = "absolute"` (the default, `form`/`converge` only) | `abs_position` |
-
-This is not optional and there is no way to opt out of it — it reflects
-what the goal mechanically needs, independent of whether `requires` says
-so. `choreoc` and `choreo_sim`'s `--simulate` **warn** (not reject) when
-a step's `requires` doesn't already cover its derived floor, e.g.:
-
-```
-choreoc: warning: steps[0]: frame = "absolute" (the default) requires
-abs_position at runtime (Choreo SDK Design doc §11) even though
-'requires' doesn't list it — add requires = ["abs_position", ...] to
-make it explicit, or opt into frame = "collective"/"element" if that's
-what was intended
-```
-
-The script still compiles and the warning doesn't fail CI — the point is
-authoring-time visibility, not another gate. Without it, a script author
-who forgets `requires = ["abs_position"]` (or leaves `frame` at its
-`"absolute"` default without meaning to) only finds out at flight time,
-when `choreo_configure()`/`choreo_submit_script()` rejects the goal with
-`-EPERM` on an element that doesn't have that hardware capability
-granted at `scr_init()`.
-
-> **Unit footgun (TOML vs. C):** bare numbers mean different things on
-> the two authoring surfaces. In TOML, `duration = 2` is **2 seconds**;
-> in a hand-written `choreo_step_t`, `.max_duration_ms = 2` is
-> **2 milliseconds** (the field names carry the unit: `max_duration_ms`,
-> `achieve_hold_ms`). `choreoc` converts between them — one more reason
-> to author in TOML and never edit the generated header.
-
-Note on `move` vs. `converge`: `move` translates the formation to
-`target`, preserving each element's offset from the participant centroid
-(a rigid-body translation) — it does not collapse the formation. Use
-`converge` when gathering everyone at the same point is what you mean.
 
 ## Validation
 
@@ -583,7 +633,7 @@ surface:
   name is rejected too. At most 4 transitions (`on = [...]`) per step.
   `count_gte`/`count_eq` require a `threshold`; every other event rejects
   one.
-- A script whose step transitions form a cycle must declare a top-level
+- A Choreo whose step transitions form a cycle must declare a top-level
   `max_runtime` bound (see [Events and transitions](#events-and-transitions))
   — the parser detects this statically rather than let an unbounded show
   reach flight.
@@ -617,8 +667,8 @@ Standard-library-only (Python ≥ 3.11 for `tomllib`) — no venv, nothing to
 install; use the system `python3`.
 
 With no `-o`, the header is written to `src/choreo_script.h` next to the
-script if a `src/` directory exists there, else `choreo_script.h` alongside
-it. Override with `-o <path>`:
+`.toml` file if a `src/` directory exists there, else `choreo_script.h`
+alongside it. Override with `-o <path>`:
 
 ```sh
 python3 sdk/tools/choreoc.py path/to/<name>.choreo.toml -o path/to/src/choreo_script.h
@@ -636,12 +686,12 @@ header, and re-run `choreoc` after every edit. It defines:
 static const choreo_step_t k_choreo_script[CHOREO_SCRIPT_LEN] = { ... };
 ```
 
-`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS` is a hard upper bound on script runtime
+`CHOREO_SCRIPT_TOTAL_TIMEOUT_MS` is a hard upper bound on Choreo runtime
 (every step is time-bounded by construction) — use it to size an outer
 mission-duration backstop, e.g.
 `MISSION_DURATION_S = CHOREO_SCRIPT_TOTAL_TIMEOUT_MS/1000 + <margin>`.
 
-Wire the header and the L6/L7 sources into your Zephyr app
+Wire the header and the runtime sources into your Zephyr app
 (`CMakeLists.txt`, alongside the base SDK wiring from
 [`README.md`](README.md#quick-start--c-embedded--zephyr)):
 
@@ -666,7 +716,7 @@ choreo_init(element_id);
 if (choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN) != 0) {
     /* a step was rejected (bad goal, unsatisfiable capability, ...) —
      * this should only happen if the header is stale relative to a
-     * choreo.h change; choreoc already validated the script itself. */
+     * choreo.h change; choreoc already validated the Choreo itself. */
 }
 
 /* each main-loop cycle, after wm_tick() / scr_tick(): */
@@ -677,7 +727,7 @@ if (choreo_script_complete()) {
 }
 ```
 
-A `[[tracks]]` script (see [Tracks](#tracks)) generates a track table
+A `[[tracks]]` Choreo (see [Tracks](#tracks)) generates a track table
 instead of a flat step array — `CHOREO_N_TRACKS`/`k_choreo_tracks`
 in place of `CHOREO_SCRIPT_LEN`/`k_choreo_script`, submitted via
 `choreo_submit_tracks()` instead of `choreo_submit_script()`:
@@ -695,6 +745,33 @@ choreo_submit_tracks(&wm, k_choreo_tracks, CHOREO_N_TRACKS);
  * whatever this platform's gossip_send() reads from) */
 own_state.current_track = choreo_current_track();
 ```
+
+### Regeneration workflow
+
+1. Edit `<name>.choreo.toml`.
+2. `python3 sdk/tools/choreoc.py <name>.choreo.toml` (or with `-o` if not
+   using the default output path).
+3. **Regenerate every consumer.** One Choreo can be compiled into more
+   than one header — `change-partners.choreo.toml` feeds both
+   `examples/cf21bl-formation/src/` and
+   `examples/webots-formation/controllers/cf21bl/` — and each needs its
+   own `-o` run. Miss one and that consumer silently keeps running the
+   previous version of the show; this has happened.
+4. Rebuild the firmware. Commit both the `.toml` and the regenerated
+   headers — CI/other builders never run `choreoc` themselves.
+
+To find out what is stale without regenerating anything:
+
+```bash
+python3 sdk/tools/choreoc.py --check
+```
+
+With no arguments this checks every generated header in the repository,
+recovering each one's source file from the regenerate command line in
+its own banner, and exits non-zero if any differs from what its source
+generates today. CI runs exactly this, so a missed step 3 fails the build
+instead of reaching a drone. Add `<file> -o <header>` to check a single
+pair.
 
 ## Building for Python (simulation / research)
 
@@ -716,16 +793,49 @@ if choreo.script_complete():
 
 `load_steps()` raises `tapestry.script_toml.ScriptError` (a `ValueError`)
 on anything the validation rules above reject — catch it if you're loading
-a script from outside your own repo.
+a Choreo from outside your own repo.
 
-## Parity
+The Python side needs no rebuild step; it reads the `.toml` directly on
+every run — which is also why a stale header shows up as the C and Python
+engines disagreeing in a replay diff (next section).
+
+## Choreo-authoring simulation
+
+`sdk/tools/choreo_sim.py --simulate` is a lightweight, dependency-free
+sanity check for a Choreo you're still editing — sub-second feedback
+without a build toolchain or Webots set up, and without a substrate
+existing at all yet. It instantiates N in-process `Choreo` objects (no C,
+no Zephyr, no network) and ticks them with perfect shared visibility
+(every element sees every other element's current position; no gossip,
+staleness, or quorum-degradation simulation — quorum is synthesized
+HEALTHY), moving each element toward its directive's target at a capped
+speed:
+
+```sh
+python3 sdk/tools/choreo_sim.py --simulate \
+    --script examples/cf21bl-formation/change-partners.choreo.toml \
+    --elements 4 --plot
+```
+
+`--plot` renders a trajectory/timeline figure (lazy `matplotlib` import —
+only this code path touches it; compiling or replaying a Choreo stays
+standard-library-only). This is deliberately NOT a fidelity simulator: no
+repulsion, leash, or arena-clamp physics — that realism belongs to
+`examples/webots-formation`. It is also not a replacement for
+`tapestry-csm-sim`/`tapestry-scr-sim`, which validate partition tolerance
+and quorum/election under injected network faults against the real
+production C engine; `--simulate` assumes all of that away to get a fast
+Choreo check on the Python mirror. Run with `--help` for the full flag
+reference (`--elements`, `--speed`, `--plot`, `--out`).
+
+## Parity and regression replay
 
 The C engine (fed by the generated header) and the Python engine (fed by
 `load_steps()` on the same file) are the same state machine ported twice —
 identical step sequencing, identical achievement predicate, identical
-timeout math. For a given script and identical inputs, tick counts and
+timeout math. For a given Choreo and identical inputs, tick counts and
 final positions match exactly between the two, which makes the Python SDK
-a legitimate way to rehearse a script (including multi-agent parity checks)
+a legitimate way to rehearse a Choreo (including multi-agent parity checks)
 before ever compiling it for hardware.
 
 That parity claim doesn't have to stay theoretical — `sdk/tools/choreo_sim.py
@@ -742,9 +852,9 @@ python3 sdk/tools/choreo_sim.py --replay \
 
 A clean replay (0 divergences) means the C engine that produced the
 recording and the current Python engine agree tick-for-tick on real
-flight/simulation data, not just a bare script rehearsal. A divergence
-means either the recording is stale (script or engine changed since
-capture — re-record) or a genuine regression in `sdk/python/tapestry` vs.
+flight/simulation data, not just a bare rehearsal. A divergence means
+either the recording is stale (the Choreo or engine changed since capture
+— re-record) or a genuine regression in `sdk/python/tapestry` vs.
 `tapestry-os/subsys/choreo`+`bse`. This is offline capture-and-replay
 infrastructure for regression testing, not ML training — see
 `tapestry/choreo.h`'s status banner for that distinction.
@@ -763,70 +873,11 @@ it proves self-consistency, not cross-language parity — it catches an
 unintended change to the Python engine's tick-by-tick behavior. Proving
 parity still takes a real capture, which is what this section describes.
 
-## Script-authoring simulation
-
-`sdk/tools/choreo_sim.py --simulate` is a lightweight, dependency-free
-sanity check for a script you're still editing — sub-second feedback
-without a build toolchain or Webots set up, and without a substrate
-existing at all yet. It instantiates N in-process `Choreo` objects (no C,
-no Zephyr, no network) and ticks them with perfect shared visibility
-(every element sees every other element's current position; no gossip,
-staleness, or quorum-degradation simulation — quorum is synthesized
-HEALTHY), moving each element toward its directive's target at a capped
-speed:
-
-```sh
-python3 sdk/tools/choreo_sim.py --simulate \
-    --script examples/cf21bl-formation/change-partners.choreo.toml \
-    --elements 4 --plot
-```
-
-`--plot` renders a trajectory/timeline figure (lazy `matplotlib` import —
-only this code path touches it; compiling or replaying a script stays
-standard-library-only). This is deliberately NOT a fidelity simulator: no
-repulsion, leash, or arena-clamp physics — that realism belongs to
-`examples/webots-formation`. It is also not a replacement for
-`tapestry-csm-sim`/`tapestry-scr-sim`, which validate partition tolerance
-and quorum/election under injected network faults against the real
-production C engine; `--simulate` assumes all of that away to get a fast
-script check on the Python mirror. Run with `--help` for the full flag
-reference (`--elements`, `--speed`, `--plot`, `--out`).
-
-## Regeneration workflow
-
-1. Edit `<name>.choreo.toml`.
-2. `python3 sdk/tools/choreoc.py <name>.choreo.toml` (or with `-o` if not
-   using the default output path).
-3. **Regenerate every consumer.** One script can be compiled into more
-   than one header — `change-partners.choreo.toml` feeds both
-   `examples/cf21bl-formation/src/` and
-   `examples/webots-formation/controllers/cf21bl/` — and each needs its
-   own `-o` run. Miss one and that consumer silently keeps running the
-   previous version of the show; this has happened.
-4. Rebuild the firmware. Commit both the `.toml` and the regenerated
-   headers — CI/other builders never run `choreoc` themselves.
-
-To find out what is stale without regenerating anything:
-
-```bash
-python3 sdk/tools/choreoc.py --check
-```
-
-With no arguments this checks every generated header in the repository,
-recovering each one's source script from the regenerate command line in
-its own banner, and exits non-zero if any differs from what its script
-generates today. CI runs exactly this, so a missed step 3 fails the build
-instead of reaching a drone. Add `<script> -o <header>` to check a single
-pair.
-
-The Python side needs no rebuild step; it reads the `.toml` directly on
-every run — which is also why a stale header shows up as the C and Python
-engines disagreeing in a replay diff.
-
 ## See also
 
-- [`README.md`](README.md) — the full L7 Choreographer API (single goals,
-  lifecycle states, capability checks) that a script's steps are built from.
+- [`README.md`](README.md) — the underlying single-goal C/Python API
+  (single goals, lifecycle states, capability checks) that a Choreo's
+  steps are built from.
 - `sdk/tools/choreoc.py` — the compiler; run with `--help` or read its
   module docstring for CLI details.
 - `sdk/python/tapestry/script_toml.py` — the schema parser and validator;
@@ -836,7 +887,7 @@ engines disagreeing in a replay diff.
   flight-validated worked example (two-drone station swap) with a
   build+fly walkthrough in that example's own README.
 - `sdk/tools/choreo_sim.py` — the offline replay/regression harness
-  (`--replay`) and the synthetic script-authoring simulator
+  (`--replay`) and the synthetic Choreo-authoring simulator
   (`--simulate`); run with `--help` or read its module docstring for CLI
   details.
 - `examples/webots-formation/controllers/cf21bl/choreo_telemetry.h` — the

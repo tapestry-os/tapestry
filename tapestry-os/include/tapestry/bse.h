@@ -22,9 +22,9 @@
  * ║       CSV (examples/webots-formation/.../choreo_telemetry.h) and replay  ║
  * ║       them through sdk/python/tapestry offline for tick-by-tick          ║
  * ║       regression testing (sdk/tools/choreo_sim.py --replay)              ║
- * ║    ✓  Script-authoring simulator — synthetic multi-element run of a      ║
+ * ║    ✓  Choreo-authoring simulator — synthetic multi-element run of a      ║
  * ║       .choreo.toml through sdk/python/tapestry with no C/Zephyr/network  ║
- * ║       and perfect shared visibility, for sub-second script feedback      ║
+ * ║       and perfect shared visibility, for sub-second Choreo feedback      ║
  * ║       before a substrate exists or a build toolchain is set up           ║
  * ║       (sdk/tools/choreo_sim.py --simulate); not a fidelity simulator —   ║
  * ║       that remains the simulation bridge's job                           ║
