@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Render a repo Markdown doc to styled HTML and PDF.
 
-    python3 sdk/tools/render_doc.py sdk/CHOREO_AUTHORING.md
+    python3 sdk/tools/render_doc.py sdk/CHOREO_API.md
 
 Writes <name>.html and <name>.pdf next to the source file (or to -o/--outdir).
 HTML rendering uses the stdlib-adjacent `markdown` package (GFM-ish: tables,

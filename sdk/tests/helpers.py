@@ -143,7 +143,7 @@ def record_reference_run(script_path: Path, element_id: int = 0,
     stops matching means the Python engine's tick-by-tick behavior changed,
     which is exactly the regression worth catching here.  Cross-language
     parity against the C engine is what a real capture proves; see
-    sdk/CHOREO_AUTHORING.md.
+    sdk/CHOREO_API.md.
     """
     from tapestry.bse import BSEDirectiveType
     from tapestry.choreo import Choreo

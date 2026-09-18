@@ -26,18 +26,18 @@
  * ║  telemetry_tag effect annotations (§12 Stage 5 — see choreo_step_t),     ║
  * ║  the install/configure/deploy/terminate lifecycle stages                 ║
  * ║  (choreo_state_t below), and a TOML script authoring/compiler            ║
- * ║  toolchain (sdk/tools/choreoc.py — see sdk/CHOREO_AUTHORING.md), a       ║
+ * ║  toolchain (sdk/tools/choreoc.py — see sdk/CHOREO_API.md), a             ║
  * ║  hardware-in-the-loop simulation bridge (examples/webots-formation/ —    ║
  * ║  this stack, unmodified, against real Webots physics), and an offline    ║
  * ║  capture/replay harness (opt-in CSV capture of per-tick inputs/outputs — ║
  * ║  choreo_telemetry.h — replayed offline through sdk/python/tapestry and   ║
  * ║  diffed tick-by-tick against the recording — sdk/tools/choreo_sim.py     ║
- * ║  --replay; see sdk/CHOREO_AUTHORING.md's "Parity and regression replay"  ║
+ * ║  --replay; see sdk/CHOREO_API.md's "Parity and regression replay"        ║
  * ║  section), and a synthetic Choreo-authoring simulator                    ║
  * ║  (sdk/tools/choreo_sim.py --simulate — N in-process Choreo instances,    ║
  * ║  perfect shared visibility, no C/Zephyr/network, deliberately no         ║
  * ║  repulsion/leash/arena-clamp physics; not a fidelity simulator, see      ║
- * ║  sdk/CHOREO_AUTHORING.md's "Choreo-authoring simulation" section).       ║
+ * ║  sdk/CHOREO_API.md's "Choreo-authoring simulation" section).             ║
  * ╚══════════════════════════════════════════════════════════════════════════╝
  */
 

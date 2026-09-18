@@ -29,7 +29,7 @@ The entire application-level "program" is
 coordinate-free Choreo a non-programmer can edit cold. (The
 `<name>.choreo.toml` naming — name matching the Choreo's own
 `choreo = "<name>"` key — is the project-wide convention for Choreos;
-see `sdk/CHOREO_AUTHORING.md`.)
+see `sdk/CHOREO_API.md`.)
 
 ```toml
 choreo = "change-partners"
@@ -60,7 +60,7 @@ swap. Switching back to `direct` for speed needs a real deconfliction
 margin first; deferred to a future pass.
 
 The firmware consumes a committed generated header
-(`src/choreo_script.h`, same pattern as `examples/lighthouse_cal.h`).
+(`src/choreo_script.h`, same pattern as `examples/lighthouse-test/lighthouse_cal.h`).
 After editing the TOML, regenerate and rebuild:
 
 ```sh
@@ -290,8 +290,8 @@ uses — see the comment block at the top of `src/formation.h`.
   poses and OOTX calibration (`src/main.c`'s `BS0`/`BS1`/`BS0_CALIB`/
   `BS1_CALIB`) — gossiped positions are only comparable in a shared frame.
   Current values come from the single shared header
-  `examples/lighthouse_cal.h` (generated from the YAML next
-  to it) — if the room is recalibrated, update that ONE file.
+  `examples/lighthouse-test/lighthouse_cal.h` (generated from the YAML
+  next to it) — if the room is recalibrated, update that ONE file.
 - Each drone needs its own lighthouse deck (USART3, PC10/PC11 — see
   `cf21bl_lighthouse.c`) and a working BMP390 baro for altitude hold.
 

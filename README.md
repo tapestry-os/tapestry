@@ -53,7 +53,7 @@ python3 sdk/tools/choreo_sim.py --simulate \
 
 A **Choreo** is an ordered, time-bounded sequence of goals — hold, form, converge, exchange,
 disperse — authored once in TOML and either compiled to a C header for embedded/Zephyr targets or
-loaded directly in Python for simulation. See [`sdk/CHOREO_AUTHORING.md`](sdk/CHOREO_AUTHORING.md)
+loaded directly in Python for simulation. See [`sdk/CHOREO_API.md`](sdk/CHOREO_API.md)
 for the full authoring reference, or [`sdk/README.md`](sdk/README.md) for the underlying
 single-goal C/Python API a Choreo's steps are built from.
 
@@ -92,7 +92,7 @@ tapestry/
 │   ├── examples/
 │   │   └── hello_swarm.py         Minimal worked example (no sim required)
 │   ├── tests/                     pytest suite (bse/choreo/script_toml/choreoc/choreo_sim)
-│   └── CHOREO_AUTHORING.md        Choreo authoring + compilation guide
+│   └── CHOREO_API.md              Choreo authoring + compilation guide
 │
 ├── examples/                      Worked examples and hardware bring-up demos
 │   ├── cf21bl-formation/          Flagship demo: real L3-L7 stack on Crazyflie 2.1
@@ -270,7 +270,7 @@ an L1 substrate and L3 transceiver written for the sim — a reusable pattern, a
 be added at `controllers/common/`. Useful for iterating on swarm-scale behavior (elections,
 partitions, larger formations) faster and more cheaply than re-flying real drones between changes.
 Every replay against a real flight recording is also checked tick-for-tick against the Python
-engine — see [`sdk/CHOREO_AUTHORING.md`](sdk/CHOREO_AUTHORING.md)'s "Parity and regression replay"
+engine — see [`sdk/CHOREO_API.md`](sdk/CHOREO_API.md)'s "Parity and regression replay"
 section.
 
 **L4/L5 (coordination substrate)** underneath it has been independently validated on physical
@@ -287,7 +287,7 @@ instructions.
 ## Coordination-substrate (L4/L5) simulation reference
 
 The Choreo-level simulation and replay tools are covered in
-[`sdk/CHOREO_AUTHORING.md`](sdk/CHOREO_AUTHORING.md). This section is the lower-level harness that
+[`sdk/CHOREO_API.md`](sdk/CHOREO_API.md). This section is the lower-level harness that
 validates L4/L5 in isolation — quorum, leader election, and partition tolerance — under injected
 network faults, independent of any application-level behavior running on top.
 

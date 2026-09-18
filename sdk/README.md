@@ -23,7 +23,7 @@ below it is managed by Tapestry; application code calls only into this SDK.
 > feedback controller — the per-element achievement predicate
 > (`choreo_goal_achieved` / `bse_goal_achieved`) plus its collective
 > aggregation (`choreo_collective_achieved`, `scope = "all"` in TOML — see
-> [`CHOREO_AUTHORING.md`](CHOREO_AUTHORING.md); eventually consistent,
+> [`CHOREO_API.md`](CHOREO_API.md); eventually consistent,
 > bounded by gossip latency, not a synchronization guarantee). A TOML Choreo
 > authoring/compiler toolchain (`sdk/tools/choreoc.py`,
 > `sdk/python/tapestry/script_toml.py`), an offline replay/regression
@@ -35,7 +35,7 @@ below it is managed by Tapestry; application code calls only into this SDK.
 
 > **Writing a multi-step show?** Choreos (ordered, time-bounded goal
 > sequences) are authored once in TOML and either compiled to a C header or
-> loaded directly in Python — see [`CHOREO_AUTHORING.md`](CHOREO_AUTHORING.md).
+> loaded directly in Python — see [`CHOREO_API.md`](CHOREO_API.md).
 > The quick starts below cover the single-goal API a Choreo's steps are
 > built from.
 
@@ -131,7 +131,7 @@ sdk/
   python/tapestry/script_toml.py   Choreo (TOML) parser/validator
   tools/choreoc.py                 Choreo compiler: TOML -> C header
   examples/hello_swarm.py          Minimal worked example (no sim required)
-  CHOREO_AUTHORING.md              Choreo authoring + compilation guide
+  CHOREO_API.md                    Choreo authoring + compilation guide
 
 tapestry-os/
   include/tapestry/choreo.h        L7 C header (choreo_init, choreo_tick, etc.)

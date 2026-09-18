@@ -8,12 +8,12 @@ choreo_step_t array an embedded target submits via choreo_submit_script().
 
 Standard library only (Python >= 3.11 for tomllib) — no venv, nothing to
 install.  The generated header is committed next to the consuming source
-(same pattern as examples/lighthouse_cal.h), so firmware builds and CI
+(same pattern as examples/lighthouse-test/lighthouse_cal.h), so firmware builds and CI
 never need Python.
 
 Naming convention: a script file is named <name>.choreo.toml, where
 <name> matches its own "choreo = " key (e.g. change-partners.choreo.toml
-for choreo = "change-partners") — see sdk/CHOREO_AUTHORING.md.
+for choreo = "change-partners") — see sdk/CHOREO_API.md.
 
 Usage:
     python3 sdk/tools/choreoc.py <name.choreo.toml> [-o <out.h>]

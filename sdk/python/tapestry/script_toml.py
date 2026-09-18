@@ -5,7 +5,7 @@ The authoring format for Choreo scripts: a small TOML document a domain
 expert can edit cold, parsed with the Python standard library (tomllib,
 Python >= 3.11) — no third-party dependencies.  File naming convention:
 <name>.choreo.toml, where <name> matches the script's own "choreo ="
-key below (e.g. change-partners.choreo.toml) — see sdk/CHOREO_AUTHORING.md.
+key below (e.g. change-partners.choreo.toml) — see sdk/CHOREO_API.md.
 
     choreo = "change-partners"
 

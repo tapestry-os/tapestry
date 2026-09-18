@@ -656,7 +656,7 @@ guaranteed not to stall a flight by construction.
 ## Building for C / Zephyr (embedded targets)
 
 Compile the TOML into a committed C header — same pattern as
-`examples/lighthouse_cal.h`, so the firmware build and CI never invoke
+`examples/lighthouse-test/lighthouse_cal.h`, so the firmware build and CI never invoke
 Python:
 
 ```sh

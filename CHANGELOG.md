@@ -370,7 +370,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   state alone, so the settled result is gossiped instead — the same
   pattern `achieved` already established, not a new one invented for this.
   Full C/Python/TOML parity throughout (`choreoc.py` emits track tables
-  too); `sdk/CHOREO_AUTHORING.md` documents all four stages
+  too); `sdk/CHOREO_API.md` documents all four stages
 - **Choreo/BSE positions and targets are genuinely 3D throughout, not 2D
   with altitude managed separately** — `tapestry_position_t` (BSE's own
   2D-only type, previously distinct from L4's already-3D `position_t`) is
@@ -421,7 +421,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   pattern `choreo_get_directive()` → `substrate_move()` already uses.
   TOML authoring: `indicator = "idle"|"active"|"degraded"|"failed"` and
   `telemetry_tag = "..."` are now valid on any goal key (see
-  `sdk/CHOREO_AUTHORING.md`'s new "Effects" section); `choreoc.py` emits
+  `sdk/CHOREO_API.md`'s new "Effects" section); `choreoc.py` emits
   both as C designated initializers, only when authored. `examples/
   cf21bl-formation/src/formation.c`'s `demo_set_leds()` and the
   previously independently-duplicated identical copy in `examples/
@@ -747,7 +747,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **Choreo scripts authored in TOML** — `sdk/tools/choreoc.py` compiles a
   `.toml` script to a committed C header (stdlib-only, no dependencies);
   the Python SDK loads the identical file directly via
-  `tapestry/script_toml.py`. New `sdk/CHOREO_AUTHORING.md` authoring guide.
+  `tapestry/script_toml.py`. New `sdk/CHOREO_API.md` authoring guide.
   Script files follow an `<name>.choreo.toml` naming convention
 - **`examples/cf21bl-formation` Choreo mode** (new default) — one binary
   for every drone (IDs negotiated at boot over syslink P2P) running a

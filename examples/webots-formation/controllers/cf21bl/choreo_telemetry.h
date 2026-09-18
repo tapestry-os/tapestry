@@ -7,7 +7,7 @@
  * re-drive sdk/python/tapestry's Choreo engine against the exact same
  * inputs offline and diff its outputs against what really happened here.
  * This is capture infrastructure for the offline replay harness described
- * in ../../README.md and sdk/CHOREO_AUTHORING.md's "Parity and regression
+ * in ../../README.md and sdk/CHOREO_API.md's "Parity and regression
  * replay" section — not a general logging facility, and not ML training
  * (see tapestry/choreo.h's status banner for that distinction).
  *

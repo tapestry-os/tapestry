@@ -144,7 +144,7 @@ LOG_MODULE_REGISTER(cf21bl_formation, LOG_LEVEL_INF);
  * procedure).  MUST match the physical base-station placement at flight
  * time and MUST be identical across all drones — gossiped positions are
  * only comparable in a shared frame. */
-#include "../../lighthouse_cal.h"
+#include "../../lighthouse-test/lighthouse_cal.h"
 
 /* ── Mission parameters ───────────────────────────────────────────────────── */
 

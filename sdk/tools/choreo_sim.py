@@ -13,7 +13,7 @@ Choreo engine (sdk/python/tapestry). Two modes, one tick loop, one plotter:
       recorded. A clean replay (0 divergences) means the C engine that
       produced the recording and the current Python engine agree
       tick-for-tick on real flight/simulation data — see
-      sdk/CHOREO_AUTHORING.md's "Parity and regression replay" section.
+      sdk/CHOREO_API.md's "Parity and regression replay" section.
       No Webots, no C build, no live network — just the L6/L7 state
       machine re-run against frozen inputs.
 

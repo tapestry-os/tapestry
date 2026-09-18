@@ -127,7 +127,7 @@ What a new element needs, in a new `controllers/<substrate>/`:
 ## Running a different Choreo
 
 To fly a different Choreo: write your own `<name>.choreo.toml` (goal/parameter reference:
-[`sdk/CHOREO_AUTHORING.md`](../../sdk/CHOREO_AUTHORING.md)), then compile it to the
+[`sdk/CHOREO_API.md`](../../sdk/CHOREO_API.md)), then compile it to the
 **same** header path — the generated symbol names (`k_choreo_script`, `CHOREO_NAME`,
 etc.) are fixed regardless of the Choreo's own name, since `main.c` always
 `#include`s `"choreo_script.h"`. For example, running this Choreo with the
@@ -215,13 +215,13 @@ python3 ../../sdk/tools/choreo_sim.py --replay \
     --telemetry /tmp/telemetry/choreo_0.csv
 ```
 
-See sdk/CHOREO_AUTHORING.md's "Parity and regression replay" section for
+See sdk/CHOREO_API.md's "Parity and regression replay" section for
 what a clean replay (0 divergences) actually establishes.
 
 `choreo_sim.py` also has a `--simulate` mode — no CSV, no Webots, no C
 build at all: it drives a synthetic multi-element run of a `.choreo.toml`
 directly through `sdk/python/tapestry` for sub-second Choreo feedback
-while authoring. See sdk/CHOREO_AUTHORING.md's "Choreo-authoring
+while authoring. See sdk/CHOREO_API.md's "Choreo-authoring
 simulation" section.
 
 ## Known limitations

@@ -140,7 +140,7 @@ changed; make sure that was intended, and that
 `tapestry-os/subsys/bse/bse.c` and `choreo.c` changed to match. The
 recording only proves the Python mirror is self-consistent — cross-language
 parity against the C engine needs a real capture, see
-[sdk/CHOREO_AUTHORING.md](sdk/CHOREO_AUTHORING.md).
+[sdk/CHOREO_API.md](sdk/CHOREO_API.md).
 
 ## Code conventions
 
