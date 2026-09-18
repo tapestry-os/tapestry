@@ -900,11 +900,17 @@ ZTEST(choreo_script, test_exchange_direct_path_beelines)
                  "direct swap must complete in ~settle time");
 }
 
-ZTEST(choreo_script, test_suspension_freezes_step_timer)
+ZTEST(choreo_script, test_suspension_no_longer_freezes_step_timer)
 {
     /* CONVERGE (peer-referential-shaped target, not self-referential) —
-     * HOLD is the one goal type this no longer holds for; see
-     * test_suspended_hold_times_out_while_still_isolated below. */
+     * deliberately chosen to prove the isolation give-up below is NOT
+     * HOLD-specific: every step's own max_duration_ms now keeps counting
+     * down while SUSPENDED, for every goal type, so a script gives up on
+     * permanent isolation instead of relying only on the whole-script
+     * backstop. What DOES stay frozen while suspended is the BSE's own
+     * goal computation for a peer-referential goal like this one — see
+     * test_suspended_non_hold_goal_also_times_out_while_isolated below,
+     * which checks both halves together. */
     static const choreo_step_t script[] = {
         { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 1.0f, 1.0f } },
           .max_duration_ms = 1000 },
@@ -919,25 +925,18 @@ ZTEST(choreo_script, test_suspension_freezes_step_timer)
     scr_state_t scr = { 0 };
     scr.quorum_state = SCR_QUORUM_LOST;
 
-    /* 5 s of quorum LOST — five times the step duration.  A frozen timer
-     * must not advance the script. */
+    /* 5 s of quorum LOST — five times the step duration.  Never recovers
+     * quorum even once, yet the step's own timeout still fires and the
+     * script still completes. */
     for (int i = 0; i < 50; i++) {
         choreo_tick(&wm, &scr);
     }
-    zassert_false(choreo_script_complete(),
-                  "suspended script must not time its steps out");
-    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
-                  "quorum loss must suspend");
-
-    scr.quorum_state = SCR_QUORUM_HEALTHY;
-    for (int i = 0; i < 12; i++) {
-        choreo_tick(&wm, &scr);
-    }
     zassert_true(choreo_script_complete(),
-                 "script must resume and complete after quorum recovery");
+                 "an isolated CONVERGE must time itself out without "
+                 "waiting for quorum recovery, same as HOLD always could");
 }
 
-/* ── Isolation give-up: HOLD's timer keeps running while SUSPENDED ───────── */
+/* ── Isolation give-up: every step's timer keeps running while SUSPENDED ── */
 
 ZTEST(choreo_script, test_suspended_hold_times_out_while_still_isolated)
 {
@@ -954,16 +953,58 @@ ZTEST(choreo_script, test_suspended_hold_times_out_while_still_isolated)
     scr_state_t scr = { 0 };
     scr.quorum_state = SCR_QUORUM_LOST;
 
-    /* 1.1 s of quorum LOST — just past the step's own bound.  Unlike
-     * non-HOLD goals (see test_suspension_freezes_step_timer above), a
-     * HOLD step's own max_duration_ms is not frozen by SUSPENDED — this
-     * is the isolation give-up mechanism (choreo_state_t's doc). */
+    /* 1.1 s of quorum LOST — just past the step's own bound.  A HOLD
+     * step's own max_duration_ms is not frozen by SUSPENDED — this is the
+     * isolation give-up mechanism (choreo_state_t's doc), and every other
+     * goal type now gets the same exit — see
+     * test_suspension_no_longer_freezes_step_timer above and
+     * test_suspended_non_hold_goal_also_times_out_while_isolated below. */
     for (int i = 0; i < 11; i++) {
         choreo_tick(&wm, &scr);
     }
     zassert_true(choreo_script_complete(),
                  "an isolated HOLD must time itself out without waiting "
                  "for quorum recovery");
+}
+
+ZTEST(choreo_script, test_suspended_non_hold_goal_also_times_out_while_isolated)
+{
+    /* Two MOVE steps back to back, mirroring
+     * test_suspended_hold_advances_to_next_step_while_isolated exactly,
+     * but with a peer-referential goal type: the isolation give-up is not
+     * HOLD-specific, so a MOVE step chains through a suspended timeout
+     * advance exactly like HOLD does, even though (unlike HOLD) its own
+     * BSE computation stays frozen the whole time it's isolated. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_MOVE, .target = { 1.0f, 1.0f } },
+          .max_duration_ms = 500 },
+        { .goal = { .type = CHOREO_GOAL_MOVE, .target = { 2.0f, 2.0f } },
+          .max_duration_ms = 500 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    for (int i = 0; i < 6; i++) {   /* 600 ms — past step 0's 500 ms bound */
+        choreo_tick(&wm, &scr);
+    }
+    zassert_equal(choreo_script_step(), 1,
+                  "step 0's isolated timeout must advance to step 1");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "still isolated — advancing must not fake a recovery");
+    zassert_false(choreo_script_complete(), "step 1 hasn't timed out yet");
+
+    for (int i = 0; i < 6; i++) {   /* another 600 ms, still isolated */
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "step 1's own isolated timeout must also fire");
 }
 
 ZTEST(choreo_script, test_suspended_hold_advances_to_next_step_while_isolated)

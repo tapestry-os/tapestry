@@ -107,9 +107,9 @@ class ChoreoEvent(IntEnum):
     QUORUM_LOST fires when scr_state's quorum_state == LOST, checked
     before (and composing naturally with, not suppressing) the engine's
     own automatic RUNNING -> SUSPENDED transition — see choreo.h's
-    comment for why that no longer needed its own careful design once a
-    HOLD step's own timeout stopped freezing while suspended
-    (_suspended_hold_timeout()). quorum_degraded/quorum_recovered remain
+    comment for why that no longer needed its own careful design once
+    every step's own timeout stopped freezing while suspended
+    (_suspended_step_timeout()). quorum_degraded/quorum_recovered remain
     absent — no concrete use case identified for either."""
     ACHIEVED       = 0
     ELEMENT_JOINED = 1
@@ -763,14 +763,21 @@ class Choreo:
             # the BSE while suspended — station capture and station-keeping
             # need no peers, and deferring the capture to quorum recovery
             # would capture a drifted position.  Peer-referential goals
-            # (EXCHANGE) stay frozen.  Script timers stay frozen too,
-            # except a HOLD step's own max_duration_ms
-            # (_suspended_hold_timeout()) — permanent isolation needs a
-            # way out even for a step that never freezes unsafely.
+            # (EXCHANGE) stay frozen, and a MOVE/FORM step's own target
+            # stays exactly as frozen as it was the instant SUSPENDED
+            # began, for the same reason.  Script timers stay frozen too,
+            # except every step's own max_duration_ms
+            # (_suspended_step_timeout()) — permanent isolation needs a
+            # way out even for a step that never freezes unsafely, and
+            # that need doesn't stop at HOLD: an isolated MOVE or FORM
+            # deserves the same exit, even though it can't safely keep
+            # recomputing its own target while it waits for one (see
+            # _suspended_step_timeout()'s own docstring for a known, not
+            # yet root-caused issue mirrored from choreo.c).
             if self._goal is not None and self._goal.type == GoalType.HOLD:
                 self._bse.tick(wm_entries, scr_state)
-                self._suspended_hold_timeout()
-            # _suspended_hold_timeout() may have terminated -> IDLE, or
+            self._suspended_step_timeout()
+            # _suspended_step_timeout() may have terminated -> IDLE, or
             # advanced to a new step (still SUSPENDED); the recovery
             # check only applies if still actually SUSPENDED.
             if self._state == ChoreoState.SUSPENDED and \
@@ -862,7 +869,7 @@ class Choreo:
         """Shared tail of an advance: activate step target_idx, or
         complete the script if target_idx has run off the end.  Mirrors
         advance_to() in choreo.c — factored out so
-        _suspended_hold_timeout() below can reach it too."""
+        _suspended_step_timeout() below can reach it too."""
         self._step_ms = 0
 
         if target_idx >= len(self._steps):
@@ -874,17 +881,38 @@ class Choreo:
         self._goal = self._steps[self._step_idx].goal
         self._bse.submit_intent(self._goal_to_intent(self._goal))
 
-    def _suspended_hold_timeout(self) -> None:
-        """Isolated (SUSPENDED) timeout carve-out — HOLD only.  Mirrors
-        suspended_hold_timeout() in choreo.c: a HOLD step's own
-        max_duration_ms keeps counting down while suspended, so a script
-        can give up on permanent isolation instead of station-keeping
-        forever.  Deliberately narrow — no on[] transitions, no
-        advance_on_achieved (HOLD's achievement is unconditionally true,
-        so combining it with SUSPENDED would fire on the first isolated
-        tick)."""
-        if self._steps is None or self._goal is None or \
-                self._goal.type != GoalType.HOLD:
+    def _suspended_step_timeout(self) -> None:
+        """Isolated (SUSPENDED) timeout carve-out — every goal type, not
+        just HOLD.  Mirrors suspended_step_timeout() in choreo.c: every
+        step's own max_duration_ms keeps counting down while suspended,
+        so a script can give up on permanent isolation regardless of
+        which goal it was isolated in, not just station-keeping forever.
+        This does NOT change which goals keep ticking the BSE while
+        suspended (still HOLD-only, in tick() above) — a MOVE or FORM
+        step still can't safely recompute its target without fresh peer
+        data; it can just give up and move on, on schedule, same as HOLD
+        always could. Before this covered every goal, an isolated MOVE or
+        FORM step's own timeout silently stopped counting down the
+        instant quorum was lost, leaving only the whole-script backstop
+        to end it (examples/webots-warehouse's scene 2 is what surfaced
+        this).
+
+        Deliberately narrow — no on[] transitions, no advance_on_achieved
+        (HOLD's achievement is unconditionally true, so combining it with
+        SUSPENDED would fire on the first isolated tick; other goal types
+        don't have that specific hazard, but evaluating achieved from a
+        view the element can't currently trust is the wrong call
+        regardless of goal type, so the restriction stays goal-agnostic
+        too).
+
+        KNOWN ISSUE, not yet root-caused (mirrored from choreo.c's own
+        comment on suspended_step_timeout()): this escape has been
+        observed, in the C implementation under examples/webots-warehouse
+        stress testing, to sometimes fail to fire even once step_ms has
+        clearly exceeded max_duration_ms. Not yet reproduced against this
+        Python mirror specifically; flagged here so the two don't quietly
+        drift out of sync if one gets a fix the other doesn't."""
+        if self._steps is None or self._goal is None:
             return
         st = self._steps[self._step_idx]
         self._step_ms += self.WM_CYCLE_MS

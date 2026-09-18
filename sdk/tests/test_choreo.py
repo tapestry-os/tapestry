@@ -473,15 +473,22 @@ def test_quorum_loss_suspends_a_running_script():
     assert c.goal_status() == ChoreoState.SUSPENDED
 
 
-def test_suspension_freezes_the_step_timer():
-    """A partition pauses the show rather than timing it out."""
+def test_suspension_no_longer_freezes_the_step_timer():
+    """A partition pauses the SHOW (the BSE's own goal computation) rather
+    than timing it out — but each step's own max_duration_ms keeps
+    counting down regardless, for every goal type, not just HOLD (see the
+    "Isolation give-up" section below for the dedicated tests). Default
+    goal type here is CONVERGE, a peer-referential goal, specifically to
+    prove the escape isn't HOLD-specific: given enough suspended ticks,
+    both 300 ms steps time out and the script completes even though it
+    never once recovers quorum."""
     c = Choreo(element_id=0)
     c.submit_script([timed(ms=300), timed(ms=300)])
     c.tick(solo(), LOST)                            # ticks once, then suspends
     for _ in range(50):
         c.tick(solo(), LOST)
-    assert c.script_step() == 0
-    assert c.goal_status() == ChoreoState.SUSPENDED
+    assert c.script_complete() is True
+    assert c.goal_status() == ChoreoState.IDLE      # terminate() settles here
 
 
 def test_quorum_recovery_resumes_the_script():
@@ -536,7 +543,7 @@ def test_a_missing_quorum_state_is_treated_as_healthy():
     assert c.goal_status() == ChoreoState.RUNNING
 
 
-# ── Isolation give-up: HOLD's timer keeps running while SUSPENDED ───────────
+# ── Isolation give-up: every step's timer keeps running while SUSPENDED ─────
 
 def test_suspended_hold_times_out_while_still_isolated():
     c = Choreo(element_id=0)
@@ -560,15 +567,25 @@ def test_suspended_hold_advances_to_next_step_while_isolated():
     assert c.script_complete() is True
 
 
-def test_non_hold_goal_still_freezes_forever_while_suspended():
-    """The isolation give-up is HOLD-specific — a peer-referential goal's
-    own timer must stay frozen exactly as before this feature existed."""
+def test_suspended_non_hold_goal_also_times_out_while_isolated():
+    """The isolation give-up is NOT HOLD-specific: a peer-referential
+    goal's own BSE computation stays frozen (see
+    test_a_peer_referential_goal_stays_frozen_while_suspended), but its
+    step's own max_duration_ms keeps counting down and gives up on
+    schedule exactly like HOLD's does — an isolated MOVE or FORM step
+    deserves the same exit HOLD always had, not a permanent stall bounded
+    only by the whole script's own backstop."""
     c = Choreo(element_id=0)
-    c.submit_script([timed(ms=1000)])   # default CONVERGE
-    for _ in range(50):
+    c.submit_script([timed(goal_type=GoalType.MOVE, ms=500),
+                     timed(goal_type=GoalType.MOVE, ms=500)])
+    for _ in range(6):
         c.tick(solo(), LOST)
-    assert c.script_complete() is False
+    assert c.script_step() == 1
     assert c.goal_status() == ChoreoState.SUSPENDED
+    assert c.script_complete() is False
+    for _ in range(6):
+        c.tick(solo(), LOST)
+    assert c.script_complete() is True
 
 
 # ── Isolation escape hatch: on = QUORUM_LOST ─────────────────────────────────

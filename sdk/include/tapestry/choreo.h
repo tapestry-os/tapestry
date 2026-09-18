@@ -70,20 +70,27 @@
  *               show rather than timing it out.  Per-goal quorum: SELF-
  *               referential goals (HOLD) still tick the BSE while
  *               suspended (station capture and station-keeping need no
- *               peers); PEER-referential goals (EXCHANGE) are frozen.
+ *               peers); PEER-referential goals (EXCHANGE) are frozen, and
+ *               a MOVE/FORM step's own target simply stays exactly as
+ *               frozen as it was the instant SUSPENDED began.
  *               Resumes automatically to RUNNING when quorum recovers.
  *
- *               A HOLD step's OWN max_duration_ms is the one exception to
- *               "step timers are frozen": it keeps counting down while
- *               suspended too (choreo.c's suspended_hold_timeout()), so a
- *               script can give up on permanent isolation instead of
- *               station-keeping forever with no peer ever left to revive
- *               it — every other goal type's timer stays frozen exactly
- *               as before.  Combine with a CHOREO_EVENT_QUORUM_LOST
- *               transition (choreo_event_t below) on the step that
- *               precedes the HOLD to actively choose a safe fallback
- *               station instead of freezing wherever isolation happened
- *               to strike (e.g. mid-EXCHANGE-arc).
+ *               Every step's OWN max_duration_ms is the one exception to
+ *               "step timers are frozen", for every goal type, not only
+ *               HOLD: it keeps counting down while suspended too (choreo.c's
+ *               suspended_step_timeout()), so a script can give up on
+ *               permanent isolation instead of freezing wherever it struck
+ *               forever with no peer ever left to revive it — a MOVE or
+ *               FORM step gets this exit too, even though (unlike HOLD) it
+ *               cannot safely keep recomputing its own target while
+ *               isolated, only give up on schedule and move on. Combine
+ *               with a CHOREO_EVENT_QUORUM_LOST transition (choreo_event_t
+ *               below) on the step that precedes an isolation-prone one to
+ *               actively choose a safe fallback station instead of relying
+ *               on wherever isolation happened to strike (e.g.
+ *               mid-EXCHANGE-arc). See suspended_step_timeout()'s own
+ *               comment in choreo.c for a known, not yet root-caused issue
+ *               with this escape under repeated isolation.
  *
  *               SUSPENDED is deliberately defined as "paused, preserved,
  *               resumes automatically" rather than as "quorum lost".  An

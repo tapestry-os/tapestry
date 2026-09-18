@@ -739,9 +739,9 @@ static bool event_fires(choreo_event_t event, uint8_t threshold,
 
 /* Shared tail of an advance: activate step target_idx, or complete the
  * script if target_idx has run off the end.  Factored out of
- * script_advance() so suspended_hold_timeout() below (an isolated HOLD
- * giving up on its own timeout) can reach the exact same completion/
- * next-step logic without duplicating it. */
+ * script_advance() so suspended_step_timeout() below (an isolated element
+ * giving up on its current step's own timeout) can reach the exact same
+ * completion/next-step logic without duplicating it. */
 static void advance_to(int target_idx)
 {
     s_step_ms = 0;
@@ -968,13 +968,26 @@ static void script_advance(const world_model_t *wm, const scr_state_t *scr)
 }
 
 /*
- * Isolated (SUSPENDED) timeout carve-out — HOLD only.  A HOLD step
- * already ticks the BSE while suspended (choreo_tick()'s SUSPENDED case)
- * because it's self-referential and needs no peers; this extends that
- * same reasoning to its own max_duration_ms, so a script can give up on
- * permanent isolation (all peers gone, out-of-mesh-range, a partition
- * that never heals) instead of station-keeping forever with nothing left
- * to revive it — see choreo_state_t's SUSPENDED doc.
+ * Isolated (SUSPENDED) timeout carve-out — every goal type, not just HOLD.
+ * A HOLD step already ticks the BSE while suspended (choreo_tick()'s
+ * SUSPENDED case) because it's self-referential and needs no peers; this
+ * extends the OTHER reasoning — that a script must not station-keep
+ * forever with nothing left to revive it — to every goal's own
+ * max_duration_ms, so a script can give up on permanent isolation (all
+ * peers gone, out-of-mesh-range, a partition that never heals) regardless
+ * of which goal it was isolated in — see choreo_state_t's SUSPENDED doc.
+ * This does NOT change which goals keep ticking the BSE while suspended
+ * (still HOLD-only, in choreo_tick() itself, below) — a MOVE or FORM step
+ * still can't safely recompute its target without fresh peer data. What it
+ * changes is only that the step is no longer stuck WAITING on that data
+ * forever: it can still give up and move on, on schedule, same as HOLD
+ * always could. Before this covered every goal, an isolated MOVE or FORM
+ * step's own timeout silently stopped counting down the instant quorum was
+ * lost — CHOREO_SCRIPT_TOTAL_TIMEOUT_MS's whole-script backstop was the
+ * only thing left to end it, orders of magnitude coarser than a single
+ * step's bound was ever meant to be (examples/webots-warehouse's scene 2
+ * is what surfaced this: an isolated straggler mid-crossing had no way
+ * back until the ENTIRE script gave up, not just its one step).
  *
  * Deliberately narrow: unlike script_advance(), this does NOT evaluate
  * on[] transitions (ELEMENT_JOINED/LOST, COUNT_*, ANCHOR_LOST all need
@@ -983,12 +996,30 @@ static void script_advance(const world_model_t *wm, const scr_state_t *scr)
  * true — see choreo_goal_achieved()'s test coverage — so combining it
  * with SUSPENDED would fire on the very first isolated tick, which is
  * never useful; the TOML authoring surface already forbids
- * until/eps/settle on hold for exactly this reason).  Only the time
- * bound itself is unfrozen.
+ * until/eps/settle on hold for exactly this reason. Other goal types don't
+ * have that specific hazard, but evaluating achieved from a view the
+ * element can't currently trust is the wrong call regardless of goal
+ * type, so the restriction stays goal-agnostic too). Only the time bound
+ * itself is unfrozen.
+ *
+ * KNOWN ISSUE, not yet root-caused: this escape has been observed (via
+ * examples/webots-warehouse's scene 2, under repeated back-to-back
+ * partition stress — see that example's git history) to sometimes fail to
+ * fire even once s_step_ms has clearly exceeded max_duration_ms by a wide
+ * margin — one element sat SUSPENDED on the same HOLD step for 150+ real
+ * seconds against a 15 s bound. Reproduced once under direct
+ * instrumentation (since reverted); not yet isolated to a specific cause.
+ * Candidates not yet ruled in or out: an s_step_ms accumulation gap
+ * specific to some RUNNING/SUSPENDED transition sequence, or an
+ * interaction with departure_policy_should_fire()'s own per-tick
+ * bookkeeping in script_advance() (called only while RUNNING, so unlikely
+ * but unconfirmed). Needs a dedicated repro harness — this function's
+ * exposure just got wider with the change above, not narrower, so this is
+ * worth chasing rather than leaving as a one-off.
  */
-static void suspended_hold_timeout(void)
+static void suspended_step_timeout(void)
 {
-    if (!s_script_active || s_goal.type != CHOREO_GOAL_HOLD) {
+    if (!s_script_active) {
         return;
     }
     const choreo_step_t *st = &s_steps[s_step_idx];
@@ -1210,15 +1241,22 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
          * to quorum recovery would capture whatever position the element
          * has drifted to by then (2026-07-19 flight finding).  PEER-
          * referential goals (EXCHANGE) stay frozen: their snapshots are
-         * meaningless without fresh peers.  HOLD's own max_duration_ms is
-         * the one timer that isn't frozen either (suspended_hold_timeout()
-         * — see choreo_state_t's doc): permanent isolation needs a way
-         * out even for a step that never freezes at an unsafe position. */
+         * meaningless without fresh peers, and a MOVE/FORM step's own
+         * target stays exactly as frozen as it was the instant SUSPENDED
+         * began, for the same reason. Every step's own max_duration_ms is
+         * the one timer that isn't frozen either, for every goal type
+         * (suspended_step_timeout() — see choreo_state_t's doc and that
+         * function's own comment for the reasoning and a known open issue
+         * with it): permanent isolation needs a way out even for a step
+         * that never freezes at an unsafe position, and that need doesn't
+         * stop at HOLD — an isolated MOVE or FORM deserves the same exit,
+         * even though (unlike HOLD) it can't safely keep recomputing its
+         * own target while it waits for one. */
         if (s_goal.type == CHOREO_GOAL_HOLD) {
             bse_tick(wm, scr);
-            suspended_hold_timeout();
         }
-        /* suspended_hold_timeout() may have terminated -> IDLE, or
+        suspended_step_timeout();
+        /* suspended_step_timeout() may have terminated -> IDLE, or
          * advanced to a new step (still SUSPENDED — advance_to() doesn't
          * touch s_state); the quorum-recovery check below only applies if
          * still actually SUSPENDED, same guard RUNNING uses above. */
