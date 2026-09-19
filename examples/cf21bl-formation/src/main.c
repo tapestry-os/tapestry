@@ -642,6 +642,19 @@ int main(void)
             break;
         }
 
+        /* Advance this element's Lamport clock every tick, as the flight
+         * loop does.  wm_receive_gossip() drops any frame whose
+         * logical_clock is not strictly newer than the one it holds, and
+         * wm_update_self() is the only thing that advances it — without
+         * this call every frame sent during the hold carries the SAME
+         * clock, so each peer is accepted once, then rejected until it ages
+         * out (WM_EXPIRE_THRESHOLD_MS), and reads fresh only briefly after
+         * each re-acceptance.  The "all peers fresh" early exit above then
+         * fires only by coincidence and the hold usually runs its full
+         * grace period.  With it, a peer stays fresh while it keeps
+         * sending, so the hold ends as soon as everyone is heard. */
+        wm_update_self(&wm, &own_state);
+
         gossip_accum += WM_CYCLE_MS;
         if (gossip_accum >= DEMO_GOSSIP_MS) {
             own_state.update_seq++;
