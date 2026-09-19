@@ -256,15 +256,15 @@ ZTEST_SUITE(gossip_wire, NULL, NULL, suite_before, NULL, NULL);
  */
 ZTEST(gossip_wire, test_frame_sizes_match_the_documented_wire_contract)
 {
-    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 43u,
-                  "gossip frame must stay 43 bytes (wire.h v4 documents "
-                  "'<BfffffffIIBBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
+    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 49u,
+                  "gossip frame must stay 49 bytes (wire.h v6 documents "
+                  "'<BfffffffIIBHBBBBBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
     /* Pinned together on purpose: a layout change that forgets the version
      * bump leaves older peers parsing the new frame as the old one, and a
      * version bump that forgets the Python mirrors leaves the orchestrators
      * decoding garbage.  Change the frame, change both, and run
      * tapestry-os/tools/gen_wire_protocol.py. */
-    zassert_equal(TAPESTRY_WIRE_VERSION, 5u,
+    zassert_equal(TAPESTRY_WIRE_VERSION, 6u,
                   "wire version must be bumped with the frame layout; got %u",
                   TAPESTRY_WIRE_VERSION);
     zassert_equal(TAPESTRY_MSG_HEADER_SIZE, 5u,
@@ -392,6 +392,77 @@ ZTEST(gossip_wire, test_the_achieved_bit_occupies_its_own_wire_byte)
     zassert_equal(f->health_flags,
                   ELEMENT_HEALTH_LOW_BATTERY | ELEMENT_HEALTH_DEGRADED,
                   "health_flags must not be clobbered by achieved");
+}
+
+/*
+ * The discovered bit (v6) — same shape and same reason to test
+ * both polarities as achieved above: a hop that hardcodes false is
+ * indistinguishable from a working one until somebody actually discovers.
+ * TAPESTRY_BSE_ANCHOR_DISCOVERER and CHOREO_EVENT_DISCOVERY both read
+ * this bit from peers' wm entries, purely from gossiped state.
+ */
+ZTEST(gossip_wire, test_the_discovered_bit_round_trips_true)
+{
+    world_model_t wm;
+    element_state_t own = sender_state(3, false);
+    own.discovered = true;
+
+    receiver_init(&wm, 0);
+    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
+    zassert_equal(gossip_drain(&wm, 0), 1, "frame should be accepted");
+
+    const wm_entry_t *e = wm_get_entry(&wm, 3);
+
+    zassert_not_null(e, "sender entry");
+    zassert_true(e->state.discovered,
+                 "a discovering peer must arrive discovered — the anchor "
+                 "selector and CHOREO_EVENT_DISCOVERY both advance on "
+                 "exactly this bit");
+}
+
+ZTEST(gossip_wire, test_the_discovered_bit_round_trips_false)
+{
+    world_model_t wm;
+    element_state_t own = sender_state(3, false);
+    /* own.discovered left false (zero-init in sender_state()). */
+
+    receiver_init(&wm, 0);
+    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
+    zassert_equal(gossip_drain(&wm, 0), 1, "frame should be accepted");
+
+    const wm_entry_t *e = wm_get_entry(&wm, 3);
+
+    zassert_not_null(e, "sender entry");
+    zassert_false(e->state.discovered,
+                  "an undiscovered peer must not arrive discovered — a "
+                  "stuck-true bit would resolve an anchor to the wrong "
+                  "element or fire CHOREO_EVENT_DISCOVERY early");
+}
+
+/*
+ * The discovered bit is carried in its own byte and must not be confused
+ * with the neighbouring achieved / current_track bytes, or with
+ * health_flags' now-16-bit width.
+ */
+ZTEST(gossip_wire, test_the_discovered_bit_occupies_its_own_wire_byte)
+{
+    element_state_t own = sender_state(3, true);
+    own.discovered    = true;
+    own.current_track = 5u;
+
+    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
+
+    const tapestry_gossip_frame_t *f =
+        (const tapestry_gossip_frame_t *)loop_last();
+
+    zassert_equal(f->discovered, 1u, "discovered must be encoded as 0/1");
+    zassert_equal(f->achieved, 1u,
+                  "discovered must not clobber the neighbouring achieved bit");
+    zassert_equal(f->current_track, 5u,
+                  "discovered must not clobber the neighbouring current_track byte");
+    zassert_equal(f->health_flags,
+                  ELEMENT_HEALTH_LOW_BATTERY | ELEMENT_HEALTH_DEGRADED,
+                  "widening health_flags to u16 must not disturb discovered");
 }
 
 /*

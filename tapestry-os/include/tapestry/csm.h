@@ -176,19 +176,23 @@ typedef enum {
 } tapestry_departure_reason_t;
 
 /* Sets ELEMENT_HEALTH_DEPARTED and packs reason into bits [7:6], leaving
- * every other health_flags bit untouched. */
-static inline uint8_t element_health_set_departed(uint8_t health_flags,
+ * every other health_flags bit untouched — including bits [15:8], which
+ * did not exist before wire v6 widened this field to uint16_t; taking
+ * and returning uint16_t here (not uint8_t) matters for exactly that
+ * reason, so a caller with a future high flag bit set doesn't lose it
+ * on a narrowing round-trip through this function. */
+static inline uint16_t element_health_set_departed(uint16_t health_flags,
                                                     tapestry_departure_reason_t reason)
 {
-    health_flags &= (uint8_t)~ELEMENT_DEPARTED_REASON_MASK;
+    health_flags &= (uint16_t)~ELEMENT_DEPARTED_REASON_MASK;
     health_flags |= ELEMENT_HEALTH_DEPARTED;
-    health_flags |= (uint8_t)(((uint8_t)reason << ELEMENT_DEPARTED_REASON_SHIFT) &
+    health_flags |= (uint16_t)(((uint16_t)reason << ELEMENT_DEPARTED_REASON_SHIFT) &
                                ELEMENT_DEPARTED_REASON_MASK);
     return health_flags;
 }
 
 static inline tapestry_departure_reason_t
-element_health_departed_reason(uint8_t health_flags)
+element_health_departed_reason(uint16_t health_flags)
 {
     return (tapestry_departure_reason_t)
         ((health_flags & ELEMENT_DEPARTED_REASON_MASK) >> ELEMENT_DEPARTED_REASON_SHIFT);
@@ -212,13 +216,24 @@ typedef struct {
                                     /* exchange gossip.  0 = no partition.     */
     uint32_t      update_seq;       /* Monotonic update counter (debug/log)   */
     uint8_t       energy_level;     /* Battery/power [0=empty, 100=full]      */
-    uint8_t       health_flags;     /* ELEMENT_HEALTH_* bitmask               */
+    uint16_t      health_flags;     /* ELEMENT_HEALTH_* bitmask (wire v6: u16;*/
+                                    /* was u8 through v5 — the 8-bit form was */
+                                    /* fully committed, no spare bits left)   */
     bool          goal_achieved;    /* L6/L7 own-goal achievement predicate — */
                                     /* set by the application from            */
                                     /* choreo_goal_achieved() before gossip;  */
                                     /* gossiped so peers can aggregate a      */
                                     /* collective ("scope=all") predicate     */
                                     /* (see choreo_collective_achieved()).    */
+    bool          discovered;       /* L6/L7 own-detected target bit (wire    */
+                                    /* v6) — set by the application once a    */
+                                    /* local sensor reflex confirms a target  */
+                                    /* hit, before gossip; sticky (never      */
+                                    /* cleared once true — an element does    */
+                                    /* not un-discover). Gossiped so peers    */
+                                    /* can resolve TAPESTRY_BSE_ANCHOR_       */
+                                    /* DISCOVERER and CHOREO_EVENT_DISCOVERY  */
+                                    /* purely from wm state. See choreo.h.    */
     uint8_t       current_track;    /* L7 active track index (wire v4) — see  */
                                     /* choreo_current_track() and choreo.h §7 */
 } element_state_t;

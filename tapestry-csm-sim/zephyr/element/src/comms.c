@@ -81,6 +81,7 @@ void comms_send_gossip(const comms_t *c, const element_state_t *own_state)
     p->relay_qos     = TAPESTRY_PACK_RELAY_QOS(0u, TAPESTRY_QOS_SOFT_RT);
                              /* hop_count=0: relay not used in sim */
     p->achieved      = own_state->goal_achieved ? 1u : 0u;
+    p->discovered    = own_state->discovered ? 1u : 0u;
     p->version       = TAPESTRY_WIRE_VERSION;
 
     struct sockaddr_in orch_addr;
@@ -215,6 +216,7 @@ int comms_drain_inbox(comms_t *c, world_model_t *wm,
             received.energy_level  = g->energy_level;
             received.health_flags  = g->health_flags;
             received.goal_achieved = (g->achieved != 0);
+            received.discovered    = (g->discovered != 0);
 
             wm_receive_gossip(wm, &received);
             break;

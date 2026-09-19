@@ -125,8 +125,28 @@
  * never see a directive and run its local BSE forever — behaviorally safe
  * but operationally confusing; rejecting the whole mix at the gossip layer
  * makes the mismatch visible at deploy time instead.
+ *
+ * v6: tapestry_gossip_frame_t gains `discovered` (the discovery feature's
+ * TAPESTRY_BSE_ANCHOR_DISCOVERER / CHOREO_EVENT_DISCOVERY — an element's
+ * own-detected "found the target" bit, same shape as `achieved` next to
+ * it: 0/1, gossiped so peers can resolve an anchor or a collective
+ * discovery event from wm alone), and `health_flags` widens uint8_t ->
+ * uint16_t (the original 8 bits were fully committed — 6 individual
+ * ELEMENT_HEALTH_* flags plus the 2-bit departure-reason subfield, zero
+ * spare — so a bit that reused it the way NO_POSITION/POSITION_STALE/
+ * DEPARTED each did before, additively and without a version bump, is no
+ * longer available). Also adds four zero-filled `reserved0`..`reserved3`
+ * bytes immediately before `version`, so the NEXT small additive field
+ * can claim one without moving `version`'s offset — i.e. without needing
+ * its own version bump, the same "older receivers just don't know about it"
+ * tolerance this field's own past extensions relied on. Frame grows
+ * 43 -> 49 bytes, still far under the 200-byte BLE5 Extended Advertising
+ * ceiling (v3's comment above) — bumped because `version` must stay the
+ * last field (see its own doc below), so any new field is inserted
+ * before it and necessarily moves its offset; not guarding a translation
+ * error the way v2/v3 were, same as v4/v5.
  */
-#define TAPESTRY_WIRE_VERSION   5u
+#define TAPESTRY_WIRE_VERSION   6u
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 
@@ -157,10 +177,11 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BfffffffIIBBBBBB')
- * Size: 43 bytes
+ * Python format: struct.Struct('<BfffffffIIBHBBBBBBBBB')
+ * Size: 49 bytes
  * Fields: id, x, y, z, qw, qx, qy, qz, logical_clock, update_seq,
- *         energy_level, health_flags, relay_qos, achieved, current_track,
+ *         energy_level, health_flags, relay_qos, achieved, discovered,
+ *         current_track, reserved0, reserved1, reserved2, reserved3,
  *         version
  *
  * x, y, z: position, meters (or the abstract [0,100] sim-world unit on
@@ -176,6 +197,14 @@ typedef struct {
  *   own_state->orientation as given; callers own picking a sensible
  *   default (element_state_t's owner is responsible for setting
  *   orientation to orientation_identity() if it has nothing better).
+ *
+ * health_flags: ELEMENT_HEALTH_* bitmask (csm.h). uint16_t as of v6 (was
+ *   uint8_t through v5) — the 8-bit form was fully committed (6
+ *   individual flag bits plus the 2-bit ELEMENT_DEPARTED_REASON_MASK
+ *   subfield, zero spare), unlike NO_POSITION/POSITION_STALE/DEPARTED,
+ *   which each landed in a still-spare bit of the 8-bit form with no
+ *   version bump. The 8 new high bits are unused today — future
+ *   ELEMENT_HEALTH_* flags land there the same additive, no-bump way.
  *
  * relay_qos: hop_count (bits [1:0]) and qos tier (bits [3:2]) packed into
  *   one byte — see TAPESTRY_HOP_COUNT() / TAPESTRY_QOS_TIER() /
@@ -195,6 +224,14 @@ typedef struct {
  *   from gossiped state alone; see choreo_collective_achieved().
  *   Eventually consistent like every other gossiped field — no barrier.
  *
+ * discovered: this element's own-detected "found the target" bit (v6,
+ *   the discovery feature's ANCHOR_DISCOVERER / CHOREO_EVENT_DISCOVERY) as
+ *   of its last gossip send — 0 or 1, same shape and same eventual-consistency
+ *   caveat as `achieved` above. Sticky once set locally (an element does
+ *   not un-discover) — see element_state_t's own doc. Lets peers resolve
+ *   an ELEMENT-frame anchor to whichever peer discovered, and a
+ *   collective CHOREO_EVENT_DISCOVERY, purely from gossiped wm state.
+ *
  * current_track: this element's active track index (choreo_current_
  *   track(), v4).  0 for every element on a script with no [[tracks]] —
  *   the only case before this field existed, so it's a no-op default.
@@ -203,14 +240,23 @@ typedef struct {
  *   peer's track membership from its (not fully gossiped) capabilities —
  *   see collect_participants() in bse.c.
  *
-
+ * reserved0..reserved3: v6, always sent as 0 and never read by current
+ *   code — pure future-proofing so the NEXT small additive field can
+ *   claim one of these (rename it in the struct, regenerate) without
+ *   moving `version`'s offset, i.e. without needing its own version
+ *   bump. Four individually named bytes rather than a `reserved[4]`
+ *   array — tools/gen_wire_protocol.py's field parser only understands
+ *   "TYPE name;" lines, not array declarators, so a future rename is a
+ *   one-line change here with no parser work, ever.
+ *
  * version: TAPESTRY_WIRE_VERSION, carried IN the frame itself (not just the
  *   tapestry_msg_header_t wrapper) because BLE and syslink P2P advertise
  *   this frame directly with no header wrapper at all — see wire.h's "Wire
  *   schema version" section.  Stays the LAST field (not first, unlike the
  *   message header) so `id` stays the frame's first byte, which
  *   transceiver_udp.c relies on when extracting src_id before the header
- *   is populated; new fields are inserted before it, never after.
+ *   is populated; new fields (including reservedN's own eventual reuse)
+ *   are inserted before it, never after.
  *
  * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, TAPESTRY_WIRE_AUTH_TAG_SIZE
  * additional bytes follow the frame on the wire (not counted here).
@@ -227,14 +273,26 @@ typedef struct {
     uint32_t logical_clock;
     uint32_t update_seq;
     uint8_t  energy_level;         /* Battery/power [0=empty, 100=full]       */
-    uint8_t  health_flags;         /* ELEMENT_HEALTH_* bitmask (see csm.h)    */
+    uint16_t health_flags;         /* ELEMENT_HEALTH_* bitmask (v6: u16, was  */
+                                    /* u8 through v5 — see csm.h)              */
     uint8_t  relay_qos;            /* hop_count[1:0] | qos_tier[3:2] — packed */
     uint8_t  achieved;             /* own-goal achievement predicate, 0/1     */
+    uint8_t  discovered;           /* own-detected target bit, 0/1 (v6)       */
     uint8_t  current_track;        /* active track index (v4, choreo.h §7)    */
+    /* Always 0, unread by any code today — future fields (v6). Four
+     * individually named bytes, not uint8_t reserved[4]: tools/
+     * gen_wire_protocol.py's field parser only understands "TYPE name;"
+     * lines, not array declarators, so this shape is what lets the next
+     * addition just rename one (e.g. reserved1 -> new_field) and
+     * regenerate, with no parser changes anywhere. */
+    uint8_t  reserved0;
+    uint8_t  reserved1;
+    uint8_t  reserved2;
+    uint8_t  reserved3;
     uint8_t  version;              /* TAPESTRY_WIRE_VERSION — see above       */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 43 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 49 */
 
 /* ── relay_qos packing ───────────────────────────────────────────────────── */
 
@@ -403,6 +461,6 @@ typedef struct {
      ? TAPESTRY_GOSSIP_WIRE_SIZE : TAPESTRY_METRIC_FRAME_SIZE)
 
 #define TAPESTRY_MAX_MSG_SIZE \
-    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 48 (52 with auth) */
+    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 54 (58 with auth) */
 
 #endif /* TAPESTRY_WIRE_H */
