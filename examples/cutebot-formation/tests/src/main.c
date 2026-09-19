@@ -319,12 +319,12 @@ ZTEST(choreo_script, test_form_grid_script_end_to_end)
 
     /* Each element must have settled near ONE of the 4 expected grid
      * vertices (bse.c's TAPESTRY_BSE_SHAPE_GRID: target=(50,50),
-     * radius=25 -> corners at (50 +- 12.5, 50 +- 12.5)), and collectively
+     * radius=50 is cell spacing -> corners at (50 +- 25, 50 +- 25)), and collectively
      * every vertex must be covered exactly once — permutation-invariant,
      * since task_slot ordering (ascending element_id when all are fresh)
      * determines which element gets which corner, not this test. */
     const float verts[4][2] = {
-        { 37.5f, 37.5f }, { 62.5f, 37.5f }, { 37.5f, 62.5f }, { 62.5f, 62.5f },
+        { 25.0f, 25.0f }, { 75.0f, 25.0f }, { 25.0f, 75.0f }, { 75.0f, 75.0f },
     };
     bool vertex_used[4] = {0};
     for (int who = 0; who < 4; who++) {
