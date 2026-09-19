@@ -1357,8 +1357,9 @@ ZTEST(choreo_script, test_form_shape_line)
             }
         }
 
-        /* FORM reads task_slot/swarm_size from scr, not a second
-         * independently-computed rank — scr_tick() must run first. */
+        /* scr_tick() must run first: L5 still gates FORM on quorum
+         * (swarm_size == 0 -> HOLD) even though rank/count now come from
+         * bse.c's own track-aware collect_participants(). */
         scr_state_t scr;
         scr_init(&scr, (element_id_t)rank, 0, 0, SCR_CAP_NONE);
         scr_tick(&scr, &wm);
@@ -1371,6 +1372,82 @@ ZTEST(choreo_script, test_form_shape_line)
                        "rank %d line x", rank);
         zassert_within(d->target.y, 10.0f, EPS, "rank %d line y", rank);
     }
+}
+
+/*
+ * wire v6: FORM's rank/count are TRACK-scoped.  L5's
+ * task_slot/swarm_size know nothing about tracks, so through wire v5 a peer
+ * on a DIFFERENT track (e.g. a discoverer holding on its own track)
+ * still claimed a vertex — an empty slot in the shape.
+ */
+ZTEST(choreo_script, test_form_excludes_a_different_track_peer_from_count)
+{
+    /* 3 elements, but id 2 is on track 1 — the shape is a 2-slot circle:
+     * rank 0 at angle 0, rank 1 at angle pi (NOT 120 degrees apart). */
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
+        .target = { 10.0f, 10.0f },
+        .radius = 5.0f,
+        .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
+    };
+    const float expect_x[2] = { 15.0f, 5.0f };
+
+    for (int rank = 0; rank < 2; rank++) {
+        choreo_init((element_id_t)rank);
+        zassert_equal(choreo_submit_goal(&goal), 0, "submit failed");
+
+        wm_reset();
+        wm_set_self(rank, (element_id_t)rank, 0.0f, 0.0f);
+        for (int i = 0; i < 3; i++) {
+            if (i != rank) {
+                wm_set_peer(i, 0.0f, 0.0f, false);
+            }
+        }
+        wm.entries[2].state.current_track = 1;   /* the odd one out */
+
+        scr_state_t scr;
+        scr_init(&scr, (element_id_t)rank, 0, 0, SCR_CAP_NONE);
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+
+        const tapestry_bse_directive_t *d = choreo_get_directive();
+        zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                      "form circle must move");
+        zassert_within(d->target.x, expect_x[rank], EPS,
+                       "rank %d circle x (2-slot, not 3-slot)", rank);
+        zassert_within(d->target.y, 10.0f, EPS, "rank %d circle y", rank);
+    }
+}
+
+ZTEST(choreo_script, test_form_rank_ignores_a_lower_id_peer_on_another_track)
+{
+    /* Self is id 1; id 0 (LOWER id) is on track 1.  Among same-track
+     * peers {1, 2}, self is rank 0 — through wire v5 L5 gave it rank 1
+     * because id 0 still sorted ahead of it. */
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
+        .target = { 10.0f, 10.0f },
+        .radius = 3.0f,
+        .shape  = TAPESTRY_BSE_SHAPE_LINE,
+    };
+    choreo_init(1);
+    zassert_equal(choreo_submit_goal(&goal), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(1, 1, 0.0f, 0.0f);
+    wm_set_peer(0, 0.0f, 0.0f, false);
+    wm.entries[0].state.current_track = 1;
+    wm_set_peer(2, 0.0f, 0.0f, false);
+
+    scr_state_t scr;
+    scr_init(&scr, 1, 0, 0, SCR_CAP_NONE);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT, "must move");
+    zassert_within(d->target.x, 7.0f, EPS,
+                   "self is rank 0 of the 2 same-track elements (x = 10 - 3)");
 }
 
 ZTEST(choreo_script, test_form_shape_grid)

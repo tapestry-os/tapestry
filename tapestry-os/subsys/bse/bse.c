@@ -806,23 +806,33 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
     case TAPESTRY_BSE_INTENT_FORM: {
         /*
          * Task decomposition (L6): map FORM intent onto a per-element vertex.
-         * rank/count come directly from L5's scr_state_t — task_slot is the
-         * element's ordinal in L5's own trusted-fresh-peer sort, swarm_size
-         * its count (scr.h) — rather than being re-derived from a second,
-         * independently-filtered participant scan.  Reusing L5's own values
-         * guarantees the vertex assignment agrees with L5's quorum/election
-         * view by construction — no second copy of the trust-filtering/
-         * sorting logic to keep in lockstep with scr.c's — so an anomaly-
-         * excluded or unwhitelisted peer that L5 already excludes from
-         * candidates cannot end up claiming a vertex here.  Callers must
-         * scr_tick() before bse_tick() for this to reflect the current wm;
-         * task_slot/swarm_size are valid only when quorum >= DEGRADED
-         * (scr.h) — swarm_size == 0 otherwise, handled below like the prior
-         * "no participants" case.
+         *
+         * L5 still owns the QUORUM GATE: task_slot/swarm_size are valid only
+         * when quorum >= DEGRADED (scr.h) — swarm_size == 0 otherwise, which
+         * yields HOLD exactly as before.  Callers must scr_tick() before
+         * bse_tick() for that gate to reflect the current wm.
+         *
+         * rank/count themselves come from collect_participants(), NOT from
+         * scr_get_task_slot()/scr_get_swarm_size() as they did through wire
+         * v5: L5 knows nothing about tracks (§7), so a peer running a
+         * DIFFERENT track — e.g. a discoverer that has migrated to its own
+         * track and is holding — still claimed a
+         * vertex, leaving an empty slot in the shape (a 4-slot ring with
+         * one robot missing, instead of an even 3-slot ring).
+         * collect_participants() applies the SAME trust/freshness/
+         * departure filters scr_tick() uses to build its candidate set (see
+         * its own comment) plus the track filter, and s_track_scope is 0
+         * for every peer on a script with no tracks, so this yields
+         * identical rank/count to L5's for every existing untracked caller.
          */
-        int rank  = scr_get_task_slot(scr);
-        int count = scr_get_swarm_size(scr);
-        if (count == 0) {
+        element_id_t part_ids[MAX_ELEMENTS];
+        position_t   part_pos[MAX_ELEMENTS];
+        int rank  = -1;
+        int count = 0;
+        if (scr_get_swarm_size(scr) != 0) {
+            count = collect_participants(wm, scr, part_ids, part_pos, &rank);
+        }
+        if (count == 0 || rank < 0) {
             s_directive.type = TAPESTRY_BSE_DIRECTIVE_HOLD;
             break;
         }
