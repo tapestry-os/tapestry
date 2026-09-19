@@ -2048,6 +2048,94 @@ ZTEST(choreo_script, test_frame_element_lowest_energy_anchor)
                    "lowest-energy anchor picks peer 2");
 }
 
+/*
+ * Wire v6: DISCOVERER resolves to whichever element's
+ * gossiped state.discovered bit is set — same shape as LOWEST_ENERGY
+ * above but a boolean scan instead of a scalar minimum.
+ */
+ZTEST(choreo_script, test_frame_element_discoverer_anchor)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm_set_peer(2, 9.0f, 9.0f, false);
+    wm.entries[2].state.discovered = true;
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 21; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
+                   "discoverer anchor picks the peer whose bit is set");
+}
+
+/* Nobody has discovered anything yet: DISCOVERER must never resolve (the
+ * same "nobody qualifies" failure LEADER has before an election), no
+ * matter how long it ticks — this is CHOREO_EVENT_ANCHOR_LOST's source
+ * for this selector, and this is what a searcher's script relies on to
+ * keep waiting. */
+ZTEST(choreo_script, test_frame_element_discoverer_anchor_holds_until_someone_discovers)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 60; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
+                  "never resolves while nobody has discovered anything");
+}
+
+/* Two elements discovering "simultaneously" must resolve deterministically
+ * — lowest id wins, the same P4 tiebreak LOWEST_ENERGY uses (bse.c's
+ * resolve_anchor_selector() comment), so every element derives the SAME
+ * anchor from the same world-model snapshot. */
+ZTEST(choreo_script, test_frame_element_discoverer_anchor_lowest_id_tiebreak)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm.entries[1].state.discovered = true;
+    wm_set_peer(2, 9.0f, 9.0f, false);
+    wm.entries[2].state.discovered = true;   /* higher id — must lose the tie */
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    for (int i = 0; i < 21; i++) {
+        scr_tick(&scr, &wm);
+        choreo_tick(&wm, &scr);
+    }
+    zassert_within(choreo_get_directive()->target.x, 5.0f, EPS,
+                   "lowest id (1) wins the simultaneous-discovery tie");
+}
+
 /* ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────── */
 
 ZTEST(choreo_script, test_motion_spin_rotates_the_form_vertex)
@@ -2245,6 +2333,130 @@ ZTEST(choreo_script, test_anchor_lost_transition)
                   "an anchor that was never fresh transitions immediately");
 }
 
+/*
+ * Per-element scripts: CHOREO_EVENT_DISCOVERY fires on this element's OWN
+ * discovered bit only, ignoring a peer's entirely. No anchor, no ring:
+ * each robot stops on its own local edge-detection.
+ */
+ZTEST(choreo_script, test_discovery_event_fires_on_own_bit_only)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
+          .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_DISCOVERY, .goto_step_idx = 1 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+
+    wm.entries[1].state.discovered = true;   /* a PEER — must not fire */
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 0, "a peer's discovery must not fire DISCOVERY");
+
+    wm.entries[0].state.discovered = true;
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 1, "own discovery must fire DISCOVERY, no debounce");
+}
+
+/*
+ * Finder-anchored scripts: CHOREO_EVENT_DISCOVERY_ANY must see a peer's
+ * discovered bit even though that peer has ALREADY migrated to a
+ * different track (the 'anchor' track, requires_discovered=true) —
+ * deliberately NOT track-filtered, unlike ACHIEVED's collective predicate
+ * (test_track_scoped_collective_excludes_other_track_peer).
+ */
+ZTEST(choreo_script, test_discovery_any_event_fires_on_any_peer_even_off_track)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm.entries[1].state.discovered    = true;
+    wm.entries[1].state.current_track = 1;   /* a DIFFERENT track than self's 0 */
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
+          .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_DISCOVERY_ANY, .goto_step_idx = 1 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 1,
+                  "DISCOVERY_ANY must fire for an off-track peer");
+}
+
+/* DISCOVERY_ANY includes this element's OWN bit (the finder itself also
+ * leaves its patrol step), and a STALE peer must not count. */
+ZTEST(choreo_script, test_discovery_any_includes_self_and_ignores_stale_peers)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, true);          /* stale */
+    wm.entries[1].state.discovered = true;
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
+          .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_DISCOVERY_ANY, .goto_step_idx = 1 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 0, "a stale peer's bit must not count");
+
+    wm.entries[0].state.discovered = true;
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 1, "own bit counts for DISCOVERY_ANY too");
+}
+
+/*
+ * The reason the events are separate: scope governs ACHIEVED on the same
+ * step, and a patrol leg must advance on THIS element's own achievement
+ * while still reacting to any peer's discovery.
+ */
+ZTEST(choreo_script, test_discovery_any_does_not_make_achieved_collective)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 50.0f, 50.0f, false);       /* peer never achieves */
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f },
+                    .achieve_eps = 1.0f, .achieve_hold_ms = 200 },
+          .max_duration_ms = 60000, .advance_on_achieved = true,
+          .on = { { .event = CHOREO_EVENT_DISCOVERY_ANY, .goto_step_idx = 2 } },
+          .n_transitions = 1 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    zassert_equal(choreo_submit_script(script, 3), 0, "submit failed");
+    for (int i = 0; i < 10; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_script_step(), 1,
+                  "self-scoped achieved must advance without the peer's help");
+}
+
 ZTEST(choreo_script, test_goto_end_completes_the_script_early)
 {
     choreo_init(0);
@@ -2391,6 +2603,52 @@ ZTEST(choreo_script, test_track_energy_low_migration_is_debounced)
                   "migrated to the low-battery track after the debounce hold");
     zassert_within(choreo_get_directive()->target.x, 0.0f, EPS,
                    "directive now driven by the low-battery track's goal");
+}
+
+/*
+ * Finder-anchored scripts: the element whose own local sensor reflex sets its
+ * discovered bit migrates onto the 'anchor' track once that bit has held
+ * for a full debounce window — same shape as the energy-low migration
+ * above. The 'anchor' filter is declared FIRST (narrower — only matches
+ * once discovered) and the catch-all searcher LAST.
+ */
+ZTEST(choreo_script, test_track_discovered_migration_is_debounced)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_ABS_POSITION);
+    choreo_register_scr(&scr);
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    scr_tick(&scr, &wm);
+
+    static const choreo_step_t anchor_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
+    };
+    static const choreo_step_t searcher_steps[] = {
+        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
+          .max_duration_ms = 60000 },
+    };
+    choreo_track_t tracks[2] = {
+        { .filter = { .requires_discovered = true },
+          .steps = anchor_steps, .n_steps = 1 },
+        { .filter = { 0 }, .steps = searcher_steps, .n_steps = 1 },
+    };
+    zassert_equal(choreo_submit_tracks(&wm, tracks, 2), 0, "submit failed");
+    zassert_equal(choreo_current_track(), 1, "starts on the catch-all searcher track");
+
+    wm.entries[0].state.discovered = true;
+    for (int i = 0; i < 19; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_current_track(), 1, "still debouncing the discoverer switch");
+    for (int i = 0; i < 2; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
+    zassert_equal(choreo_current_track(), 0,
+                  "migrated to the anchor track after the debounce hold");
+    /* A HOLD goal's steady-state directive is MOVE_TO_POINT to the
+     * captured station (bse.h) — directive-type HOLD itself is reserved
+     * for quorum-freeze/EXCHANGE-snapshot cases. self is at (0,0). */
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                  "directive now driven by the newly activated anchor track's HOLD");
+    zassert_within(choreo_get_directive()->target.x, 0.0f, EPS, "captured self position");
 }
 
 ZTEST(choreo_script, test_track_scoped_collective_excludes_other_track_peer)

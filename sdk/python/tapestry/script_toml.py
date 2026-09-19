@@ -50,6 +50,9 @@ Common parameters:
                          choreo_collective_achieved() in choreo.h). Only
                          valid alongside until = "achieved"; not allowed
                          on hold (which never carries until either).
+                         Does NOT affect the discovery events below —
+                         those have no scope (own bit vs any bit is the
+                         event's own name).
     requires             list of capability names:
                          ["locomotion", "bonding", "sensing", "signaling"]
     indicator            §12 Stage 5 effect: "idle"|"active"|"degraded"|
@@ -95,6 +98,9 @@ never both.  Each track's `filter` table takes:
                 matches when this element's own capabilities satisfy them
     energy_low  bool — matches when this element's own gossiped
                 health_flags has ELEMENT_HEALTH_LOW_BATTERY set
+    discovered  bool — matches when this element's own gossiped
+                'discovered' bit is set (wire v6) — the
+                track a finder migrates onto once it stops searching
 
 An empty/omitted filter (`filter = {}` or no `filter` key) matches every
 element — the "catch-all" a script needs at least one of, in the last
@@ -193,7 +199,7 @@ FRAMES = {"absolute": 0, "collective": 1, "element": 2}
 # here (so an author gets "not yet implemented", not "unknown selector")
 # but rejected explicitly — they need L4 join-order tracking that doesn't
 # exist yet. "id:N" is parsed separately (embeds the id in the string).
-ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3}
+ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3, "discoverer": 4}
 _ANCHOR_SELECTORS_DEFERRED = {"newest", "oldest"}
 
 # §12 Stage 5 effect: indicator = "<name>" mirrors substrate_signal_t
@@ -267,6 +273,8 @@ EVENTS = {
     "count_eq":       "count_eq",
     "anchor_lost":    "anchor_lost",
     "quorum_lost":    "quorum_lost",
+    "discovery":      "discovery",
+    "discovery_any":  "discovery_any",
 }
 _EVENTS_NEEDING_THRESHOLD = {"count_gte", "count_eq"}
 
@@ -276,7 +284,7 @@ _RESERVED_STEP_NAMES = {"end"}
 
 # §7 track filter — every key optional; the zero/empty table matches every
 # element (the "catch-all" a script needs at least one of).
-_KNOWN_TRACK_FILTER_PARAMS = {"requires", "energy_low"}
+_KNOWN_TRACK_FILTER_PARAMS = {"requires", "energy_low", "discovered"}
 _KNOWN_TRACK_PARAMS = {"filter", "steps", "max_runtime"}
 
 SCOPES = {"self": 0, "all": 1}
@@ -291,6 +299,7 @@ _ANCHOR_ENUM = {
     "id":             BSEAnchorSelector.ID,
     "self":           BSEAnchorSelector.SELF,
     "lowest-energy":  BSEAnchorSelector.LOWEST_ENERGY,
+    "discoverer":     BSEAnchorSelector.DISCOVERER,
 }
 _MOTION_ENUM = {
     "static": BSEMotion.STATIC,
@@ -304,6 +313,8 @@ _EVENT_ENUM = {
     "count_eq":       ChoreoEvent.COUNT_EQ,
     "anchor_lost":    ChoreoEvent.ANCHOR_LOST,
     "quorum_lost":    ChoreoEvent.QUORUM_LOST,
+    "discovery":      ChoreoEvent.DISCOVERY,
+    "discovery_any":  ChoreoEvent.DISCOVERY_ANY,
 }
 
 
@@ -356,6 +367,7 @@ class NormalizedTrack:
     list (§7).  Mirrors choreo_track_t / choreo_track_filter_t."""
     required_caps:       int = 0
     requires_energy_low: bool = False
+    requires_discovered: bool = False   # wire v6
     steps:                List[NormalizedStep] = field(default_factory=list)
     # Same §8.4 cycle-bound rule as ChoreoScript.max_runtime_ms, but
     # per-track: a cycle in one track doesn't bound the others.
@@ -851,11 +863,12 @@ def _has_cycle(n_steps: int, steps: List[NormalizedStep]) -> bool:
     return any(color[i] == WHITE and visit(i) for i in range(n_steps))
 
 
-def _parse_track_filter(where: str, filt) -> Tuple[int, bool]:
-    """filter = { requires = [...], energy_low = true } -> (required_caps,
-    requires_energy_low).  Missing/empty matches every element."""
+def _parse_track_filter(where: str, filt) -> Tuple[int, bool, bool]:
+    """filter = { requires = [...], energy_low = true, discovered = true }
+    -> (required_caps, requires_energy_low, requires_discovered).
+    Missing/empty matches every element."""
     if filt is None:
-        return 0, False
+        return 0, False, False
     if not isinstance(filt, dict):
         raise ScriptError(f"{where}: 'filter' must be a table, e.g. "
                           f"filter = {{ requires = [\"sensing\"] }}")
@@ -880,7 +893,11 @@ def _parse_track_filter(where: str, filt) -> Tuple[int, bool]:
     if not isinstance(energy_low, bool):
         raise ScriptError(f"{where}: filter.energy_low must be true/false")
 
-    return required_caps, energy_low
+    discovered = filt.get("discovered", False)
+    if not isinstance(discovered, bool):
+        raise ScriptError(f"{where}: filter.discovered must be true/false")
+
+    return required_caps, energy_low, discovered
 
 
 def _parse_track(index: int, table: dict) -> NormalizedTrack:
@@ -892,7 +909,8 @@ def _parse_track(index: int, table: dict) -> NormalizedTrack:
         raise ScriptError(f"{where}: unexpected keys {sorted(unknown)} "
                           f"(known: {sorted(_KNOWN_TRACK_PARAMS)})")
 
-    required_caps, energy_low = _parse_track_filter(where, table.get("filter"))
+    required_caps, energy_low, discovered = \
+        _parse_track_filter(where, table.get("filter"))
 
     raw_steps = table.get("steps")
     if not isinstance(raw_steps, list) or not raw_steps:
@@ -917,6 +935,7 @@ def _parse_track(index: int, table: dict) -> NormalizedTrack:
 
     return NormalizedTrack(required_caps=required_caps,
                            requires_energy_low=energy_low,
+                           requires_discovered=discovered,
                            steps=steps, max_runtime_ms=max_runtime_ms)
 
 
@@ -959,12 +978,14 @@ def _track_shadowing_warnings(tracks: List[NormalizedTrack]) -> List[str]:
     instead of last).
 
     Filter semantics (track_matches(), both runtimes): element matches
-    (required_caps R, requires_energy_low L) iff its caps ⊇ R and
-    (¬L or the element is energy-low).  Track j is subsumed by an earlier
-    track i iff every (caps, energy) state matching j's filter also
+    (required_caps R, requires_energy_low L, requires_discovered D) iff
+    its caps ⊇ R and (¬L or the element is energy-low) and (¬D or the
+    element has discovered).  Track j is subsumed by an earlier track i
+    iff every (caps, energy, discovered) state matching j's filter also
     matches i's:
-      - R_i ⊆ R_j   (i demands no capability j doesn't also demand), and
-      - L_i ⟹ L_j  (i's energy constraint is no stricter than j's).
+      - R_i ⊆ R_j   (i demands no capability j doesn't also demand),
+      - L_i ⟹ L_j  (i's energy constraint is no stricter than j's), and
+      - D_i ⟹ D_j  (i's discovered constraint is no stricter than j's).
 
     Non-fatal, matching _derived_capability_warnings() above: the script
     still loads and runs — every element just resolves to the earlier
@@ -979,15 +1000,17 @@ def _track_shadowing_warnings(tracks: List[NormalizedTrack]) -> List[str]:
                            & tracks[i].required_caps) == tracks[i].required_caps
             energy_ok = tracks[j].requires_energy_low \
                 or not tracks[i].requires_energy_low
-            if subset_caps and energy_ok:
+            discovered_ok = tracks[j].requires_discovered \
+                or not tracks[i].requires_discovered
+            if subset_caps and energy_ok and discovered_ok:
                 out.append(
                     f"tracks[{j}]: unreachable — every element this "
                     f"track's filter matches is already claimed by "
                     f"tracks[{i}]'s filter (§8.4: selection is "
                     f"first-match-wins, and tracks[{i}] requires no "
-                    f"capability or energy state tracks[{j}] doesn't "
-                    f"also require) — reorder the tracks or tighten "
-                    f"tracks[{i}]'s filter")
+                    f"capability, energy, or discovered state tracks[{j}] "
+                    f"doesn't also require) — reorder the tracks or "
+                    f"tighten tracks[{i}]'s filter")
                 break
     return out
 
@@ -1198,7 +1221,8 @@ def to_choreo_tracks(script: ChoreoScript) -> List[ChoreoTrack]:
     return [
         ChoreoTrack(
             filter=ChoreoTrackFilter(required_caps=t.required_caps,
-                                     requires_energy_low=t.requires_energy_low),
+                                     requires_energy_low=t.requires_energy_low,
+                                     requires_discovered=t.requires_discovered),
             steps=_normalized_to_choreo_steps(t.steps))
         for t in script.tracks
     ]

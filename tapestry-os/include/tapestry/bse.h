@@ -158,6 +158,19 @@ typedef enum {
     TAPESTRY_BSE_ANCHOR_ID             = 1, /* explicit intent.anchor_id     */
     TAPESTRY_BSE_ANCHOR_SELF           = 2, /* own position (degenerate)     */
     TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY  = 3, /* min energy_level among fresh  */
+    /*
+     * Finder-anchored scripts: whichever element (self or a fresh, trusted
+     * peer) has its gossiped element_state_t::discovered bit set (wire
+     * v6) — the element that found a searched-for target. Lowest-id
+     * tiebreak if more than one element's bit is set (P4 determinism:
+     * every element must derive the SAME anchor id from the same world-
+     * model snapshot — see collect_participants()'s comment in bse.c).
+     * Fails to resolve (same as LEADER before an election, or LOWEST_
+     * ENERGY with nobody fresh) until at least one element has actually
+     * discovered something — CHOREO_EVENT_ANCHOR_LOST is this selector's
+     * "nobody has found it yet" signal, same as every other selector.
+     */
+    TAPESTRY_BSE_ANCHOR_DISCOVERER     = 4,
 } tapestry_bse_anchor_selector_t;
 
 /* Anchor selector re-resolution debounce, §5.2: "a selector result must be

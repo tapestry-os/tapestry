@@ -83,6 +83,7 @@ ANCHOR_ENUM = {
     "id":            "TAPESTRY_BSE_ANCHOR_ID",
     "self":          "TAPESTRY_BSE_ANCHOR_SELF",
     "lowest-energy": "TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY",
+    "discoverer":    "TAPESTRY_BSE_ANCHOR_DISCOVERER",
 }
 
 MOTION_ENUM = {
@@ -98,6 +99,8 @@ EVENT_ENUM = {
     "count_eq":       "CHOREO_EVENT_COUNT_EQ",
     "anchor_lost":    "CHOREO_EVENT_ANCHOR_LOST",
     "quorum_lost":    "CHOREO_EVENT_QUORUM_LOST",
+    "discovery":      "CHOREO_EVENT_DISCOVERY",
+    "discovery_any":  "CHOREO_EVENT_DISCOVERY_ANY",
 }
 
 INDICATOR_ENUM = {
@@ -163,6 +166,33 @@ def c_string(s: str) -> str:
     basic string, so there is nothing else to guard against here)."""
     escaped = s.replace("\\", "\\\\").replace('"', '\\"')
     return f'"{escaped}"'
+
+
+def uses_discovery(script: ChoreoScript) -> bool:
+    """True if the script reacts to the wire-v6 `discovered` bit at all —
+    a `discovery`/`discovery_any` transition, a `discoverer` anchor, or a
+    `discovered` track filter.  The application uses this to keep its own
+    detection machinery (sensor latch, stop-on-discovery reflex) inert in
+    scripts that never look at the bit."""
+    tracks = script.tracks or []
+    steps  = list(script.steps) + [st for t in tracks for st in t.steps]
+    if any(t.requires_discovered for t in tracks):
+        return True
+    for st in steps:
+        if st.anchor_select == "discoverer":
+            return True
+        if any(t.event in ("discovery", "discovery_any") for t in (st.on or [])):
+            return True
+    return False
+
+
+def uses_discovery_define(script: ChoreoScript) -> str:
+    """The header line (with trailing newline) or empty — empty keeps every
+    pre-existing script's header byte-identical."""
+    if not uses_discovery(script):
+        return ""
+    return ("#define CHOREO_USES_DISCOVERY           1u   "
+            "/* reacts to the wire-v6 discovered bit */\n")
 
 
 def emit_step(s: NormalizedStep) -> str:
@@ -237,6 +267,8 @@ def emit_track_filter(t: NormalizedTrack) -> str:
         fields.append(f".required_caps = {caps_expr(t.required_caps)}")
     if t.requires_energy_low:
         fields.append(".requires_energy_low = true")
+    if t.requires_discovered:
+        fields.append(".requires_discovered = true")
     return "{ " + ", ".join(fields) + " }" if fields else "{ 0 }"
 
 
@@ -263,7 +295,7 @@ def _emit_steps_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> s
 #define CHOREO_NAME                    "{script.name}"
 #define CHOREO_SCRIPT_LEN              {len(script.steps)}u
 #define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS {script.total_timeout_ms}u
-
+{uses_discovery_define(script)}
 /* Element departure policy — call choreo_set_departure_policy() (and,
  * for CHOREO_DEPARTURE_RECALL, choreo_set_departure_recall_point_fn())
  * before choreo_submit_script(). */
@@ -325,7 +357,7 @@ def _emit_tracks_header(script: ChoreoScript, src_name: str, regen_cmd: str) -> 
 #define CHOREO_NAME                    "{script.name}"
 #define CHOREO_N_TRACKS                {len(tracks)}u
 #define CHOREO_SCRIPT_TOTAL_TIMEOUT_MS {total_timeout_ms}u
-
+{uses_discovery_define(script)}
 /* Element departure policy — call choreo_set_departure_policy() (and,
  * for CHOREO_DEPARTURE_RECALL, choreo_set_departure_recall_point_fn())
  * before choreo_submit_tracks(). */

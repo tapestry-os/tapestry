@@ -526,7 +526,7 @@ def test_frame_element_needs_an_anchor(tmp_path):
                             goal="converge"))
 
 
-@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy"])
+@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy", "discoverer"])
 def test_frame_element_anchor_selectors_are_recognised(select, tmp_path):
     s = parse_file(one_step(
         f'duration = "5s", frame = "element", '
@@ -881,6 +881,79 @@ def test_quorum_lost_needs_no_threshold(tmp_path):
             tmp_path))
 
 
+def test_discovery_event_is_recognised(tmp_path):
+    """Wire v6 — see choreo.h's CHOREO_EVENT_DISCOVERY."""
+    s = parse_file(script('''
+        [[steps]]
+        name = "search"
+        [steps.converge]
+        target   = [1, 2, 3]
+        duration = "60s"
+        on = [ { event = "discovery", goto = "found" } ]
+
+        [[steps]]
+        name = "found"
+        [steps.hold]
+        duration = "60s"
+        ''', tmp_path))
+    assert s.steps[0].on == [
+        NormalizedTransition(event="discovery", goto_step_idx=1, threshold=0)
+    ]
+    t = to_choreo_steps(s)[0].on[0]
+    assert t.event == ChoreoEvent.DISCOVERY
+    assert t.threshold == 0
+
+
+def test_discovery_needs_no_threshold(tmp_path):
+    with pytest.raises(ScriptError, match="only applies to count_gte/count_eq"):
+        parse_file(one_step(
+            'duration = "60s", '
+            'on = [ { event = "discovery", goto = "end", threshold = 2 } ]',
+            tmp_path))
+
+
+def test_discovery_any_event_is_recognised(tmp_path):
+    """Finder-anchored scripts: DISCOVERY_ANY — any element's discovered bit."""
+    s = parse_file(script('''
+        [[steps]]
+        name = "search"
+        [steps.converge]
+        target   = [1, 2, 3]
+        duration = "60s"
+        on = [ { event = "discovery_any", goto = "found" } ]
+
+        [[steps]]
+        name = "found"
+        [steps.hold]
+        duration = "60s"
+        ''', tmp_path))
+    assert s.steps[0].on == [
+        NormalizedTransition(event="discovery_any", goto_step_idx=1, threshold=0)
+    ]
+    t = to_choreo_steps(s)[0].on[0]
+    assert t.event == ChoreoEvent.DISCOVERY_ANY
+    assert t.threshold == 0
+
+
+def test_discovery_any_needs_no_threshold(tmp_path):
+    with pytest.raises(ScriptError, match="only applies to count_gte/count_eq"):
+        parse_file(one_step(
+            'duration = "60s", '
+            'on = [ { event = "discovery_any", goto = "end", threshold = 2 } ]',
+            tmp_path))
+
+
+def test_scope_does_not_unlock_for_a_discovery_transition(tmp_path):
+    """Discovery events read no scope — own bit vs any bit is the event's
+    own name — so `scope` still needs until = "achieved" to mean anything,
+    exactly as before the discovery events existed."""
+    with pytest.raises(ScriptError, match="'scope' has no effect"):
+        parse_file(one_step(
+            'duration = "60s", target = [1, 2, 3], scope = "all", '
+            'on = [ { event = "discovery_any", goto = "end" } ]', tmp_path,
+            goal="converge"))
+
+
 # ── The committed script ─────────────────────────────────────────────────────
 
 def test_the_shipped_change_partners_script_still_parses():
@@ -941,6 +1014,41 @@ def test_energy_low_filter_parses(tmp_path):
     s = parse_file(p)
     assert s.tracks[0].requires_energy_low is True
     assert s.tracks[1].requires_energy_low is False
+
+
+def test_discovered_filter_parses(tmp_path):
+    """Wire v6 — the track a finder migrates onto."""
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { discovered = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        converge = { target = [0, 0, 0], duration = "10s" }
+        """, tmp_path)
+    s = parse_file(p)
+    assert s.tracks[0].requires_discovered is True
+    assert s.tracks[1].requires_discovered is False
+
+    tracks = load_tracks(p)
+    assert tracks[0].filter.requires_discovered is True
+    assert tracks[1].filter.requires_discovered is False
+
+
+def test_discovered_filter_must_be_a_bool(tmp_path):
+    with pytest.raises(ScriptError, match="must be true/false"):
+        parse_file(tracks_script("""\
+            [[tracks]]
+            filter = { discovered = "yes" }
+            [[tracks.steps]]
+            hold = { duration = "10s" }
+
+            [[tracks]]
+            [[tracks.steps]]
+            hold = { duration = "10s" }
+            """, tmp_path))
 
 
 # ── Track shadowing (§8.4 declaration-order warnings) ────────────────────────
@@ -1060,6 +1168,43 @@ def test_catch_all_does_shadow_later_energy_low_track(tmp_path):
 
         [[tracks]]
         filter = { energy_low = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+        """, tmp_path)
+    w = shadowing_warnings(parse_file(p))
+    assert len(w) == 1
+    assert "tracks[1]" in w[0]
+
+
+def test_discovered_track_does_not_shadow_catch_all(tmp_path):
+    """A finder-anchored script's real shape: the narrower 'anchor'
+    (discovered = true) track declared FIRST must not make the catch-all
+    searcher track declared after it look unreachable — an undiscovered
+    element matches only the catch-all."""
+    p = tracks_script("""\
+        [[tracks]]
+        filter = { discovered = true }
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        [[tracks.steps]]
+        converge = { target = [0, 0, 0], duration = "10s" }
+        """, tmp_path)
+    assert shadowing_warnings(parse_file(p)) == []
+
+
+def test_catch_all_does_shadow_later_discovered_track(tmp_path):
+    """The reverse direction: every discovered element also matches an
+    earlier catch-all, so a discovered track declared after it is dead —
+    same directional-comparison requirement energy_low needs above."""
+    p = tracks_script("""\
+        [[tracks]]
+        [[tracks.steps]]
+        hold = { duration = "10s" }
+
+        [[tracks]]
+        filter = { discovered = true }
         [[tracks.steps]]
         hold = { duration = "10s" }
         """, tmp_path)

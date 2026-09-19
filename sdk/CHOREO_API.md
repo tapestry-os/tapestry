@@ -210,6 +210,7 @@ Choreos that shouldn't care where the collective happens to be:
 | `"leader"` | the current elected leader |
 | `"self"` | this element (degenerate — station-keeps on itself) |
 | `"lowest-energy"` | the fresh peer (or self) with the lowest `energy_level` |
+| `"discoverer"` | the fresh peer (or self) that has latched its gossiped `discovered` bit (lowest id wins a tie; no anchor at all until someone has discovered) |
 | `"id:N"` | the explicit element `N` (testing/debug only) |
 
 `"newest"`/`"oldest"` (most/longest recently joined) are named in the
@@ -330,6 +331,10 @@ case has been identified for either):
 | `element_joined` / `element_lost` | a debounced rise/fall in the fresh participant count (2 s stable, the same lesson [anchor debounce](#frames-and-anchors) encodes — one lucky/unlucky gossip frame must not fire this fleet-wide). |
 | `count_gte` / `count_eq` | the live participant count crosses a `threshold` (required on these two events, rejected on every other). |
 | `anchor_lost` | a `frame = "element"` goal (see above) couldn't resolve any anchor this tick. |
+| `discovery` | **this element's own** `discovered` bit is set (the application latches it when its own sensor finds the target — Tapestry only carries the bit). Takes no `scope`. |
+| `discovery_any` | **any** fresh, trusted element's `discovered` bit is set, including this one's, and regardless of track. Also takes no `scope`. Two events rather than a scope on one because `scope` belongs to `achieved` alone. |
+| `discovery` | **this element's own** `discovered` bit is set (the application latches it when its own sensor finds the target — Tapestry only carries the bit). Takes no `scope`. |
+| `discovery_any` | **any** fresh, trusted element's `discovered` bit is set, including this one's, and regardless of track. Also takes no `scope`. Two events rather than a scope on one because `scope` belongs to `achieved` alone: coupling them would make the collective form of `achieved` change meaning with the discovery predicate. |
 | `quorum_lost` | this element's quorum just dropped to `LOST` (isolated — no fresh peers). See [Isolation and quorum loss](#isolation-and-quorum-loss) below — this is the one event that composes with, rather than replaces, the runtime's own automatic suspend behavior. |
 
 At most 4 transitions per step (the runtime's fixed-size limit) — the
@@ -378,6 +383,7 @@ A file gives either `[[steps]]` or `[[tracks]]`, never both. Each track's
 |---|---|
 | `requires` | list of capability names, exactly like a step's own `requires` — matches when this element's capabilities satisfy them. |
 | `energy_low` | `true`/`false` — matches when this element's own gossiped health state currently reports low battery. |
+| `discovered` | `true` — matches when this element's own `discovered` bit is set. Migration is debounced like every other track change. |
 
 An empty or omitted `filter` (`filter = {}`, or no `filter` key at all)
 matches **every** element — the catch-all a track table needs at least

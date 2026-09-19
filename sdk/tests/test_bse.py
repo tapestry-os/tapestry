@@ -277,6 +277,54 @@ def test_frame_element_lowest_energy_anchor():
     approx_xy(b.get_directive().target, (9.0, 9.0))
 
 
+def test_frame_element_discoverer_anchor():
+    """Wire v6: DISCOVERER resolves to whichever
+    element's gossiped 'discovered' bit is set, same shape as
+    LOWEST_ENERGY above but a boolean scan instead of a scalar minimum."""
+    b = BSE(0)
+    entries = wm([(0, 0), (5, 5), (9, 9)], self_id=0)
+    entries[2]['discovered'] = True
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.DISCOVERER))
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS + 1):
+        b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (9.0, 9.0))
+
+
+def test_frame_element_discoverer_anchor_holds_until_someone_discovers():
+    """Nobody has discovered anything yet: DISCOVERER must never resolve
+    (same "nobody qualifies" failure as LEADER before an election), no
+    matter how long it ticks — this is CHOREO_EVENT_ANCHOR_LOST's source
+    for this selector."""
+    b = BSE(0)
+    entries = wm([(0, 0), (5, 5)], self_id=0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.DISCOVERER))
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS * 3):
+        b.tick(entries, HEALTHY)
+    assert b.get_directive().type == BSEDirectiveType.HOLD
+    assert b.anchor_lost() is True
+
+
+def test_frame_element_discoverer_anchor_lowest_id_tiebreak():
+    """Two elements discovering "simultaneously" (both bits set the same
+    tick) must resolve deterministically — lowest id wins, the same P4
+    tiebreak LOWEST_ENERGY uses, so every element derives the SAME anchor
+    from the same world-model snapshot."""
+    b = BSE(0)
+    entries = wm([(0, 0), (5, 5), (9, 9)], self_id=0)
+    entries[1]['discovered'] = True   # id 1
+    entries[2]['discovered'] = True   # id 2 — higher id, must lose the tie
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.DISCOVERER))
+    for _ in range(ANCHOR_HOLD_MS // WM_CYCLE_MS + 1):
+        b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (5.0, 5.0))
+
+
 # ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────────
 
 def test_motion_spin_rotates_the_form_vertex():

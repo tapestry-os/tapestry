@@ -111,6 +111,7 @@ class BSEAnchorSelector(IntEnum):
     ID            = 1
     SELF          = 2
     LOWEST_ENERGY = 3
+    DISCOVERER    = 4   # wire v6 — see bse.h's doc
 
 
 ANCHOR_HOLD_MS     = 2000   # mirrors TAPESTRY_BSE_ANCHOR_HOLD_MS (bse.h)
@@ -441,6 +442,23 @@ class BSE:
                 if best_id is None or energy < best_energy or \
                         (energy == best_energy and eid < best_id):
                     best_id, best_energy = eid, energy
+            return best_id
+        if sel == BSEAnchorSelector.DISCOVERER:
+            # Same shape as LOWEST_ENERGY above, scanning for a boolean
+            # ('discovered', wire v6) instead of a scalar minimum.
+            # Nothing in this synthetic simulator ever sets 'discovered'
+            # on its own (no sensor model) — it only reflects whatever a
+            # caller injects into wm_entries.
+            best_id: Optional[int] = None
+            for e in wm_entries:
+                is_self = e.get('is_self', False)
+                if not is_self and not (e.get('is_active') and not e.get('is_stale')):
+                    continue
+                if not e.get('discovered', False):
+                    continue
+                eid = self.element_id if is_self else e.get('id')
+                if best_id is None or eid < best_id:
+                    best_id = eid
             return best_id
         return None
 

@@ -709,6 +709,51 @@ static void update_membership_debounce(const scr_state_t *scr,
     }
 }
 
+/*
+ * Wire v6: does `wm`'s own self entry have its gossiped discovered bit
+ * set?  CHOREO_EVENT_DISCOVERY's source (the per-element case: each
+ * robot reacts to its OWN detection), and the track filter
+ * requires_discovered's.
+ */
+static bool self_discovered(const world_model_t *wm)
+{
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_self) {
+            return e->state.discovered;
+        }
+    }
+    return false;
+}
+
+/*
+ * Wire v6 (finder-anchored scripts): does ANY element — self or a fresh, trusted
+ * peer, the same candidate definition bse.c's TAPESTRY_BSE_ANCHOR_
+ * DISCOVERER selector uses — have its discovered bit set?
+ * CHOREO_EVENT_DISCOVERY_ANY's source.
+ *
+ * Deliberately NOT track-filtered, unlike choreo_collective_achieved()
+ * above: the whole point of this check, for a searcher-track script
+ * step, is to learn about a peer who has ALREADY migrated onto a
+ * DIFFERENT track (the discoverer's own "anchor" track,
+ * choreo_track_filter_t's requires_discovered) — filtering to same-track
+ * peers here would make a searcher permanently blind to the one
+ * migration this event exists to react to.
+ */
+static bool any_element_discovered(const world_model_t *wm, const scr_state_t *scr)
+{
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        bool candidate = e->is_self ||
+                         (e->is_active && !e->is_stale &&
+                          scr_peer_is_trusted(scr, e->state.id));
+        if (candidate && e->state.discovered) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Does `event` fire this tick?  threshold/scope/wm/scr/joined/lost carry
  * everything the CHOREO_EVENT_* variants need (choreo.h). */
 static bool event_fires(choreo_event_t event, uint8_t threshold,
@@ -732,6 +777,10 @@ static bool event_fires(choreo_event_t event, uint8_t threshold,
         return bse_anchor_lost();
     case CHOREO_EVENT_QUORUM_LOST:
         return scr->quorum_state == SCR_QUORUM_LOST;
+    case CHOREO_EVENT_DISCOVERY:
+        return self_discovered(wm);
+    case CHOREO_EVENT_DISCOVERY_ANY:
+        return any_element_discovered(wm, scr);
     default:
         return false;
     }
@@ -1048,6 +1097,9 @@ static bool track_matches(const choreo_track_filter_t *f, const world_model_t *w
         if (!low) {
             return false;
         }
+    }
+    if (f->requires_discovered && !self_discovered(wm)) {
+        return false;
     }
     return true;
 }

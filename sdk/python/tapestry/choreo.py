@@ -118,6 +118,8 @@ class ChoreoEvent(IntEnum):
     COUNT_EQ       = 4   # threshold
     ANCHOR_LOST    = 5
     QUORUM_LOST    = 6
+    DISCOVERY      = 7   # wire v6 — own discovered bit only
+    DISCOVERY_ANY  = 8   # wire v6 — ANY element's discovered bit
 
 
 # Bounded to match choreo.h's CHOREO_MAX_TRANSITIONS — enforced in
@@ -248,11 +250,12 @@ class ChoreoStep:
 class ChoreoTrackFilter:
     """Which elements belong to a track, evaluated by each element
     against its OWN state only (never a peer's) — mirrors
-    choreo_track_filter_t (choreo.h §7).  The zero value (both fields
+    choreo_track_filter_t (choreo.h §7).  The zero value (all fields
     false/0) matches every element — the "all" default a script with no
     [[tracks]] uses."""
     required_caps:       int  = ChoreoCapabilities.NONE
     requires_energy_low: bool = False
+    requires_discovered: bool = False   # wire v6
 
 
 @dataclass
@@ -626,6 +629,8 @@ class Choreo:
                     break
             if not low:
                 return False
+        if filt.requires_discovered and not self._self_discovered(wm_entries):
+            return False
         return True
 
     def _first_matching_track(self, wm_entries: List[dict]) -> Optional[int]:
@@ -805,6 +810,30 @@ class Choreo:
                 return False
         return True
 
+    def _self_discovered(self, wm_entries: List[dict]) -> bool:
+        """Wire v6: does the self entry's gossiped 'discovered'
+        key (default False) read true?  DISCOVERY's source (and the
+        requires_discovered track filter's) — mirrors self_discovered()
+        in choreo.c."""
+        for e in wm_entries:
+            if e.get('is_self', False):
+                return e.get('discovered', False)
+        return False
+
+    def _any_element_discovered(self, wm_entries: List[dict]) -> bool:
+        """Wire v6 (finder-anchored scripts): does ANY element — self or a fresh
+        active peer — have 'discovered' set?  DISCOVERY's scope=ALL
+        source (DISCOVERY_ANY) — mirrors any_element_discovered() in choreo.c.
+        Deliberately NOT track-filtered, for the same reason as the C
+        version: the discoverer has already migrated to a different
+        track by the time a searcher needs to see this."""
+        for e in wm_entries:
+            candidate = e.get('is_self', False) or \
+                (e.get('is_active') and not e.get('is_stale'))
+            if candidate and e.get('discovered', False):
+                return True
+        return False
+
     def _swarm_size(self, wm_entries: List[dict]) -> int:
         """Self + fresh active peer count — Python mirror of
         scr_get_swarm_size() for the membership events below (no BFT
@@ -863,6 +892,10 @@ class Choreo:
             return self._bse.anchor_lost()
         if t.event == ChoreoEvent.QUORUM_LOST:
             return scr_state.get('quorum_state', 2) == self.QUORUM_LOST
+        if t.event == ChoreoEvent.DISCOVERY:
+            return self._self_discovered(wm_entries)
+        if t.event == ChoreoEvent.DISCOVERY_ANY:
+            return self._any_element_discovered(wm_entries)
         return False
 
     def _advance_to(self, target_idx: int) -> None:

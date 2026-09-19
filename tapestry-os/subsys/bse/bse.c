@@ -346,6 +346,35 @@ static bool resolve_anchor_selector(const world_model_t *wm,
         return true;
     }
 
+    case TAPESTRY_BSE_ANCHOR_DISCOVERER: {
+        /* Same shape as LOWEST_ENERGY above, scanning for a boolean
+         * (state.discovered, wire v6) instead of a scalar minimum:
+         * lowest-id tiebreak if more than one element's bit is set,
+         * found=false ("nobody has found it yet") until at least one
+         * is. */
+        bool         found  = false;
+        element_id_t min_id = 0;
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &wm->entries[i];
+            bool candidate = e->is_self ||
+                             (e->is_active && !e->is_stale &&
+                              scr_peer_is_trusted(scr, e->state.id));
+            if (!candidate || !e->state.discovered) {
+                continue;
+            }
+            element_id_t id = e->is_self ? s_self_id : e->state.id;
+            if (!found || id < min_id) {
+                found  = true;
+                min_id = id;
+            }
+        }
+        if (!found) {
+            return false;
+        }
+        *out_id = min_id;
+        return true;
+    }
+
     default:
         return false;
     }

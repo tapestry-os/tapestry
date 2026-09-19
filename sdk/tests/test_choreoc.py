@@ -18,7 +18,8 @@ import pytest
 from helpers import REPO_ROOT, SCRIPT_TOML
 
 import choreoc
-from tapestry.script_toml import NormalizedStep, NormalizedTransition, parse_file
+from tapestry.script_toml import (NormalizedStep, NormalizedTrack,
+                                  NormalizedTransition, parse_file)
 
 CHOREOC = REPO_ROOT / "sdk/tools/choreoc.py"
 
@@ -198,6 +199,39 @@ def test_quorum_lost_event_emits_the_matching_c_enum():
         goal="hold", max_duration_ms=1000,
         on=[NormalizedTransition(event="quorum_lost", goto_step_idx=1)]))
     assert "CHOREO_EVENT_QUORUM_LOST" in c
+
+
+def test_discovery_event_emits_the_matching_c_enum():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="hold", max_duration_ms=1000,
+        on=[NormalizedTransition(event="discovery", goto_step_idx=1)]))
+    assert "CHOREO_EVENT_DISCOVERY," in c or "CHOREO_EVENT_DISCOVERY " in c
+    assert "CHOREO_EVENT_DISCOVERY_ANY" not in c
+
+
+def test_discovery_any_event_emits_the_matching_c_enum():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="hold", max_duration_ms=1000,
+        on=[NormalizedTransition(event="discovery_any", goto_step_idx=1)]))
+    assert "CHOREO_EVENT_DISCOVERY_ANY" in c
+
+
+def test_discoverer_anchor_is_emitted_as_the_matching_c_enum():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="form", max_duration_ms=1000, target=(0.0, 0.0, 0.0),
+        radius=5.0, frame="element", anchor_select="discoverer"))
+    assert ".frame = TAPESTRY_BSE_FRAME_ELEMENT" in c
+    assert ".anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER" in c
+
+
+def test_requires_discovered_filter_is_emitted():
+    c = choreoc.emit_track_filter(NormalizedTrack(requires_discovered=True))
+    assert ".requires_discovered = true" in c
+
+
+def test_requires_discovered_false_is_left_implicit():
+    c = choreoc.emit_track_filter(NormalizedTrack())
+    assert ".requires_discovered" not in c
 
 
 def test_scope_self_is_left_implicit():
@@ -454,3 +488,44 @@ def test_a_tracks_header_round_trips_through_check(tmp_path):
     assert run_cli(script, "-o", out, "--check").returncode == 0
     out.write_text(out.read_text() + "\n// drift\n")
     assert run_cli(script, "-o", out, "--check").returncode == 1
+
+
+# ---- CHOREO_USES_DISCOVERY: lets an app keep its detection machinery inert
+# ---- in scripts that never look at the discovered bit (e.g. the ring).
+
+def _uses_discovery(tmp_path, body):
+    script = tmp_path / "s.choreo.toml"
+    script.write_text(textwrap.dedent(body))
+    out = tmp_path / "choreo_script.h"
+    text = choreoc.render(script, out)[1]
+    return "CHOREO_USES_DISCOVERY" in text
+
+
+_HOLD = """
+    [[steps]]
+    name = "a"
+    [steps.hold]
+    duration = "5s"
+    {extra}
+
+    [[steps]]
+    name = "b"
+    [steps.hold]
+    duration = "5s"
+"""
+
+
+def test_uses_discovery_is_absent_for_a_script_that_ignores_the_bit(tmp_path):
+    assert not _uses_discovery(tmp_path, 'choreo = "x"\n' + _HOLD.format(extra=""))
+
+
+def test_uses_discovery_is_emitted_for_a_discovery_transition(tmp_path):
+    body = ('choreo = "x"\n' + _HOLD.format(
+        extra='on = [ { event = "discovery", goto = "b" } ]'))
+    assert _uses_discovery(tmp_path, body)
+
+
+def test_uses_discovery_is_emitted_for_discovery_any(tmp_path):
+    body = ('choreo = "x"\n' + _HOLD.format(
+        extra='on = [ { event = "discovery_any", goto = "b" } ]'))
+    assert _uses_discovery(tmp_path, body)

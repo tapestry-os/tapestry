@@ -474,6 +474,34 @@ typedef enum {
  * as much debounce on this event as it gets on the automatic suspend —
  * none — which is a pre-existing property of this state machine, not
  * something new QUORUM_LOST introduces.
+ *
+ * DISCOVERY / DISCOVERY_ANY (wire v6): fire from an element's
+ * gossiped element_state_t::discovered bit — two SEPARATE events rather than
+ * one event gated by choreo_step_t::scope, because scope also governs
+ * CHOREO_EVENT_ACHIEVED / advance_on_achieved on the same step, and the
+ * two want opposite things at once: a searching robot must advance its OWN
+ * patrol leg on its OWN achievement (the collective predicate below is not
+ * a barrier — an early advancer's achieved bit flips on its next step and
+ * strands the rest until their timeouts) yet react to ANY peer's discovery:
+ *   CHOREO_EVENT_DISCOVERY      — this element's OWN discovered bit only.
+ *                                 Per-element scripts: every robot stops on
+ *                                 its own local detection, no anchor, no
+ *                                 collective knowledge needed.
+ *   CHOREO_EVENT_DISCOVERY_ANY  — ANY element's discovered bit: this one's
+ *                                 own, or any fresh, trusted peer's (the
+ *                                 same candidate set as
+ *                                 TAPESTRY_BSE_ANCHOR_DISCOVERER).
+ *                                 Finder-anchored scripts: the group learns
+ *                                 that SOMEONE found it.  Deliberately NOT
+ *                                 track-filtered (unlike the collective
+ *                                 achieved predicate): the finder has
+ *                                 already migrated to a different track by
+ *                                 the time a searcher needs to see it.
+ * Neither has a debounce of its own (like QUORUM_LOST) — the bit itself is
+ * sticky at the source (an element does not un-discover, see
+ * element_state_t's doc), so a step transitioning on it is a one-way door
+ * by construction, unlike ELEMENT_JOINED/LOST's genuinely two-way
+ * membership changes.
  */
 typedef enum {
     CHOREO_EVENT_ACHIEVED       = 0,
@@ -483,6 +511,8 @@ typedef enum {
     CHOREO_EVENT_COUNT_EQ       = 4,   /* threshold */
     CHOREO_EVENT_ANCHOR_LOST    = 5,
     CHOREO_EVENT_QUORUM_LOST    = 6,
+    CHOREO_EVENT_DISCOVERY      = 7,   /* own bit only, see above */
+    CHOREO_EVENT_DISCOVERY_ANY  = 8,   /* any element's bit       */
 } choreo_event_t;
 
 /* Bounded, no dynamic allocation — matches every other bounded-array
@@ -914,13 +944,22 @@ const char *choreo_current_telemetry_tag(void);
  * required_caps works without gossiping capabilities (§10's "Track
  * membership needs one small gossiped field" applies to COMMUNICATING
  * the result via current_track, not to evaluating the filter itself).
- * The zero value (both fields false/0) matches every element — the "all"
+ * The zero value (all fields false/0) matches every element — the "all"
  * default a script with no [[tracks]] uses.
  */
 typedef struct {
     choreo_capabilities_t required_caps;       /* 0 = no capability requirement */
     bool                  requires_energy_low; /* §8.2 self-event: energy_low — */
                                                 /* ELEMENT_HEALTH_LOW_BATTERY    */
+    bool                  requires_discovered; /* wire v6 —                     */
+                                                /* this element's OWN gossiped   */
+                                                /* discovered bit — the track    */
+                                                /* the finder migrates onto,     */
+                                                /* excluded by construction from */
+                                                /* the OTHER track's own FORM    */
+                                                /* rank/count (bse.c's           */
+                                                /* collect_participants() filters*/
+                                                /* to same-track peers).         */
 } choreo_track_filter_t;
 
 typedef struct {
