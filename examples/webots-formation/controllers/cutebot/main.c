@@ -198,6 +198,12 @@ int main(int argc, char **argv)
             break;
         }
 
+        /* Advance the Lamport clock while waiting: wm_receive_gossip()
+         * drops any frame whose logical_clock is not strictly newer, so a
+         * frozen clock makes every peer flip fresh/stale on a ~5 s cycle
+         * (wm_update_self is the only thing that advances it). */
+        wm_update_self(&wm, &own_state);
+
         gossip_accum += WM_CYCLE_MS;
         if (gossip_accum >= GOSSIP_INTERVAL_MS) {
             own_state.update_seq++;
