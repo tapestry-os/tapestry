@@ -441,6 +441,12 @@ int main(void)
                     (unsigned)peers_ready_ms, (unsigned)DEMO_SYNC_SETTLE_MS);
         }
 
+        /* Advance the Lamport clock while waiting — receivers reject any
+         * frame whose logical_clock is not strictly newer, so a frozen
+         * clock makes each peer flip fresh/stale on a ~5 s cycle (see the
+         * swarm branch's identical barrier below for the full story). */
+        wm_update_self(&wm, &own_state);
+
         gossip_accum += WM_CYCLE_MS;
         if (gossip_accum >= GOSSIP_INTERVAL_MS) {
             own_state.update_seq++;
@@ -809,6 +815,19 @@ int main(void)
                     n_total - 1, (unsigned)waited_ms,
                     (unsigned)peers_ready_ms, (unsigned)DEMO_SYNC_SETTLE_MS);
         }
+
+        /* Advance this element's Lamport clock every tick, as the main loop
+         * does.  A receiver (wm_receive_gossip) drops any frame whose
+         * logical_clock is not strictly newer than the one it holds, and
+         * wm_update_self() is the only thing that advances it — without
+         * this call every frame sent during the barrier carries the SAME
+         * clock, so each peer is accepted once and then rejected until it
+         * ages out (WM_EXPIRE_THRESHOLD_MS) and is re-accepted from
+         * scratch.  Each peer therefore flips fresh/stale on a ~5 s cycle
+         * (yellow LEDs "ping-ponging" between robots) and the barrier only
+         * completes when the cycles happen to overlap.  Host repro:
+         * 6 of 60 frames accepted, peer fresh 58% of the time. */
+        wm_update_self(&wm, &own_state);
 
         gossip_accum += WM_CYCLE_MS;
         if (gossip_accum >= GOSSIP_INTERVAL_MS) {
