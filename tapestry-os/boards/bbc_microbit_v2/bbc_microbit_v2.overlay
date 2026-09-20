@@ -42,15 +42,5 @@
     zephyr,user {
         cutebot-line-left-gpios  = <&gpio0 17 GPIO_ACTIVE_HIGH>;   /* P13 */
         cutebot-line-right-gpios = <&gpio0  1 GPIO_ACTIVE_HIGH>;   /* P14 */
-
-        /* Diagnostic-only: P11/P12, added to check a report that a
-         * physical unit has FOUR IR modules wired (P11-P14), not just
-         * the two (P13/P14) pxt-cutebot's own source documents — see
-         * DEMO_MODE_LINE_SENSOR_BENCH (main.c) and cutebot_line_bench.c.
-         * Same &gpio0 23 / &gpio0 12 mapping as this board's own
-         * bbc_microbit_v2.dts edge_connector gpio-map entries for P11/P12
-         * — cross-check that file if these pins ever change. */
-        cutebot-line-p11-gpios = <&gpio0 23 GPIO_ACTIVE_HIGH>;   /* P11 */
-        cutebot-line-p12-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;   /* P12 */
     };
 };

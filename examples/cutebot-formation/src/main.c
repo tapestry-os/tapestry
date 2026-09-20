@@ -43,9 +43,9 @@
  *     See Kconfig's help text.
  *
  *   DEMO_MODE_LINE_SENSOR_BENCH — no motors, no odometry: just logs
- *     P11/P12/P13/P14's raw GPIO levels every 500 ms so the line
- *     sensors' actual hardware response can be checked directly against
- *     different materials/angles, decoupled from any driving dynamics.
+ *     P13/P14's raw GPIO levels every 500 ms so the line sensors' actual
+ *     hardware response can be checked directly against different
+ *     materials/angles, decoupled from any driving dynamics.
  *     See Kconfig's help text.
  *
  * DEMO_MODE_CHOREO ran end-to-end on four physical robots on 2026-08-24
@@ -645,31 +645,30 @@ int main(void)
     }
 #elif defined(CONFIG_DEMO_MODE_LINE_SENSOR_BENCH)
     /*
-     * Raw 4-pin sensor bring-up — see Kconfig's help text. No motors, no
-     * odometry, no interrupts: just log what P11/P12/P13/P14 actually
-     * read, unfiltered, so materials/angles/heights can be tested by eye
+     * Raw line-sensor bring-up — see Kconfig's help text. No motors, no
+     * odometry, no interrupts: just log what P13/P14 actually read,
+     * unfiltered, so materials/angles/heights can be tested by eye
      * against a live log instead of inferring anything from driving
      * behavior.
      */
     if (cutebot_line_bench_init() != 0) {
-        LOG_ERR("cutebot_line_bench_init failed — one or more of "
-                "P11/P12/P13/P14 not ready. Check bbc_microbit_v2.overlay "
-                "matches this board's actual wiring.");
+        LOG_ERR("cutebot_line_bench_init failed — P13/P14 not ready. "
+                "Check bbc_microbit_v2.overlay matches this board's "
+                "actual wiring.");
         substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);
         while (true) {
             k_msleep(1000);
         }
     }
 
-    LOG_INF("LINE SENSOR BENCH MODE — logging P11/P12/P13/P14 raw levels "
-            "every 500 ms. No inversion: 1/0 exactly as the pin reads.");
+    LOG_INF("LINE SENSOR BENCH MODE — logging P13/P14 raw levels every "
+            "500 ms. No inversion: 1/0 exactly as the pin reads.");
 
     while (true) {
         cutebot_line_bench_sample_t s;
         cutebot_line_bench_read(&s);
 
-        LOG_INF("P11: %d  P12: %d  P13: %d  P14: %d",
-                s.p11, s.p12, s.p13, s.p14);
+        LOG_INF("P13: %d  P14: %d", s.p13, s.p14);
 
         k_msleep(500);
     }

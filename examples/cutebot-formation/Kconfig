@@ -144,7 +144,7 @@ config DEMO_MODE_WHEEL_CHARACTERIZE
 	  physically on the floor.
 
 config DEMO_MODE_LINE_SENSOR_BENCH
-	bool "Line sensor bring-up: log raw P11/P12/P13/P14 every 500 ms"
+	bool "Line sensor bring-up: log raw P13/P14 every 500 ms"
 	help
 	  Diagnostic for "are the line sensors even connected/responding at
 	  all" — built after a DEMO_MODE_STRAIGHT_LINE run that stayed
@@ -154,21 +154,24 @@ config DEMO_MODE_LINE_SENSOR_BENCH
 	  config itself is fine) uncovered while bench-verifying the new
 	  grid-based heading correction.
 
-	  No motors, no odometry, no interrupts — just cutebot_line_bench.c
-	  configuring FOUR edge-connector pins (P11, P12, P13, P14 — not just
-	  the P13/P14 pxt-cutebot's own source documents as the line sensors,
-	  per a report this physical unit may have all four wired) as plain
-	  inputs and logging their RAW levels (no "true means line" inversion
-	  — see cutebot_line_bench.h for why) once every 500 ms, forever:
+	  Originally also logged P11/P12, on a report that a physical unit
+	  might have four IR modules wired instead of the documented two —
+	  confirmed on the bench that P11/P12 never toggle, so this now
+	  covers only the two real pins.
 
-	    P11: 1  P12: 0  P13: 1  P14: 1
+	  No motors, no odometry, no interrupts — just cutebot_line_bench.c
+	  configuring the two edge-connector pins (P13, P14) as plain inputs
+	  and logging their RAW levels (no "true means line" inversion — see
+	  cutebot_line_bench.h for why) once every 500 ms, forever:
+
+	    P13: 1  P14: 1
 
 	  Hold different materials/colors under the sensors and vary the
 	  angle/height while watching the log — this isolates the sensor
-	  response itself from any question of driving speed, crossing
-	  timing, or which pins are the "real" ones, so a real answer (does
-	  anything ever toggle, and which pins) doesn't depend on catching a
-	  brief transition while physically dragging a robot around.
+	  response itself from any question of driving speed or crossing
+	  timing, so a real answer (does anything ever toggle) doesn't
+	  depend on catching a brief transition while physically dragging a
+	  robot around.
 
 endchoice
 
