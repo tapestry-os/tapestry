@@ -9,13 +9,11 @@ mirror of tapestry-os/subsys/choreo/choreo.c.
 """
 
 import errno
-import math
 
 import pytest
-from helpers import (QUORUM_DEGRADED, QUORUM_HEALTHY, QUORUM_LOST, REPO_ROOT,
-                     scr, solo, wm)
+from helpers import (QUORUM_DEGRADED, QUORUM_HEALTHY, QUORUM_LOST, scr, solo, wm)
 
-from tapestry.bse import (ANCHOR_HOLD_MS, WM_CYCLE_MS, BSEDirectiveType,
+from tapestry.bse import (BSEDirectiveType,
                           BSEFrame, BSEMotion, BSEAnchorSelector)
 from tapestry.choreo import (Choreo, ChoreoCapabilities, ChoreoEvent,
                              ChoreoScope, ChoreoState, ChoreoStep,
