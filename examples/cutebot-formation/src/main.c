@@ -48,6 +48,14 @@
  *     materials/angles, decoupled from any driving dynamics.
  *     See Kconfig's help text.
  *
+ *   DEMO_MODE_DISCOVERY_BENCH — choreo-2/3 (king/spill) bench diagnostic:
+ *     single robot, demo_drive_straight() (same as STRAIGHT_LINE) across
+ *     the real printed target marker, running demo_discovery_detect()
+ *     against the raw line-sensor reading every poll (no grid correction
+ *     — not needed, see that function's doc) and logging every dark
+ *     reading plus a clear line and solid green LED the instant
+ *     discovery confirms. See Kconfig's help text.
+ *
  * DEMO_MODE_CHOREO ran end-to-end on four physical robots on 2026-08-24
  * (hold -> form(grid) -> hold, BLE gossip, real L5 quorum) and again on
  * 2026-09-12 with the ring script (hold -> form(circle) -> settled hold),
@@ -71,8 +79,8 @@
 #ifdef CONFIG_DEMO_MODE_CHOREO
 #include <tapestry/scr.h>      /* real L5 quorum */
 #include <tapestry/choreo.h>
-/* The show itself. GENERATED from ../form-grid.choreo.toml (the file to
- * edit) by sdk/tools/choreoc.py — see the regeneration command in its
+/* The show itself. GENERATED from one of ../{ring,king,spill}.choreo.toml
+ * (the file to edit) by sdk/tools/choreoc.py — see the regeneration command in its
  * banner. */
 #include "choreo_script.h"
 #endif
@@ -153,6 +161,39 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
  * against real Cutebot/BLE loss rates (see this file's top-of-file
  * note on the 2026-08-24 run). */
 #define QUORUM_UP_MS 2000
+
+/*
+ * ONE finder or MANY?  A script with tracks (king.choreo.toml) elects a
+ * single finder: everyone else's job is to ring it, so once any peer's
+ * discovered bit is visible a robot IGNORES its own dark hits.  Without
+ * this, a robot that pops up while braking or backing away (a lifted
+ * reflectance sensor sees no surface, which reads as IR-dark — see
+ * demo_discovery_in_safe_zone()) would latch, stop dead, migrate to the
+ * finder track (leaving the ring one robot short) and — if its id is lower
+ * than the king's — win the DISCOVERER anchor's lowest-id tiebreak and drag
+ * the whole ring off the real marker.  A single-track script
+ * (spill.choreo.toml) wants the opposite: EVERY robot that crosses the
+ * target stops on its own edge, so nothing is suppressed there.
+ *
+ * Residual: two robots that latch within one gossip latency (~1 s) of each
+ * other both stay latched (lowest id anchors).  Robots only hear the king
+ * once its bit arrives.
+ */
+#if defined(CHOREO_N_TRACKS) && defined(CHOREO_USES_DISCOVERY)
+#define DEMO_DISCOVERY_SINGLE_FINDER 1
+#endif
+
+/* Lowest-id peer whose gossiped discovered bit is set, or -1. */
+static int __maybe_unused demo_peer_finder(const world_model_t *wm)
+{
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_active && !e->is_self && e->state.discovered) {
+            return (int)e->state.id;
+        }
+    }
+    return -1;
+}
 #endif
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
@@ -306,6 +347,113 @@ int main(void)
                     (unsigned)trace_left_edges, (unsigned)trace_right_edges);
             trace_left_edges  = 0;
             trace_right_edges = 0;
+#else
+            LOG_INF("est=(%.2f,%.2f) hdg=%.2f spd=%.2f rate=%.2f "
+                    "(no line sensor built — CONFIG_I2C off)",
+                    (double)odo.x, (double)odo.y, (double)odo.heading,
+                    (double)speed_cmd, (double)rate_cmd);
+#endif
+        }
+
+        k_msleep(WM_CYCLE_MS);
+    }
+#elif defined(CONFIG_DEMO_MODE_DISCOVERY_BENCH)
+    /*
+     * choreo-2/3 (king/spill) discovery-detection bench — see Kconfig's
+     * help text. Same isolated single-robot shape as STRAIGHT_LINE
+     * (no transport/auto-ID/SCR/Choreo), but no grid correction at all:
+     * demo_discovery_detect() needs none of it (see that function's own
+     * doc — the board has no IR-dark feature besides the marker itself).
+     */
+    LOG_INF("DISCOVERY BENCH MODE — start=(%.1f,%.1f) heading=%.2f rad, "
+            "no swarm, no auto-ID, no grid correction",
+            (double)DEMO_TEST_START_X, (double)DEMO_TEST_START_Y,
+            (double)DEMO_TEST_START_HEADING);
+
+    demo_odometry_t odo;
+    demo_odometry_init(&odo, DEMO_TEST_START_X, DEMO_TEST_START_Y);
+    odo.heading = DEMO_TEST_START_HEADING;
+
+#ifdef CONFIG_I2C
+    demo_discovery_state_t discovery;
+    demo_discovery_init(&discovery);
+#endif
+
+    uint32_t trace_accum = 0;
+
+    while (true) {
+        float speed_cmd = 0.0f;
+        float rate_cmd  = 0.0f;
+        demo_drive_straight(&odo, &speed_cmd, &rate_cmd);
+
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
+
+#ifdef CONFIG_I2C
+        cutebot_line_sample_t line;
+        cutebot_line_poll(&line);
+
+        bool was_discovered = discovery.discovered;
+        bool dark_now       = line.left || line.right;
+        bool in_safe_zone   = demo_discovery_in_safe_zone(&odo);
+        /* A reflectance sensor cannot tell "dark surface" from "no
+         * surface at all" (open air) — see demo_discovery_in_safe_zone()'s
+         * doc, confirmed on the bench 2026-09-16 (lifting the robot reads
+         * identically to the real marker). Gate what actually reaches
+         * the debounce/latch on being safely away from the physical edge. */
+        demo_discovery_detect(&discovery, dark_now && in_safe_zone);
+
+        /* Every dark reading, not just a periodic trace — a single
+         * confirming pass over the marker must never be lost between
+         * 1 Hz status lines. Logged even when suppressed by the safe-zone
+         * gate, so a bench run over the true edge is visible for what it
+         * is instead of just silently not-confirming. */
+        if (dark_now) {
+            LOG_INF("est=(%.2f,%.2f) line L=%d R=%d dark_polls=%u%s%s",
+                    (double)odo.x, (double)odo.y,
+                    (int)line.left, (int)line.right,
+                    (unsigned)discovery.consecutive_dark_polls,
+                    discovery.discovered ? " CONFIRMED" : "",
+                    in_safe_zone ? "" : " (IGNORED — outside safe zone, "
+                                        "likely off-board not marker)");
+        }
+        if (!was_discovered && discovery.discovered) {
+            LOG_INF("*** DISCOVERY CONFIRMED at est=(%.2f,%.2f) ***",
+                    (double)odo.x, (double)odo.y);
+        }
+#endif
+
+        substrate_twist_t twist = {
+            .linear  = { .x = speed_cmd },
+            .angular = { .z = rate_cmd  },
+        };
+        substrate_move(&twist);
+
+#ifdef CONFIG_I2C
+        /* Solid green the instant discovery confirms, staying there for
+         * the rest of the run (sticky, matching discovery.discovered
+         * itself) — a bench-visible confirmation with no serial cable
+         * needed while positioning the robot over the marker. Falls
+         * back to the same green/blue fence-status signal
+         * DEMO_MODE_STRAIGHT_LINE uses until then. */
+        substrate_set_signal(discovery.discovered
+                                  ? SUBSTRATE_SIGNAL_ACTIVE
+                                  : (fabsf(speed_cmd) > 0.001f
+                                         ? SUBSTRATE_SIGNAL_ACTIVE
+                                         : SUBSTRATE_SIGNAL_IDLE));
+#else
+        substrate_set_signal(fabsf(speed_cmd) > 0.001f
+                                  ? SUBSTRATE_SIGNAL_ACTIVE
+                                  : SUBSTRATE_SIGNAL_IDLE);
+#endif
+
+        trace_accum += WM_CYCLE_MS;
+        if (trace_accum >= 1000) {
+            trace_accum = 0;
+#ifdef CONFIG_I2C
+            LOG_INF("est=(%.2f,%.2f) hdg=%.2f spd=%.2f rate=%.2f discovered=%d",
+                    (double)odo.x, (double)odo.y, (double)odo.heading,
+                    (double)speed_cmd, (double)rate_cmd,
+                    (int)discovery.discovered);
 #else
             LOG_INF("est=(%.2f,%.2f) hdg=%.2f spd=%.2f rate=%.2f "
                     "(no line sensor built — CONFIG_I2C off)",
@@ -672,8 +820,8 @@ int main(void)
 
         k_msleep(500);
     }
-#else /* !CONFIG_DEMO_MODE_STRAIGHT_LINE / !CONFIG_DEMO_MODE_CONVERGE_TEST /
-       * !CONFIG_DEMO_MODE_WHEEL_CHARACTERIZE /
+#else /* !CONFIG_DEMO_MODE_STRAIGHT_LINE / !CONFIG_DEMO_MODE_DISCOVERY_BENCH /
+       * !CONFIG_DEMO_MODE_CONVERGE_TEST / !CONFIG_DEMO_MODE_WHEEL_CHARACTERIZE /
        * !CONFIG_DEMO_MODE_LINE_SENSOR_BENCH — the normal swarm demo */
 
     if (transport_init() != 0) {
@@ -742,6 +890,20 @@ int main(void)
     demo_odometry_init(&odo, sx, sy);
     odo.heading = shead;
 
+#ifdef CONFIG_I2C
+    /* choreo-2/3 (king/spill) discovery detection — see formation.h.
+     * Declared unconditionally on CONFIG_I2C (not gated on
+     * CONFIG_DEMO_GRID_CORRECTION, which only concerns drift correction):
+     * discovery has no dependency on grid correction at all. */
+    demo_discovery_state_t discovery;
+    demo_discovery_init(&discovery);
+#if defined(CHOREO_USES_DISCOVERY) && !defined(DEMO_DISCOVERY_SINGLE_FINDER)
+    /* Every robot's own crossing of a thin outline target counts (spill):
+     * one entry edge is enough, no multi-poll confirmation. */
+    discovery.confirm_polls = 1u;
+#endif
+#endif
+
     /* Real L5 SCR. quorum_min/quorum_target default to 1/1 (Kconfig) —
      * this script only ever needs one fresh peer, same threshold
      * cf21bl-formation and webots-formation use for the same reason.
@@ -762,6 +924,35 @@ int main(void)
 
     choreo_init(element_id);
     choreo_register_scr(&scr);
+    /*
+     * choreoc.py emits one of two incompatible shapes depending on
+     * whether the source .toml has [[steps]] (k_choreo_script/
+     * CHOREO_SCRIPT_LEN — ring.choreo.toml, form-grid.choreo.toml,
+     * spill.choreo.toml) or [[tracks]] (k_choreo_tracks/CHOREO_N_TRACKS
+     * — king.choreo.toml, §7) — see choreoc.py's _emit_steps_header()
+     * vs _emit_tracks_header(). CHOREO_N_TRACKS only exists in the
+     * tracks case, so it's the compile-time discriminator between the
+     * two choreo_script.h shapes; whichever script is currently
+     * compiled in, only one of these two branches ever actually builds.
+     * choreo_submit_tracks() needs a `wm` snapshot to determine this
+     * element's initial track — at this point in boot it holds only
+     * self's own entry (no gossip received yet), which is exactly
+     * right: every element starts this determination from its own
+     * not-yet-discovered state, matching every track filter that reads
+     * a self-only condition (see choreo_track_filter_t's doc).
+     */
+#ifdef CHOREO_N_TRACKS
+    if (choreo_submit_tracks(&wm, k_choreo_tracks, CHOREO_N_TRACKS) != 0) {
+        LOG_ERR("id=%u choreo tracks rejected — staying grounded",
+                (unsigned)element_id);
+        substrate_set_power(SUBSTRATE_POWER_SLEEP);
+        return -1;
+    }
+    LOG_INF("id=%u choreo \"%s\" loaded — %u track(s), time bound %u s",
+            (unsigned)element_id, CHOREO_NAME,
+            (unsigned)CHOREO_N_TRACKS,
+            (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
+#else
     if (choreo_submit_script(k_choreo_script, CHOREO_SCRIPT_LEN) != 0) {
         LOG_ERR("id=%u choreo script rejected — staying grounded",
                 (unsigned)element_id);
@@ -772,6 +963,14 @@ int main(void)
             (unsigned)element_id, CHOREO_NAME,
             (unsigned)CHOREO_SCRIPT_LEN,
             (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
+#endif
+    /* own_state.current_track is otherwise still 0 (zero-init) until the
+     * main loop's first choreo_publish_state(): the sync barrier below
+     * gossips own_state, so on a [[tracks]] script (king) every peer would
+     * read this robot as being on track 0 — which is the finder's
+     * "anchor" track — and bse.c's track-scoped rank/count would drop it
+     * from their FORM until the first loop gossip arrives. */
+    choreo_publish_state(&own_state);
 
     float    speed_cmd    = 0.0f;
     float    rate_cmd     = 0.0f;
@@ -859,6 +1058,60 @@ int main(void)
                                    line.left_entered, line.left_entry_ms,
                                    line.right_entered, line.right_entry_ms);
 #endif
+        /* Independent of CONFIG_DEMO_GRID_CORRECTION — see the
+         * declaration site's comment. Gated on demo_discovery_in_safe_
+         * zone(): a reflectance sensor cannot tell "dark surface" from
+         * "no surface at all" — a robot that drifts off the physical
+         * board edge during the search patrol must not self-declare
+         * discovery from that ambiguity alone (confirmed on the bench
+         * 2026-09-16 — see that function's doc). */
+        bool was_discovered = discovery.discovered;
+
+        /* Detection is armed only in scripts that actually react to the
+         * discovered bit (choreoc emits CHOREO_USES_DISCOVERY) — the ring
+         * never looks at it, so a false latch there must not freeze a
+         * robot through the stop-on-discovery reflex below. */
+        bool discovery_armed = false;
+#ifdef CHOREO_USES_DISCOVERY
+        discovery_armed = true;
+#endif
+#ifdef DEMO_DISCOVERY_SINGLE_FINDER
+        int  peer_finder = demo_peer_finder(&wm);
+        if (peer_finder >= 0) {
+            discovery_armed = false;
+        }
+        {
+            static bool ignored_logged;
+            bool ignoring = peer_finder >= 0 && !discovery.discovered &&
+                            (line.left || line.right);
+            if (ignoring && !ignored_logged) {
+                LOG_INF("id=%u dark hit IGNORED — peer %d is already the "
+                        "finder", (unsigned)element_id, peer_finder);
+            }
+            ignored_logged = ignoring;
+        }
+#endif
+
+        bool dark_now = line.left || line.right;
+#ifndef DEMO_DISCOVERY_SINGLE_FINDER
+        /* Outline target (spill): its boundary can be crossed in well under
+         * one poll, so also accept the interrupt-driven ENTRY flags — see
+         * demo_discovery_state_t::confirm_polls, set to 1 at init. */
+        dark_now = dark_now || line.left_entered || line.right_entered;
+#endif
+        /* Forward motion only, and not within 0.5 s of a backup — a robot
+         * that is carried, lifted or rocking back on its wheels sees no
+         * surface, which reads dark.  speed_cmd is last tick's command. */
+        bool motion_ok = demo_discovery_motion_ok(&discovery, speed_cmd,
+                                                   WM_CYCLE_MS);
+        demo_discovery_detect(&discovery,
+                               discovery_armed && motion_ok && dark_now &&
+                               demo_discovery_in_safe_zone(&odo));
+        if (!was_discovered && discovery.discovered) {
+            own_state.discovered = true;
+            LOG_INF("id=%u DISCOVERED the target at est=(%.1f,%.1f)",
+                    (unsigned)element_id, (double)odo.x, (double)odo.y);
+        }
 
         /* Accumulated for the 1 Hz trace below — a single 100 ms poll
          * usually shows 0 edges even seconds after a real crossing
@@ -910,10 +1163,30 @@ int main(void)
         static int last_step = -2;
         if (choreo_script_step() != last_step) {
             last_step = choreo_script_step();
-            LOG_INF("id=%u choreo step %d %s", (unsigned)element_id,
-                    last_step,
+            LOG_INF("id=%u choreo track %u step %d %s", (unsigned)element_id,
+                    (unsigned)choreo_current_track(), last_step,
                     choreo_goal_status() == CHOREO_STATE_SUSPENDED
                         ? "(suspended)" : "");
+        }
+
+        /* One-shot: the first tick this robot's world model shows a PEER's
+         * discovered bit.  Distinguishes "the finder's bit never arrived"
+         * (gossip) from "arrived but the script didn't react" (choreo). */
+        {
+            static bool peer_logged[MAX_ELEMENTS];
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                const wm_entry_t *e = &wm.entries[i];
+                if (e->is_active && !e->is_self && e->state.discovered &&
+                    !peer_logged[i]) {
+                    peer_logged[i] = true;
+                    LOG_INF("id=%u sees peer %u DISCOVERED (peer track %u, "
+                            "own track %u, stale=%d)",
+                            (unsigned)element_id, (unsigned)e->state.id,
+                            (unsigned)e->state.current_track,
+                            (unsigned)choreo_current_track(),
+                            (int)e->is_stale);
+                }
+            }
         }
 
         const tapestry_bse_directive_t *dir = choreo_get_directive();
@@ -936,6 +1209,24 @@ int main(void)
             rate_cmd  = 0.0f;
         }
 
+#ifdef CONFIG_I2C
+        /* A robot that has found the target STOPS, right where it stands
+         * — before (not after) its Choreo track/step catches up.  On king
+         * the finder only migrates to the "anchor" track after
+         * CHOREO_MEMBERSHIP_HOLD_MS (3 s), and in the meantime its own
+         * discovery_any event has already put it on the "ring" step,
+         * anchored on ITSELF: left to the script alone it drives off (host
+         * simulation: ~13 units from the marker, i.e. the anchor ends up
+         * nowhere near it).  On spill the discovery event has no debounce,
+         * but the new step's directive still lags one tick.  Once stopped
+         * here, the HOLD that finally captures its station captures THIS
+         * position. */
+        if (discovery.discovered) {
+            speed_cmd = 0.0f;
+            rate_cmd  = 0.0f;
+        }
+#endif
+
         /*
          * Throttled position/command trace, at LOG_INF so it is visible
          * with zero config change over a plain wired serial connection —
@@ -953,16 +1244,22 @@ int main(void)
         if (trace_accum >= 1000) {
             trace_accum = 0;
             if (dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT) {
-                LOG_INF("id=%u step=%d est=(%.1f,%.1f) tgt=(%.1f,%.1f) "
-                        "spd=%.2f rate=%.2f",
-                        (unsigned)element_id, choreo_script_step(),
+                LOG_INF("id=%u trk=%u step=%d disc=%d est=(%.1f,%.1f) "
+                        "tgt=(%.1f,%.1f) spd=%.2f rate=%.2f",
+                        (unsigned)element_id,
+                        (unsigned)choreo_current_track(),
+                        choreo_script_step(),
+                        (int)own_state.discovered,
                         (double)odo.x, (double)odo.y,
                         (double)dir->target.x, (double)dir->target.y,
                         (double)speed_cmd, (double)rate_cmd);
             } else {
-                LOG_INF("id=%u step=%d est=(%.1f,%.1f) dir=%d "
-                        "spd=%.2f rate=%.2f",
-                        (unsigned)element_id, choreo_script_step(),
+                LOG_INF("id=%u trk=%u step=%d disc=%d est=(%.1f,%.1f) "
+                        "dir=%d spd=%.2f rate=%.2f",
+                        (unsigned)element_id,
+                        (unsigned)choreo_current_track(),
+                        choreo_script_step(),
+                        (int)own_state.discovered,
                         (double)odo.x, (double)odo.y, (int)dir->type,
                         (double)speed_cmd, (double)rate_cmd);
             }

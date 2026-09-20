@@ -173,6 +173,36 @@ config DEMO_MODE_LINE_SENSOR_BENCH
 	  depend on catching a brief transition while physically dragging a
 	  robot around.
 
+config DEMO_MODE_DISCOVERY_BENCH
+	bool "Discovery detection bench: drive straight over the real target marker"
+	help
+	  Diagnostic for choreo-2 ("king")/choreo-3 ("spill") — bench-confirms
+	  demo_discovery_detect() (formation.c) against the real printed
+	  target marker before trusting it in any multi-robot run. Modeled
+	  directly on DEMO_MODE_STRAIGHT_LINE: single robot, no transport/
+	  auto-ID/SCR/Choreo at all, demo_drive_straight() (constant forward
+	  force through the arena fence) seeded at a fixed position/heading
+	  (DEMO_TEST_START_X/Y/HEADING, formation.h — same knobs
+	  DEMO_MODE_STRAIGHT_LINE uses).
+
+	  Unlike STRAIGHT_LINE, this does NOT run grid correction (no
+	  gridline-vs-target disambiguation is needed at all here — see
+	  demo_discovery_detect()'s own doc for why) — it only runs
+	  demo_discovery_detect() against the raw line-sensor reading every
+	  poll, and logs a line every time either sensor reads dark (not
+	  just a periodic trace, so a single confirming pass over the
+	  marker is never lost between 1 Hz status lines) plus one clear
+	  line the moment DEMO_DISCOVERY_CONFIRM_POLLS is reached. The
+	  signal LED goes solid ACTIVE (green) the instant discovery is
+	  confirmed and stays there — a bench-visible confirmation with no
+	  serial cable needed while positioning the robot over the marker.
+
+	  Drive the robot in a straight line across the marker (placed
+	  anywhere along that line, off any gridline — see the marker's own
+	  doc) and confirm: no dark reading anywhere else on the clear
+	  board, a confirmed hit only when crossing the marker itself, and
+	  the LED/log firing on the very pass that crosses it.
+
 endchoice
 
 config DEMO_GRID_CORRECTION

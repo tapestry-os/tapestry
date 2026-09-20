@@ -484,6 +484,138 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
                                  bool left_entered, uint32_t left_entry_ms,
                                  bool right_entered, uint32_t right_entry_ms);
 
+/* ── Discovery detection (choreo-2 "king" / choreo-3 "spill") ────────────── */
+/*
+ * Unlike demo_grid_correct()/demo_grid_heading_correct() above, this does
+ * NOT need to tell a target hit apart from a chessboard gridline crossing
+ * — grid tape is out of scope for king/spill (see ring.choreo.toml-era
+ * decision, 2026-09-16 session), and without it the fabric board itself
+ * never reads IR-dark at all (confirmed on the bench). The only INTENDED
+ * thing that can register on the line sensors is the printed target
+ * marker — but NOT the only thing that actually can: a reflectance IR
+ * sensor cannot tell "dark surface" apart from "no surface at all"
+ * (open air) — both read as near-zero returned IR to a simple threshold
+ * receiver, a real physical ambiguity, not a wiring/calibration issue
+ * (confirmed on the bench 2026-09-16: lifting the robot clear of the
+ * board reads exactly the same L=1 R=1 as the real marker). A robot that
+ * drifts off the physical board edge during the search patrol — a real
+ * risk here, since grid correction is deliberately not used for king/
+ * spill — would otherwise falsely self-declare discovery. See
+ * demo_discovery_in_safe_zone() below, which gates confirmation on the
+ * position estimate being safely interior, for the mitigation; that
+ * function IS position-aware for exactly this reason, unlike
+ * demo_discovery_detect() itself which stays a pure sensor-level
+ * debounce/latch (position-gating lives at the call site — see main.c).
+ *
+ * "Confirmed" still means something beyond just "not off-board": a lone
+ * single-poll dark reading is rejected as a possible glitch (real
+ * hardware does show occasional bounce — see cutebot_line.h) rather than
+ * latched immediately. The 120mm marker (chosen 2026-09-16) at the
+ * fleet's measured ~238 mm/s takes roughly half a second — ~5 polls at
+ * WM_CYCLE_MS=100ms — to cross, so requiring DEMO_DISCOVERY_CONFIRM_POLLS
+ * consecutive dark polls before confirming has wide margin against both
+ * a glitch (one poll) and a genuine miss (the marker is never mistakenly
+ * this narrow).
+ *
+ * Once confirmed, latches permanently — an element does not
+ * un-discover (matches element_state_t::discovered's own doc, wire v6).
+ * Explicit caller-owned state (like demo_odometry_t above), not a
+ * hidden static local, so this is host-testable in isolation.
+ */
+#ifndef DEMO_DISCOVERY_CONFIRM_POLLS
+#define DEMO_DISCOVERY_CONFIRM_POLLS 2u
+#endif
+
+/*
+ * Backing up makes the robot rock and lift its front (an IR sensor that
+ * lifts sees no surface, which reads as dark), so a backup is not allowed
+ * to produce a detection: for DEMO_DISCOVERY_BACKUP_HOLDOFF_MS after the
+ * last reverse command, detection is held off and any run of dark polls in
+ * progress is cleared.  Only FORWARD motion can discover (a robot that is
+ * stationary, lifted by hand, or reversing cannot).
+ */
+#ifndef DEMO_DISCOVERY_BACKUP_HOLDOFF_MS
+#define DEMO_DISCOVERY_BACKUP_HOLDOFF_MS 500u
+#endif
+/* Normalized speed_cmd above which the robot counts as moving forward /
+ * (negated) reversing. */
+#ifndef DEMO_DISCOVERY_MIN_SPEED
+#define DEMO_DISCOVERY_MIN_SPEED 0.02f
+#endif
+
+typedef struct {
+    uint8_t  consecutive_dark_polls;
+    bool     discovered;
+    /* Consecutive dark polls needed to confirm.  demo_discovery_init()
+     * sets DEMO_DISCOVERY_CONFIRM_POLLS (a filled marker is stood on for
+     * several polls); set to 1 for a target whose boundary is only a thin
+     * outline crossed in well under a poll, and feed the interrupt-driven
+     * ENTRY flags (line.left_entered/right_entered) as dark_now so even a
+     * ~20 ms crossing between two polls is seen. */
+    uint8_t  confirm_polls;
+    /* Remaining backup hold-off, ms — see DEMO_DISCOVERY_BACKUP_HOLDOFF_MS. */
+    uint32_t holdoff_ms;
+} demo_discovery_state_t;
+
+/* Zero-initializes — not discovered, no consecutive polls yet, default
+ * confirm count, no hold-off. */
+void demo_discovery_init(demo_discovery_state_t *st);
+
+/*
+ * demo_discovery_motion_ok — call once per tick BEFORE demo_discovery_detect
+ * with the speed command in force this tick and the tick period.  Returns
+ * true only when detection is allowed: moving forward, and not within the
+ * backup hold-off.  A reversing tick (re)starts the hold-off.
+ */
+bool demo_discovery_motion_ok(demo_discovery_state_t *st, float speed_cmd,
+                              uint32_t elapsed_ms);
+
+/*
+ * demo_discovery_detect — feed one poll's raw sensor state in, get back
+ * whether the target has now been (confirmed-)discovered.
+ *
+ *   dark_now — true if EITHER line sensor currently reads dark this
+ *              poll (the caller's line.left || line.right — current
+ *              level, not an edge/entry flag: unlike the grid
+ *              correctors, this wants to know the target is being
+ *              stood on for a sustained run of polls, not that a
+ *              transition just happened).
+ *
+ * Returns st->discovered (so a caller can use the return value directly
+ * without a separate field read). Once true, every subsequent call
+ * returns true immediately regardless of dark_now — sticky, matching
+ * the gossiped bit this feeds.
+ */
+bool demo_discovery_detect(demo_discovery_state_t *st, bool dark_now);
+
+/*
+ * demo_discovery_in_safe_zone — is `odo`'s estimate safely inside the
+ * board, far enough from the true physical edge that a dark reading
+ * here can be trusted as the marker rather than the sensor seeing off
+ * the edge into open air (see this section's own doc above for why that
+ * ambiguity is real and not a calibration bug)?
+ *
+ * Deliberately a much bigger margin than DEMO_ARENA_FENCE_MARGIN — that
+ * constant only bounds how far a COMMANDED force can push the estimate
+ * past the fence, which assumes the estimate is itself accurate; grid
+ * correction (the thing that would keep it accurate) is deliberately
+ * not used for king/spill (see the section doc above), so dead-
+ * reckoning drift alone could put the TRUE position outside the fence
+ * while the ESTIMATE still reads as comfortably inside it. Requiring the
+ * estimate to additionally sit within the checkered play area
+ * ([DEMO_SQUARE_UNITS, WORLD_SIZE - DEMO_SQUARE_UNITS] on both axes —
+ * i.e. inside the physical border ring, not just inside the fence)
+ * spends the whole width of that border ring as drift margin instead of
+ * just DEMO_ARENA_FENCE_MARGIN's narrower one.
+ *
+ * Caller's job to gate demo_discovery_detect()'s own `dark_now` input on
+ * this (see main.c) — kept as a separate function, not folded into
+ * demo_discovery_detect() itself, so that function stays a pure
+ * sensor-level primitive with no position dependency, host-testable
+ * against synthetic sensor sequences alone.
+ */
+bool demo_discovery_in_safe_zone(const demo_odometry_t *odo);
+
 /* ── Formation control ──────────────────────────────────────────────────── */
 
 /*

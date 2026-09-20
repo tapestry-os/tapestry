@@ -200,6 +200,56 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
     return heading_err;
 }
 
+/* ── Discovery detection (choreo-2 "king" / choreo-3 "spill") ────────────── */
+
+void demo_discovery_init(demo_discovery_state_t *st)
+{
+    st->consecutive_dark_polls = 0;
+    st->discovered             = false;
+    st->confirm_polls          = (uint8_t)DEMO_DISCOVERY_CONFIRM_POLLS;
+    st->holdoff_ms             = 0;
+}
+
+bool demo_discovery_motion_ok(demo_discovery_state_t *st, float speed_cmd,
+                              uint32_t elapsed_ms)
+{
+    if (speed_cmd < -DEMO_DISCOVERY_MIN_SPEED) {
+        st->holdoff_ms = DEMO_DISCOVERY_BACKUP_HOLDOFF_MS;
+    } else if (st->holdoff_ms > elapsed_ms) {
+        st->holdoff_ms -= elapsed_ms;
+    } else {
+        st->holdoff_ms = 0;
+    }
+    return st->holdoff_ms == 0 && speed_cmd > DEMO_DISCOVERY_MIN_SPEED;
+}
+
+bool demo_discovery_detect(demo_discovery_state_t *st, bool dark_now)
+{
+    if (st->discovered) {
+        return true;   /* sticky — never re-evaluates once confirmed */
+    }
+
+    if (dark_now) {
+        st->consecutive_dark_polls++;
+    } else {
+        st->consecutive_dark_polls = 0;
+    }
+
+    if (st->consecutive_dark_polls >= st->confirm_polls) {
+        st->discovered = true;
+        LOG_INF("discovery: target confirmed after %u consecutive dark polls",
+                (unsigned)st->consecutive_dark_polls);
+    }
+
+    return st->discovered;
+}
+
+bool demo_discovery_in_safe_zone(const demo_odometry_t *odo)
+{
+    return odo->x >= DEMO_SQUARE_UNITS && odo->x <= (WORLD_SIZE - DEMO_SQUARE_UNITS) &&
+           odo->y >= DEMO_SQUARE_UNITS && odo->y <= (WORLD_SIZE - DEMO_SQUARE_UNITS);
+}
+
 /* ── Force → twist projection (shared by demo_drive_straight and
  * demo_track_target) ─────────────────────────────────────────────────────
  *

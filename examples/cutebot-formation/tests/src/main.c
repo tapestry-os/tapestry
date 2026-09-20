@@ -345,6 +345,163 @@ ZTEST(formation_field, test_track_ignores_stale_peer_repulsion)
                  "a stale peer must not contribute repulsion");
 }
 
+/* ── Discovery detection (choreo-2 "king" / choreo-3 "spill") ────────────── */
+
+ZTEST(formation_field, test_discovery_ignores_a_single_poll_glitch)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+
+    zassert_false(demo_discovery_detect(&st, true),
+                  "one dark poll alone must not confirm (DEMO_DISCOVERY_"
+                  "CONFIRM_POLLS=2)");
+    zassert_false(st.discovered);
+
+    /* Drops back to bright — the glitch must not leave a partial count
+     * that a LATER, unrelated dark poll could complete. */
+    zassert_false(demo_discovery_detect(&st, false));
+    zassert_equal(st.consecutive_dark_polls, 0,
+                  "a bright poll must reset the consecutive-dark counter");
+}
+
+ZTEST(formation_field, test_discovery_confirms_after_consecutive_dark_polls)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+
+    for (uint32_t i = 0; i < DEMO_DISCOVERY_CONFIRM_POLLS - 1u; i++) {
+        zassert_false(demo_discovery_detect(&st, true),
+                      "must not confirm before CONFIRM_POLLS consecutive "
+                      "dark polls");
+    }
+    zassert_true(demo_discovery_detect(&st, true),
+                "must confirm on the CONFIRM_POLLS-th consecutive dark poll");
+    zassert_true(st.discovered);
+}
+
+ZTEST(formation_field, test_discovery_is_sticky_once_confirmed)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+
+    for (uint32_t i = 0; i < DEMO_DISCOVERY_CONFIRM_POLLS; i++) {
+        demo_discovery_detect(&st, true);
+    }
+    zassert_true(st.discovered);
+
+    /* An element does not un-discover — matches element_state_t::
+     * discovered's own doc (wire v6). */
+    zassert_true(demo_discovery_detect(&st, false),
+                "must stay discovered even once the sensor reads bright "
+                "again (driven off the marker)");
+    zassert_true(st.discovered);
+}
+
+/*
+ * demo_discovery_in_safe_zone — bench-confirmed 2026-09-16: lifting the
+ * robot clear of the board reads L=1 R=1, identical to the real marker
+ * (a reflectance sensor cannot tell "dark surface" from "no surface").
+ * The safe zone is the checkered play area ([DEMO_SQUARE_UNITS,
+ * WORLD_SIZE - DEMO_SQUARE_UNITS] on both axes) — inside the physical
+ * border ring entirely, not just inside DEMO_ARENA_FENCE_MARGIN.
+ */
+ZTEST(formation_field, test_discovery_safe_zone_true_at_arena_center)
+{
+    demo_odometry_t odo;
+    demo_odometry_init(&odo, 50.0f, 50.0f);
+    zassert_true(demo_discovery_in_safe_zone(&odo));
+}
+
+ZTEST(formation_field, test_discovery_safe_zone_false_in_the_border_ring)
+{
+    demo_odometry_t odo;
+    /* Just inside DEMO_ARENA_FENCE_MARGIN of the true edge (well within
+     * the border ring, where drift could plausibly have already carried
+     * the real robot off-board) — must be rejected even though the
+     * commanded-force fence itself wouldn't veto here yet. */
+    demo_odometry_init(&odo, 3.0f, 50.0f);
+    zassert_false(demo_discovery_in_safe_zone(&odo));
+
+    demo_odometry_init(&odo, 97.0f, 50.0f);
+    zassert_false(demo_discovery_in_safe_zone(&odo));
+
+    demo_odometry_init(&odo, 50.0f, 3.0f);
+    zassert_false(demo_discovery_in_safe_zone(&odo));
+
+    demo_odometry_init(&odo, 50.0f, 97.0f);
+    zassert_false(demo_discovery_in_safe_zone(&odo));
+}
+
+ZTEST(formation_field, test_discovery_safe_zone_boundary_is_inclusive)
+{
+    demo_odometry_t odo;
+    /* Exactly on the checkered area's own edge (DEMO_SQUARE_UNITS = 10.0
+     * exactly, per formation.h's "Arena scale" doc) — the checkered
+     * playing surface itself is trusted, only the border ring beyond it
+     * is not. */
+    demo_odometry_init(&odo, DEMO_SQUARE_UNITS, 50.0f);
+    zassert_true(demo_discovery_in_safe_zone(&odo));
+
+    demo_odometry_init(&odo, WORLD_SIZE - DEMO_SQUARE_UNITS, 50.0f);
+    zassert_true(demo_discovery_in_safe_zone(&odo));
+}
+
+/* Outline targets (spill): one poll is enough when confirm_polls == 1. */
+ZTEST(formation_field, test_discovery_confirm_polls_of_one_latches_on_a_single_hit)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+    zassert_equal(st.confirm_polls, DEMO_DISCOVERY_CONFIRM_POLLS,
+                  "default confirm count comes from the macro");
+    st.confirm_polls = 1u;
+    zassert_true(demo_discovery_detect(&st, true),
+                 "a single hit must latch when confirm_polls == 1");
+}
+
+/* Only FORWARD motion may discover. */
+ZTEST(formation_field, test_discovery_motion_ok_requires_forward_motion)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+    zassert_true(demo_discovery_motion_ok(&st, 0.5f, 100u));
+    zassert_false(demo_discovery_motion_ok(&st, 0.0f, 100u),
+                  "stationary (lifted / carried) cannot discover");
+    zassert_false(demo_discovery_motion_ok(&st, 0.01f, 100u),
+                  "below the minimum speed counts as stationary");
+}
+
+/* A backup rocks the front up; detection stays off for the hold-off. */
+ZTEST(formation_field, test_discovery_motion_ok_holds_off_after_a_backup)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+
+    zassert_false(demo_discovery_motion_ok(&st, -0.3f, 100u), "reversing");
+    /* Forward again immediately — still inside the 500 ms hold-off. */
+    for (uint32_t t = 100u; t < DEMO_DISCOVERY_BACKUP_HOLDOFF_MS; t += 100u) {
+        zassert_false(demo_discovery_motion_ok(&st, 0.5f, 100u),
+                      "still held off %u ms after the backup", (unsigned)t);
+    }
+    zassert_true(demo_discovery_motion_ok(&st, 0.5f, 100u),
+                 "detection resumes once the hold-off has elapsed");
+}
+
+ZTEST(formation_field, test_discovery_backup_restarts_the_holdoff)
+{
+    demo_discovery_state_t st;
+    demo_discovery_init(&st);
+    demo_discovery_motion_ok(&st, -0.3f, 100u);
+    for (int i = 0; i < 3; i++) {
+        demo_discovery_motion_ok(&st, 0.5f, 100u);
+    }
+    demo_discovery_motion_ok(&st, -0.3f, 100u);   /* second backup */
+    for (int i = 0; i < 4; i++) {
+        zassert_false(demo_discovery_motion_ok(&st, 0.5f, 100u),
+                      "hold-off restarted by the second backup");
+    }
+    zassert_true(demo_discovery_motion_ok(&st, 0.5f, 100u));
+}
+
 ZTEST_SUITE(formation_field, NULL, NULL, NULL, NULL, NULL);
 
 /* ── Choreo script (L6 BSE + L7 Choreographer, singleton per process) ─────── */
