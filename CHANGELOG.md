@@ -5,242 +5,100 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-19
+
+> **Breaking:** wire v4 → v6 (v5 added the directive frame, v6 the discovery
+> bit). 1.0.0 and 1.1.0 elements do not interoperate; reflash every element
+> from one build.
+
 ### Added
-- **Warehouse AMR example** (`examples/webots-warehouse/`) — eight simulated
-  differential-drive warehouse robots running the real, unmodified L3-L7
-  stack against Webots physics, in three scenes with no coordinator in any
-  of them (decentralized pick-zone allocation, RF partition recovery, and
-  hard-failure task reallocation — the latter uses a ring formation, not a
-  line, so losing 1 of 8 evenly-spaced points is actually visible rather than
-  a sub-meter nudge along a face), plus two comparison scenes (2B, 3B) that
-  put a small centrally-coordinated "cloud" fleet on the same floor under the
-  same fault, side by side with the Tapestry fleet. The comparison fleet
-  (`controllers/cloud_bot/`, `controllers/cloud_coordinator/`) is an
-  honestly-labeled architectural analog for centralized/cloud-dependent
-  coordination, not a reimplementation of any specific real framework, and
-  links no Tapestry L3-L7 source at all, by design. Scene 2B crosses the same
-  RF-opaque steel deck as scene 2; its robots freeze permanently the instant
-  they lose line of sight to their one coordinator, while the Tapestry fleet
-  keeps working on both sides of the split. Scene 3B orbits a second ring
-  under continuous coordinator control and kills the coordinator itself (not
-  a peer) at the same instant scene 3 kills a Tapestry peer: all four cloud
-  robots freeze permanently mid-orbit within the same 1500 ms grace period
-  Tapestry uses for its own peer-staleness detection, while the Tapestry
-  fleet loses one of eight and self-heals. Two additive
-  changes to `webots-formation/controllers/common/`, both no-ops for the
-  drone build: `udp_posix_set_rx_filter()` (a receive-side predicate,
-  default NULL) and `#ifndef` guards around `tracker.h`'s `DEMO_*` constants
-  so a substrate at a different physical scale can override them.
-- **Remote L6 directive path over the wire** (`TAPESTRY_MSG_DIRECTIVE`, wire
-  v5) — an edge/cloud BSE host (or an elected `SCR_CAP_BSE_HOST` element)
-  can now stream per-element directives that steer an element directly,
-  instead of every element only ever running its own local BSE. The local
-  BSE and script keep ticking the whole time regardless, so falling back
-  is bumpless by construction — never a resume-from-freeze. Bumps
-  `TAPESTRY_WIRE_VERSION` to 5.
-- **Element departure policy** — a peer that stops participating
-  (self-declared `ELEMENT_HEALTH_DEPARTED`, `csm.h` — wire-additive, no
-  `TAPESTRY_WIRE_VERSION` bump — or inferred `LOST` past
-  `WM_EXPIRE_THRESHOLD_MS`) now drives a configurable survivor response
-  instead of only being silently excluded from collective predicates.
-  `choreo_collective_achieved()`'s existing exclusion is now also applied
-  in `bse.c`'s `collect_participants()`/`lookup_anchor_position()`
-  (swap-partner selection, centroid math) and `scr.c`'s quorum
-  denominator, both of which previously kept counting a landed-but-still-
-  gossiping peer indefinitely; `scr.c` also gains a vacuous-solo override
-  once every known peer has explicitly departed. A new policy engine in
-  `choreo.c` supports `continue` (default) / `hold` / `land_in_place` /
-  `recall`, set via `.choreo.toml`'s `mode = "ap"|"cp"` dial or a more
-  specific `[on_departure]` table, with a per-step override — checked
-  before the achieved/`scope="all"` fallback, so `cp` mode also prevents a
-  survivor from vacuously passing a collaborative step its partner
-  aborted out of mid-task — an outcome real hardware flights produced,
-  not a hypothetical. Physical/safety checks
-  (`formation.c` separation, `EXCHANGE`-occupied, `DISPERSE` spacing)
-  deliberately still treat a departed peer as a real obstacle.
+- **Discovery** (wire v6): an application-latched `discovered` bit is gossiped
+  (`element_state_t::discovered`). Choreo reacts via `anchor = "discoverer"`
+  (`TAPESTRY_BSE_ANCHOR_DISCOVERER`), events `discovery` (own bit) and
+  `discovery_any` (any peer's, not track-filtered), and track filter
+  `discovered = true`. `choreoc` emits `CHOREO_USES_DISCOVERY` for scripts
+  that use it.
+- **Cutebot Webots substrate** (`webots-formation/controllers/cutebot/`,
+  `CutebotRover.proto`, `ring_cutebot.wbt`, `ci-check-cutebot/`) running
+  `ring.choreo.toml` on the real L3-L7 stack. Adds `substrate_identify()`
+  (no-op on other substrates).
+- **Warehouse AMR example** (`examples/webots-warehouse/`): eight simulated
+  robots in three coordinator-free scenes (zone allocation, RF-partition
+  recovery, failover) plus two centrally-coordinated comparison scenes.
+  Additive, drone-neutral changes in `webots-formation/controllers/common/`:
+  `udp_posix_set_rx_filter()` and `#ifndef`-guarded `tracker.h` constants.
+- **Remote L6 directive path** (`TAPESTRY_MSG_DIRECTIVE`, wire v5): an
+  edge/cloud BSE host can stream per-element directives; the local BSE keeps
+  running, so fallback is bumpless.
+- **Element departure policy:** a departed or lost peer drives a configurable
+  survivor response — `continue` (default), `hold`, `land_in_place`,
+  `recall` — via `mode = "ap"|"cp"` or `[on_departure]`, with a per-step
+  override. `ELEMENT_HEALTH_DEPARTED` is wire-additive. Departed peers are
+  excluded from `collect_participants()`, anchor lookup and the SCR quorum
+  denominator; physical-safety checks still treat them as obstacles.
 
 ### Changed
-- **`cutebot-formation`'s L4-only spring-field showcase mode removed.**
-  `DEMO_MODE_SHOWCASE` (`demo_compute_drive()`, `SPRING_K`,
-  `FORCE_START`/`FORCE_STOP`) was kept as a fallback in case the L5/L6/L7
-  Choreo path (`DEMO_MODE_CHOREO`) didn't pan out on real hardware. It
-  did: choreo-1 (`ring.choreo.toml`) ran cleanly on four physical robots
-  2026-09-12 after the FORM/HOLD-debounce and sync-barrier fixes below,
-  with no jitter and no fallback needed. `DEMO_MODE_CHOREO` is now the
-  only normal build mode; the diagnostic single-robot modes
-  (`STRAIGHT_LINE`, `CONVERGE_TEST`, `WHEEL_CHARACTERIZE`,
-  `LINE_SENSOR_BENCH`) are unaffected. CI's separate showcase-mode build
-  job is removed accordingly.
+- **Wire v6 frame is 49 bytes** (43 in v4/v5): `discovered` byte,
+  `health_flags` widened to u16, four reserved bytes ahead of `version`.
+- **`cutebot-formation`:** spring-field showcase mode removed
+  (`DEMO_MODE_CHOREO` is the only normal mode; the diagnostic modes are
+  unaffected). CI's showcase build job is removed.
+- **Cutebot ring reliability (4 robots, hardware):** `ring.choreo.toml` uses
+  `frame = absolute`, settles into a HOLD and re-forms only on debounced
+  `element_lost`/`element_joined`; the sync barrier is unbounded and
+  debounced; `WM_STALE_THRESHOLD_MS` is app-overridable (cutebot: 3000);
+  BLE RX queue 8 → 32; adds `demo_grid_heading_correct()` and
+  `CONFIG_DEMO_GRID_CORRECTION`.
+- **Cutebot line-sensor bench** logs P13/P14 only (P11/P12 never toggle).
 
 ### Fixed
-- **`cf21bl-formation`'s `DEMO_MIN_SEP_M` separation check was inert whenever
-  no peer was fresh.** `demo_compute_drive()` and `demo_choreo_track()` both
-  skipped every `is_stale` entry when computing `min_dist_m`, returning
-  `-1.0f` ("no data") — but `is_stale` only means "no gossip in
-  `WM_STALE_THRESHOLD_MS` (1500 ms)", while the entry keeps its last-known
-  position until `WM_EXPIRE_THRESHOLD_MS` (5000 ms). Flight 25 spent ~57%
-  of its status samples (27/45 and 24/45) at `min_d = -1.00`, i.e. with no
-  separation checking at all. Distance is now measured over every *active*
-  peer via the new `demo_min_separation()`; the repulsion **force** still
-  acts on fresh peers only (a stale position is fine to warn about, not to
-  steer by). Both drives gained a `demo_sep_t *sep_out` parameter carrying
-  the nearest contributor's staleness and age, so a violation measured off
-  a remembered position logs as `separation violation (last known, Nms
-  stale)` rather than being mistaken for a confirmed close pass, and the
-  1 Hz status line marks such a distance `min_d=0.42*`. `min_d = -1.00` and
-  `separation UNKNOWN` now mean every peer has actually expired. The
-  choreo `SUSPENDED`/`HOLD`-directive path, which runs no drive at all,
-  measures separation directly for the same reason.
-- **A fix-loss "hold" was a coast, not a hover — closed with active
-  braking plus an independent distance backstop.** `cf21bl-formation`
-  flight 49 (2026-09-01): occluding one drone's lighthouse beacon
-  mid-arc produced 1.56 m of real drift in ~5.3 s blind, breaching the
-  2.0 m geofence. With no velocity sensor once the fix drops, the prior
-  session's "stop leaning, ride out on drag" fallback was, in practice,
-  "continue at whatever velocity existed the instant the fix died,
-  decaying only on drag" — negligible at these speeds — and the same
-  session's extension of `FIX_LOSS_GRACE_MS` to 10 s (from 2 s) gave that
-  coast up to 3 m of room instead of ~0.6 m.
-  `cf21bl_stabilizer.c` now applies a short, open-loop braking pulse on
-  fix loss: the position loop's own `CF21BL_POS_KD` damping gain
-  (already flight-validated, not a new untested constant), fed the
-  body-frame velocity captured at the instant the fix dropped, ramped
-  linearly to zero over `CF21BL_BRAKE_MS` (800 ms) and clamped by the
-  existing `CF21BL_POS_OLIM_RAD`. Best-effort by construction — there is
-  nothing to close the loop on once blind — so `main.c` no longer trusts
-  it alone: a new coast-budget backstop lands independently the instant
-  a coast at the demo's own top speed (`DEMO_MAX_SPEED_MPS`), sustained
-  for the whole blind duration so far and aimed straight away from the
-  origin, would breach the geofence — deliberately pessimistic, and
-  bounded by distance from the ORIGIN-RELATIVE position at the moment
-  the fix was lost rather than by time alone, so a drone that goes blind
-  already near the geofence edge gets a correspondingly shorter grace
-  than one that goes blind near the origin. Would have caught the
-  flight-49 drift at ~2.6 s in, landed in place, well short of the
-  breach. Not flight-tested yet — this needs a bench and then a
-  controlled-occlusion check before trusting it on a real script.
-- **The landing assumed flat ground at the takeoff altitude.**
-  `cf21bl_stabilizer.c`'s forced-landing descent walked its target down to
-  a fixed ground-relative altitude of 0 and declared touchdown there — on
-  a platform, a step, a slope, or a takeoff point that was not itself at
-  floor level, that either cuts thrust while still airborne (a rise) or
-  never fires at all until the outer `LAND_FORCE_DISARM_MS` backstop
-  forces it on a stale error (a valley). Touchdown is now "commanding a
-  lower altitude no longer produces one": the target keeps walking down
-  unconditionally, and a rolling `CF21BL_LAND_STALL_WINDOW_MS` window
-  checks the MEASURED altitude for continued descent — under
-  `CF21BL_LAND_STALL_EPS_M` and it is likely resting on something,
-  whatever height that turns out to be, held for `CF21BL_LAND_SETTLE_MS`
-  before latching. A window that shows real descent resets the settle
-  clock, so ordinary controller lag at the start of a descent
-  self-corrects rather than needing to be special-cased. Both stall
-  constants are bench-tuning starting points, not validated figures —
-  ground-effect turbulence and sensor noise near the floor are the real
-  unknowns here, not the algorithm.
-- **Fix-loss hold extended from 2 s to 10 s, backed by an honest wire
-  signal instead of a bare timer.** A dropout was already handled as
-  "stop and hover, wait for the fix" — `sp.linear.x/y` zero, and with
-  `CONFIG_CF21BL_LIGHTHOUSE_POS_HOLD` the stabilizer's own fix-lost path
-  already drops its position correction to zero on the identical
-  condition, so the fallback was already level attitude with no commanded
-  lean, not the "velocity feedforward" its own log line claimed (fixed;
-  that path is dead code whenever `LIGHTHOUSE_POS_HOLD` is on, which
-  Kconfig requires for `CF21BL_ANGLE_MODE` anyway). `own_pos_m` was
-  already held, not zeroed, and kept being gossiped through the outage —
-  but as an ordinary-looking position, indistinguishable from a live one
-  to any receiver. The new `ELEMENT_HEALTH_POSITION_STALE` flag (distinct
-  from `ELEMENT_HEALTH_NO_POSITION`: this is a real last-known
-  measurement, not a placeholder — it stays visible to separation,
-  repulsion, and RTH deconfliction, the same as any other stale-but-active
-  peer) now says so on the wire. `FIX_LOSS_GRACE_MS` moves to 10 s on the
-  strength of that signal plus the home-across-dropout fix above: neither
-  a longer wait re-origining the control frame nor a stale position
-  passing as fresh is possible any more, so extending the hold no longer
-  trades safety for patience. No compile-time override was added — the
-  constant is just raised.
-- **The landing cut thrust in mid-air.** `cf21bl_stabilizer.c` treated
-  `linear.z < -0.9` as "application wants motors off", but with
-  `CF21BL_ALT_SP_OFFSET = 1.0` that value is a *commanded altitude of
-  0.10 m* — so `cf21bl-formation`'s landing, which walked its own altitude
-  target down at 0.30 m/s, tripped the sentinel at 0.10 m while the
-  airframe still lagged above it and dropped the rest of the way. The
-  2026-07-19 flight 10 fix addressed the disarm half of this (the measured
-  touchdown gate) but not the thrust half: by the time that gate runs, the
-  motors have been idle for ~0.27 s. The sentinel is now the named
-  `CF21BL_IDLE_SP_Z` at -0.98 (a 2 cm dead band, not 10 cm), and the demo
-  hands its descent to the new `cf21bl_stabilizer_request_land()` — the
-  same closed-loop profile the stale-setpoint and critical-battery paths
-  already used, which walks the target down from the MEASURED altitude and
-  cuts on ground settle rather than on the target reaching a number.
-  Landing is gated on `cf21bl_stabilizer_is_landed()`, with the measured
-  lighthouse check and `LAND_FORCE_DISARM_MS` retained as an independent
-  backstop and as the whole gate on builds without
-  `CONFIG_CF21BL_ALTITUDE_HOLD`. Narrowing the sentinel also keeps
-  lighthouse position hold engaged down to 0.02 m instead of dropping out
-  at 0.10 m, so the airframe no longer slides during the final descent.
-- **A lighthouse fix dropout silently re-origined the position control
-  frame.** `cf21bl_stabilizer.c` cleared `g_pos_home_set` on fix loss — as
-  the once-per-outage latch for its "LH2 fix lost" warning — which made the
-  capture block above it re-latch `home` to wherever the drone had drifted
-  to on the next valid fix. The whole position loop is home-relative
-  (`ex = (g_pos_home_x + sp_x) - lhpos.x`), so every commanded position
-  after a dropout inherited that offset, and
-  `cf21bl_stabilizer_get_pos_home()` handed the same wrong point to the
-  demo's return-to-home. Home is a point in the lighthouse world frame and
-  that frame does not move when the fix drops: it is now held across an
-  outage and released on return to idle, i.e. at the takeoff/landing
-  boundary. The warning keeps its once-per-outage throttle via a separate
-  flag. 
-- **Return-to-home could aim at a spot a peer was parked on.** The
-  battery-preempt RTH goal targets this drone's own takeoff point, which
-  after an `exchange` step is exactly where the partner is — and RTH ends
-  in a landing, so the goal point itself was the collision, somewhere the
-  in-flight repulsion cannot help. `demo_deconflict_point()` now pushes the
-  destination clear of every active, localized peer before the goal is
-  submitted, and the preempt log line says when it did. 
-- **An element with no position fix gossiped a placeholder that peers
-  measured against.** `own_state.position` is zero-init until the first
-  fix, and gossip is deliberately unconditional (discovery and auto-ID
-  recovery depend on being heard before anyone is localized). Such an
-  element now advertises the new `ELEMENT_HEALTH_NO_POSITION` flag, and
-  `formation.c` excludes those entries from the separation scan, both force
-  loops, and landing-point deconfliction. Additive bit on an already-wire-
-  visible field — no `TAPESTRY_WIRE_VERSION` bump. 
-- **The 1 Hz status line could not say why it was showing what it showed.**
-  Two ambiguities, both of which cost a flight's worth of diagnosis:
-  `min_d=-1.00` was printed both when the scan ran and found no live peer
-  and when no scan ran at all (own fix lost, `RAMPING`, `LANDED`) — the
-  latter now carries a `?` suffix, alongside the existing `*` for a stale
-  contributor; and `step=-1` means both "script complete" and "script
-  parked by a preempting goal", so a preempted element now prints
-  `step=-1(preempt)`. `FLIGHT_LANDING` also measures separation now
-  instead of reporting `-1.00` for the whole descent.
-- **`CONFIG_DEMO_MODE_SHOWCASE=y` did not compile.** `cf21bl-formation`'s
-  legacy showcase mode had two unguarded choreo-mode-only references in
-  `main.c`: `log_min_dist_m` (declared inside `#ifdef
-  CONFIG_DEMO_MODE_CHOREO`, assigned outside it) and
-  `choreo_current_indicator()` (whose header is only included in choreo
-  mode). Both are now guarded; showcase links again, with
-  `SUBSTRATE_SIGNAL_NONE` as its indicator — the same
-  quorum/freshness LED heuristic it had before per-step indicators existed.
-- **`HOLD` baked in tracker overshoot no longer a permanent station offset.**
-  `HOLD` now inherits the prior intent's own achieved `MOVE_TO_POINT` goal point
-  when one exists, rather than the live position at the moment it took
-  over.
-- **A cutebot booting in isolation (no peers yet negotiated) recovers.**
-  The self-healing renegotiation retry already validated in
-  `cf21bl-formation` (`transport_negotiate_id_retry()`) is now shared via
-  `transport.c`, so cutebot gets it too.
-- **`choreo_collective_achieved()` had no track filter.** It iterated
-  every active peer with no `current_track` comparison, so on a
-  multi-track script a peer working a *different* track could block a
-  `scope = "all"` step on this one. `bse.c`'s `collect_participants()`
-  already filters the collective centroid by `current_track`; the
-  achievement predicate now applies the same filter. Latent until now —
-  no shipped script uses tracks yet.
-- **`form-grid`'s vertex spacing changed to align with Demo spacing**
-  `radius` is now 50 (400 mm, 2.5x the floor) in line with `formation.c`'s
-  current `DEMO_TARGET_SPACING`.
+- **FORM ignored tracks in C:** `bse.c` took rank/count from L5, so a peer on
+  another track still claimed a vertex. It now uses the track-aware
+  `collect_participants()` (L5 quorum gate kept).
+- **Peer barriers never advanced the Lamport clock:** `wm_update_self()` was
+  not called, so each peer was accepted once then rejected until expiry.
+  LEDs flapped fresh/stale and barriers passed only by coincidence. Fixed in
+  cutebot (swarm and `CONVERGE_TEST`), Webots cutebot and `cf21bl-formation`
+  (cf21bl: host-tested, not yet flown).
+- **`cf21bl` `DEMO_MIN_SEP_M` was inert when no peer was fresh:** separation
+  is now measured over every active peer (`demo_min_separation()`); the force
+  still acts on fresh peers only. The status line marks a stale contributor
+  (`*`) and no scan (`?`).
+- **Fix-loss hold was a coast, not a hover:** `cf21bl_stabilizer` now brakes
+  (`CF21BL_POS_KD` on the velocity at loss, ramped over `CF21BL_BRAKE_MS`)
+  and a coast-budget backstop lands before a geofence breach. Not
+  flight-tested.
+- **Fix-loss hold extended from 2 s to 10 s,** made safe by the new
+  wire-visible `ELEMENT_HEALTH_POSITION_STALE` flag and by holding `home`
+  across a dropout.
+- **Landing assumed flat ground:** touchdown is now "a lower commanded
+  altitude no longer produces descent" (`CF21BL_LAND_STALL_*`, bench-tuning
+  starting points, not validated).
+- **Landing cut thrust mid-air:** the idle sentinel is narrowed to
+  `CF21BL_IDLE_SP_Z` (-0.98) and the demo lands via
+  `cf21bl_stabilizer_request_land()`; the measured-touchdown check and
+  `LAND_FORCE_DISARM_MS` remain as backstops.
+- **A fix dropout re-origined the position frame:** `home` is held across an
+  outage and released on return to idle.
+- **Return-to-home could target a spot a peer occupied:**
+  `demo_deconflict_point()` pushes it clear of localized peers.
+- **Unlocalized elements gossiped a placeholder position:** they now set
+  `ELEMENT_HEALTH_NO_POSITION` (wire-additive) and `formation.c` excludes
+  them from separation, force and deconfliction.
+- **1 Hz status line ambiguities:** `min_d` gets a `?` suffix when no scan
+  ran, a preempted element prints `step=-1(preempt)`, and landing now
+  measures separation.
+- **`cf21bl` `CONFIG_DEMO_MODE_SHOWCASE=y` did not compile:** unguarded
+  choreo-only references are now guarded.
+- **`HOLD` inherits the prior achieved goal point,** not the live position
+  after tracker overshoot.
+- **An isolated cutebot boot recovers** via the shared
+  `transport_negotiate_id_retry()`.
+- **`choreo_collective_achieved()` had no track filter:** a peer on another
+  track could block a `scope = "all"` step.
+- **`form-grid` `radius` is now 50** to match `DEMO_TARGET_SPACING`.
+- **Webots cutebot `choreo_script.h` was stale;** regenerated from
+  `ring.choreo.toml`.
 
 ## [1.0.0] - 2026-08-27
 
@@ -923,7 +781,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for all three hardware targets and Phase 2 firmware
 - `CODE_OF_CONDUCT.md`, `SECURITY.md`
 
-[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/tapestry-os/tapestry/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tapestry-os/tapestry/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/tapestry-os/tapestry/compare/v0.7.0...v0.8.0
