@@ -69,8 +69,81 @@ python3 sdk/tools/choreoc.py tapestry/examples/cutebot-formation/ring.choreo.tom
     -o tapestry/examples/cutebot-formation/src/choreo_script.h
 ```
 
-A second script, `form-grid.choreo.toml` (the earlier near-square grid),
-also lives in this directory and can be compiled the same way.
+Other scripts in this directory compile the same way (swap the `.toml` name;
+`src/choreo_script.h` stays the ring unless you deliberately regenerate it):
+`form-grid.choreo.toml` (the earlier near-square grid), and the two
+discovery demos below.
+
+### Discovery demos: `king.choreo.toml` and `spill.choreo.toml`
+
+A hidden **IR-dark target** is printed on the board (ink or IR tape — the
+fabric chessboard itself does not read dark).  A **120 mm printed disc** is
+what king was validated with.  Each robot patrols the board, and when a
+ground IR sensor confirms a dark hit it latches `discovered` — a wire v6 field — and
+**stops where it stands**.
+
+- **king** — the finder freezes (indicator green, own track); everybody else,
+  on any peer's discovery, forms a circle of radius 20 around the finder
+  (`anchor = discoverer`), ring split evenly among the searchers, then holds.
+  Robots that finish the lap without hearing of a discovery hold orange.
+- **spill** — no ring, no tracks: each robot that crosses the (larger, odd)
+  target stops on its own edge, green; robots that never touch it hold
+  orange.  The finished picture is the target's cordon.
+
+Build and flash (from the workspace root; the committed ring header is
+untouched if you write the header to a scratch copy, or regenerate it
+back afterwards):
+
+```sh
+python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cutebot-formation/king.choreo.toml \
+    -o tapestry/examples/cutebot-formation/src/choreo_script.h
+west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation -p always \
+    -- -DCONFIG_DEMO_GRID_CORRECTION=n
+```
+
+**Turn grid correction off for these demos** (`DEMO_GRID_CORRECTION` defaults to `y`): it
+snaps the position estimate to the nearest gridline on ANY dark hit, so the
+marker itself would shift the finder's estimate by up to ~5 units — and the
+ring anchors on that estimate.  The host simulation assumed it off.
+
+**Detection rules** (`demo_discovery_detect()` and its gates in `main.c`):
+- Only a robot driving **forward** can discover; a robot that is stationary,
+  lifted by hand, or within **0.5 s of a backup** (the front rocks up and reads
+  dark) cannot.
+- **king** (filled disc): two consecutive dark polls, and once any peer's
+  discovered bit is visible the robot ignores its own dark hits (one finder).
+- **spill** (boundary outline of any width): a single sensor entry edge is
+  enough — the line sensors are interrupt-driven, so even a ~20 ms crossing
+  between two polls counts — and every robot that crosses stops.
+- Armed only for scripts that react to the bit (`CHOREO_USES_DISCOVERY`, emitted
+  by `choreoc`); the ring is untouched.
+
+**Wire v6:** the gossip frame grew (49 bytes, `discovered`, 16-bit
+`health_flags`, reserved bytes), so every robot must be reflashed from the
+same build — v5 and v6 firmware ignore each other.
+
+**Bring-up:** `-- -DCONFIG_DEMO_MODE_DISCOVERY_BENCH=y` drives one robot
+straight and logs every dark hit; lift the robot and the sensors see "no
+surface", which reads dark too, so detection is gated to the trusted playing
+area `[10, 90]` (`demo_discovery_in_safe_zone()`).  The blue lift LEDs are
+deliberately not used.
+
+**Placement constraints** (from host simulation of 4 robots with wheel
+mismatch and 20% gossip loss — dead reckoning only, grid correction off):
+- Robots start on a cross about the centre (ids 0/1/2/3 at E/N/W/S, ±10).  A
+  target within ~15 units of the centre is "found" at t = 0.
+- The patrol is 9 circle legs of radius 20 (a translated copy of the boot
+  formation), ideal coverage ~71% of marker positions; the outer band and
+  the inner corners between lines can be missed.  A marker is only found if
+  some robot's path crosses it.
+- king's ring needs room: keep the target at least ~27 units from every
+  edge, else ring slots sit on the fence and drifted robots leave the board
+  (worst in simulation: target at (25,25) — off-board robots in 5/8 seeds;
+  a target near (30,70) — 0/8).
+- Two robots may cross the target before the first one's ring forms; the
+  lowest-id discoverer then anchors the ring.
+- Accumulated drift over the ~2 min lap is uncorrected: expect final
+  positions off by several units.
 
 ## Hardware
 

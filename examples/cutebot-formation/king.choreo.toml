@@ -1,0 +1,247 @@
+# king.choreo.toml — "Choreo 2": search the arena for a hidden IR-dark
+# target marker; whichever robot finds it anchors a ring around itself.
+# This is the ONLY file to edit to change the show.  Regenerate the
+# committed header afterwards, then rebuild:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/king.choreo.toml \
+#       -o tapestry/examples/cutebot-formation/src/choreo_script.h
+#
+# Units are this app's abstract [0, WORLD_SIZE] world (WORLD_SIZE=100,
+# csm.h), NOT metres — same convention ring.choreo.toml uses.  The
+# checkered 8x8 spans units [10, 90] (formation.h's "Arena scale").
+#
+# Mechanism:
+#   - Every element starts on the "searcher" track (catch-all) and patrols.
+#   - demo_discovery_detect() (formation.c/main.c) runs every tick,
+#     independent of this script: once a robot's own line sensors confirm a
+#     dark hit on the printed marker (the fabric board itself never reads
+#     IR-dark), main.c latches own_state.discovered, STOPS the robot where
+#     it stands, and gossips the bit (wire v6).
+#   - That robot's own bit makes it match the "anchor" track's filter on
+#     the next debounced track-selection epoch (CHOREO_MEMBERSHIP_HOLD_MS)
+#     — it migrates there and simply holds, the ring's centre.
+#   - Every OTHER robot sees the bit over gossip and reacts via the
+#     discovery_any event on its current step (own OR any peer's bit,
+#     deliberately not track-filtered — see choreo.h), jumping to "ring":
+#     FORM a circle anchored on TAPESTRY_BSE_ANCHOR_DISCOVERER.  The
+#     discoverer is on a different track, so bse.c's track-scoped
+#     collect_participants() leaves it out of the ring's rank/count — the
+#     ring divides evenly among the robots still searching.
+#
+# PLACEMENT (the demo's setup constraints, from host simulation):
+#   - The anchor must be >= ~27 units (about 340 mm) from EVERY board edge,
+#     or a ring vertex (radius 20 + the arena fence's 6.3-unit margin) lands
+#     off the board.
+#   - Keep the marker off the robots' boot positions (the central cross,
+#     within ~15 units of the centre) — a robot standing on it "discovers"
+#     at t = 0.
+#
+# Patrol: nine FORM circle legs of radius 20 around a moving centre — the
+# outer loop (with edge midpoints), then the middle.  Why FORM circle and not
+# MOVE (an earlier draft of this file used MOVE, and it does not work):
+#   - MOVE re-snapshots each robot's offset from the group centroid at every
+#     leg.  The boot formation is 14 units across but DEMO_TRACK_MIN_SEP is
+#     25.3, so repulsion keeps robots off their targets, the next leg's
+#     offsets are taken from that distorted shape, and the error compounds
+#     leg over leg until targets leave the board (host-simulated: a target at
+#     y=104.8).  FORM's slots are ABSOLUTE and rank-based — nothing to
+#     snowball — and radius 20 makes adjacent robots 28 units apart, clear of
+#     MIN_SEP.
+#   - The circle (rather than GRID) is deliberate: its rank -> angle mapping
+#     matches the boot placement (ids 0/1/2/3 at east/north/west/south), so a
+#     leg is a pure TRANSLATION of the boot formation — no robot crosses the
+#     cluster to reach a slot on the far side (GRID slots are by id, so id0
+#     starting east was sent to the SW corner).  Host simulation, four robots
+#     with per-robot wheel/speed error and 20% gossip loss: 0 of 8 seeds left
+#     the board, versus most seeds for a GRID patrol.
+#   - Waypoint centres keep every robot inside [12,88], i.e. inside the
+#     playing area demo_discovery_in_safe_zone() trusts.
+# Every leg is SELF-scoped (the default): each robot advances on its OWN
+# achievement.  The collective predicate (scope = "all") is not a barrier —
+# an early advancer's achieved bit flips on its next step, stranding the
+# rest until their timeouts (observed in simulation: legs took the full
+# timeout).
+#
+# SINGLE PASS, not a loop: a second lap walks the same lines (no new
+# coverage) while uncorrected dead-reckoning drift keeps accumulating — grid
+# correction is deliberately off for this demo (no IR tape on the grid).
+# Ideal coverage of the [10,90] board is ~71% of marker positions, and a
+# marker is only guaranteed found where a robot's path crosses it — see the
+# README's coverage map for where to place it.  A robot that finishes the
+# lap without finding anything holds at "searched" with an orange
+# (degraded) indicator.
+
+choreo = "king"
+
+[[tracks]]
+# The finder's own track — matches ONLY once this element's own gossiped
+# discovered bit is set (self-evaluated, never a peer's).  Declared FIRST:
+# selection is first-match-wins.
+filter = { discovered = true }
+
+[[tracks.steps]]
+# Station-keep where discovery happened — the ring's centre.  Safety-net
+# duration only; this track has no cycle, so it needs no max_runtime.
+hold = { duration = "10min", requires = ["locomotion"], indicator = "active" }
+
+[[tracks]]
+# Catch-all: everyone starts here.  Cyclic (ring <-> settled) so it needs
+# its own max_runtime.
+max_runtime = "15min"
+
+[[tracks.steps]]
+name = "leg1"
+[tracks.steps.form]
+shape    = "circle"
+target   = [32.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg2"
+[tracks.steps.form]
+shape    = "circle"
+target   = [50.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg3"
+[tracks.steps.form]
+shape    = "circle"
+target   = [68.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg4"
+[tracks.steps.form]
+shape    = "circle"
+target   = [68.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg5"
+[tracks.steps.form]
+shape    = "circle"
+target   = [68.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg6"
+[tracks.steps.form]
+shape    = "circle"
+target   = [50.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg7"
+[tracks.steps.form]
+shape    = "circle"
+target   = [32.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg8"
+[tracks.steps.form]
+shape    = "circle"
+target   = [32.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "leg9"
+[tracks.steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+# Lap finished without finding anything — hold, orange.  Still listens: a
+# slower robot may yet find it and the rest must join the ring.
+name = "searched"
+[tracks.steps.hold]
+duration  = "10min"
+requires  = ["locomotion"]
+indicator = "degraded"
+on        = [ { event = "discovery_any", goto = "ring" } ]
+
+[[tracks.steps]]
+name = "ring"
+[tracks.steps.form]
+shape         = "circle"
+frame         = "element"
+anchor        = { select = "discoverer" }
+radius        = 20.0
+until         = "achieved"
+eps           = 3.0
+settle        = "2s"
+timeout       = "90s"
+requires      = ["locomotion"]
+indicator     = "active"
+telemetry_tag = "king"
+on            = [ { event = "achieved", goto = "settled" } ]
+
+[[tracks.steps]]
+# Holds the achieved ring; only re-forms on a debounced membership change,
+# same as ring.choreo.toml's "settled" (and for the same reason).
+name = "settled"
+[tracks.steps.hold]
+duration  = "300s"
+requires  = ["locomotion"]
+indicator = "active"
+on = [
+  { event = "element_lost",   goto = "ring" },
+  { event = "element_joined", goto = "ring" },
+]

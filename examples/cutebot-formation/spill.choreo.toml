@@ -1,0 +1,200 @@
+# spill.choreo.toml — "Choreo 3": search the arena for a hidden IR-dark
+# target — larger and possibly irregularly shaped, unlike king's small disc.
+# Rather than estimate a centroid for an irregular shape, each robot simply
+# stops wherever IT locally crosses the target's own edge — an odd target
+# produces an odd cordon.  This is the ONLY file to edit to change the
+# show.  Regenerate the committed header afterwards, then rebuild:
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/spill.choreo.toml \
+#       -o tapestry/examples/cutebot-formation/src/choreo_script.h
+#
+# Units are this app's abstract [0, WORLD_SIZE] world (WORLD_SIZE=100).
+#
+# Mechanism — deliberately almost nothing, once king's shared groundwork
+# exists: the same patrol as king; demo_discovery_detect() latches
+# own_state.discovered on a confirmed dark hit and main.c STOPS the robot
+# where it stands; the `discovery` event (this element's OWN bit only — no
+# peer's, no anchor, no ring, no track) then moves the script to "settled",
+# a green hold.  Robots that never cross the target finish the lap and hold
+# at "searched" in orange, so the finished picture is green robots on the
+# target's edge and orange robots elsewhere.
+#
+# A full cordon needs every robot's path to cross the target — with four
+# robots on one lap that is NOT guaranteed (host simulation: between one and
+# four robots stopped on an irregular blob).  A bigger target, or one that
+# spans several patrol lines, helps.
+#
+# PLACEMENT: off the robots' boot positions (the central cross, within ~15
+# units of the centre) — a robot standing on it "discovers" at t = 0.
+#
+# Patrol: nine FORM circle legs of radius 20 around a moving centre — the
+# outer loop (with edge midpoints), then the middle.  Why FORM circle and not
+# MOVE (an earlier draft of this file used MOVE, and it does not work):
+#   - MOVE re-snapshots each robot's offset from the group centroid at every
+#     leg.  The boot formation is 14 units across but DEMO_TRACK_MIN_SEP is
+#     25.3, so repulsion keeps robots off their targets, the next leg's
+#     offsets are taken from that distorted shape, and the error compounds
+#     leg over leg until targets leave the board (host-simulated: a target at
+#     y=104.8).  FORM's slots are ABSOLUTE and rank-based — nothing to
+#     snowball — and radius 20 makes adjacent robots 28 units apart, clear of
+#     MIN_SEP.
+#   - The circle (rather than GRID) is deliberate: its rank -> angle mapping
+#     matches the boot placement (ids 0/1/2/3 at east/north/west/south), so a
+#     leg is a pure TRANSLATION of the boot formation — no robot crosses the
+#     cluster to reach a slot on the far side (GRID slots are by id, so id0
+#     starting east was sent to the SW corner).  Host simulation, four robots
+#     with per-robot wheel/speed error and 20% gossip loss: 0 of 8 seeds left
+#     the board, versus most seeds for a GRID patrol.
+#   - Waypoint centres keep every robot inside [12,88], i.e. inside the
+#     playing area demo_discovery_in_safe_zone() trusts.
+# Every leg is SELF-scoped (the default): each robot advances on its OWN
+# achievement.  The collective predicate (scope = "all") is not a barrier —
+# an early advancer's achieved bit flips on its next step, stranding the
+# rest until their timeouts (observed in simulation: legs took the full
+# timeout).
+#
+# SINGLE PASS, not a loop: a second lap walks the same lines (no new
+# coverage) while uncorrected dead-reckoning drift keeps accumulating — grid
+# correction is deliberately off for this demo (no IR tape on the grid).
+# Ideal coverage of the [10,90] board is ~71% of marker positions, and a
+# marker is only guaranteed found where a robot's path crosses it — see the
+# README's coverage map for where to place it.  A robot that finishes the
+# lap without finding anything holds at "searched" with an orange
+# (degraded) indicator.
+
+choreo = "spill"
+
+[[steps]]
+name = "leg1"
+[steps.form]
+shape    = "circle"
+target   = [32.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg2"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg3"
+[steps.form]
+shape    = "circle"
+target   = [68.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg4"
+[steps.form]
+shape    = "circle"
+target   = [68.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg5"
+[steps.form]
+shape    = "circle"
+target   = [68.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg6"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg7"
+[steps.form]
+shape    = "circle"
+target   = [32.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg8"
+[steps.form]
+shape    = "circle"
+target   = [32.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+name = "leg9"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery", goto = "settled" } ]
+
+[[steps]]
+# Lap finished without touching the target — hold, orange.
+name = "searched"
+[steps.hold]
+duration  = "10min"
+requires  = ["locomotion"]
+indicator = "degraded"
+
+[[steps]]
+# Reached ONLY via a discovery transition (the step before it is a hold that
+# never advances into it in practice — its duration is a safety net).
+name = "settled"
+[steps.hold]
+duration  = "10min"
+requires  = ["locomotion"]
+indicator = "active"
