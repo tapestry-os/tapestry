@@ -1,0 +1,68 @@
+/*
+ * tapestry-os/boards/apollo330mP_evb/apollo330mP_evb.overlay
+ * Tapestry devicetree overlay for the Ambiq Apollo330M Plus EVB.
+ *
+ * Brings up UART1 as the wired gossip bus (transceiver_uart.c) and points the
+ * transport layer at it.  UART0 is left as the board defines it: console and
+ * the METRIC CSV telemetry stream.
+ *
+ * The Apollo330P SoC has exactly two UARTs, so UART1 is the only choice — but
+ * unlike the Apollo510 this part also carries an on-die BLE controller
+ * (zephyr,bt-hci = &bt_hci_ipc0), so the wired bus is a convenience here
+ * rather than the only medium available.
+ *
+ * ── Bus pins ────────────────────────────────────────────────────────────────
+ *
+ *   TX   P102   UART1TX_P102   (mikroBUS UART1, AM_BSP_GPIO_UART1_TX_CB)
+ *   RX   P103   UART1RX_P103   (mikroBUS UART1, AM_BSP_GPIO_UART1_RX_CB)
+ *
+ * Pins to avoid on this board:
+ *   P20/P21  SWDCK / SWDIO.  Muxing them to UART1 kills the debug port the
+ *            moment the app boots (SWD cannot attach; recovery needs the
+ *            SW3 wired-update boot override).
+ *   P12/P13  console UART CTS / RTS (AM_BSP_GPIO_COM_UART_CTS / _RTS).
+ *
+ * Zephyr's board DTS is not a complete map of the physical routing; check
+ * candidates against the schematic and AmbiqSuite's am_bsp_pins.h.
+ *
+ * To move the bus, change the two pinmux macros below and the matching GPIO_Pn
+ * in uart1_sleep.  Valid pairs are the UART1TX_Pnn / UART1RX_Pnn macros in
+ * modules/hal/ambiq/dts/apollo330P/ambiq-apollo330P-pinmux.h.
+ */
+
+&pinctrl {
+	uart1_default: uart1_default {
+		group1 {
+			pinmux = <UART1TX_P102>;
+		};
+
+		group2 {
+			pinmux = <UART1RX_P103>;
+			input-enable;
+		};
+	};
+
+	uart1_sleep: uart1_sleep {
+		group1 {
+			pinmux = <GPIO_P102>, <GPIO_P103>;
+		};
+	};
+};
+
+/*
+ * Bus baud.  Every element on the bus must agree; 115200 matches the
+ * Apollo510 EVB overlay so the two boards interoperate unchanged.
+ */
+&uart1 {
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-1 = <&uart1_sleep>;
+	pinctrl-names = "default", "sleep";
+	status = "okay";
+};
+
+/ {
+	chosen {
+		tapestry,gossip-uart = &uart1;
+	};
+};

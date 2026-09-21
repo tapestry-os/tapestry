@@ -74,6 +74,9 @@
 #ifdef CONFIG_PM
 #include <zephyr/pm/policy.h>
 #endif
+#ifdef CONFIG_PM_DEVICE_RUNTIME
+#include <zephyr/pm/device_runtime.h>
+#endif
 
 #include <tapestry/wire.h>
 
@@ -389,6 +392,14 @@ static int uart_bus_init(void)
         LOG_ERR("gossip UART %s not ready", bus_uart->name);
         return -ENODEV;
     }
+
+#ifdef CONFIG_PM_DEVICE_RUNTIME
+    /* Opt out of device runtime PM.  With PM_DEVICE_RUNTIME_DEFAULT_ENABLE the
+     * UART is auto-suspended after init (registers wiped, pins to sleep state),
+     * and poll_out then spins forever on a TX FIFO that never drains. */
+    (void)pm_device_runtime_get(bus_uart);
+    (void)pm_device_runtime_disable(bus_uart);
+#endif
 
 #ifdef CONFIG_PM
     /* Keep the UART clocked between gossip cycles — see the power-management

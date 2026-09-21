@@ -126,7 +126,9 @@ tapestry/
 │   │   ├── bbc_microbit_v2/       micro:bit V2 board support (Cutebot HAL, BLE overlay)
 │   │   ├── crazyflie21bl/         Crazyflie 2.1 brushless board support (motor mix, LED,
 │   │   │                          IWDG, power management, lighthouse positioning)
-│   │   ├── apollo510_evb/         Apollo510 EVB board support (LED substrate, UART bus overlay)
+│   │   ├── ambiq_common/          LED/button substrate shared by the Ambiq EVBs
+│   │   ├── apollo510_evb/         Apollo510 EVB board support (UART bus overlay, pin finder)
+│   │   ├── apollo330mP_evb/       Apollo330M Plus EVB board support (UART bus overlay; BLE on-die)
 │   │   └── substrate_null.c       No-op substrate for host-only builds
 │   ├── subsys/csm/
 │   │   └── world_model.c          L4 CSM implementation (pure C99)

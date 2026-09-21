@@ -37,6 +37,21 @@ uv pip install -r zephyr/scripts/requirements.txt
 uv pip install pandas matplotlib
 ```
 
+## Ambiq boards (Apollo330mP EVB)
+
+`apollo330mP_evb` ships in Ambiq's Zephyr distribution, not upstream Zephyr, so
+it needs a workspace built from `west-ambiq.yml`:
+
+```bash
+west init -m https://github.com/tapestry-os/tapestry \
+          --mf west-ambiq.yml tapestry-ambiq-workspace
+cd tapestry-ambiq-workspace && west update && west zephyr-export
+```
+
+Use a separate workspace rather than converting your upstream one — the boards
+validated against upstream Zephyr stay on the tree they were validated against.
+`apollo510_evb` is supported by both manifests.
+
 Also install the 
 [Zephyr SDK](https://docs.zephyrproject.org/latest/develop/toolchains/zephyr_sdk.html) 
 and run the setup script if it is not already on the development computer.
