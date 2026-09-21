@@ -1,4 +1,4 @@
-# Kconfig — Ambiq Apollo510 EVB board options
+# Kconfig — Ambiq EVB board options (Apollo510 EVB, Apollo330mP EVB)
 #
 # Source this from your application Kconfig with:
 #   rsource "../tapestry-os/boards/apollo510_evb/Kconfig"
@@ -8,7 +8,7 @@ config TAPESTRY_AP510_LED_WALK
 	default n
 	help
 	  Lights led0, then led1, then led2 in turn for 1.5 s each during
-	  substrate_init(), logging the alias and SoC pin of each as it goes.
+	  substrate_init(), logging each alias with its devicetree port and pin.
 
 	  Bring-up aid: the EVB silkscreen numbers its LEDs independently of
 	  Zephyr's devicetree alias numbering, and the board carries indicator

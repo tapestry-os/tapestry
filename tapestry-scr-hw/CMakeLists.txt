@@ -15,6 +15,9 @@ elseif("${BOARD}" STREQUAL "crazyflie21bl")
 elseif("${BOARD}" STREQUAL "apollo510_evb")
     set(DTC_OVERLAY_FILE
         ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os/boards/apollo510_evb/apollo510_evb.overlay)
+elseif("${BOARD}" STREQUAL "apollo330mP_evb")
+    set(DTC_OVERLAY_FILE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../tapestry-os/boards/apollo330mP_evb/apollo330mP_evb.overlay)
 elseif("${BOARD}" STREQUAL "ek_ra8d1")
     # Adds only a tapestry,gossip-uart chosen node pointing at UART3, so the
     # RA8D1 can join a wired gossip bus.  Inert in the default Ethernet/UDP
@@ -48,8 +51,10 @@ endif()
 # lines later and does work.
 if("${BOARD}" STREQUAL "apollo510_evb")
     set(BOARD_RUNNER_ARGS_jlink "--reset-type=2" CACHE INTERNAL
-        "Apollo510 secure-bootloader-safe JLink reset")
+        "Ambiq secure-bootloader-safe JLink reset")
 endif()
+# apollo330mP_evb is excluded: Ambiq's bundled jlink.py runner has no
+# --reset-type option and errors on it.
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(tapestry_hw_element)
@@ -145,9 +150,15 @@ endif()
 # Within the heuristics, PWM must be checked before I2C: the CF21 stabilizer
 # uses both (PWM for motors, I2C for the BMI088 IMU), so checking I2C first
 # would wrongly select the Cutebot path.
-if("${BOARD}" STREQUAL "apollo510_evb")
+if("${BOARD}" STREQUAL "apollo510_evb" OR "${BOARD}" STREQUAL "apollo330mP_evb")
+    # Shared LED/button substrate — entirely devicetree-driven (led0..led2, sw0),
+    # so one implementation serves both Ambiq EVBs.
     target_sources(app PRIVATE
-        ${TAPESTRY_OS_BOARDS}/apollo510_evb/substrate_apollo510_evb.c)
+        ${TAPESTRY_OS_BOARDS}/ambiq_common/substrate_ambiq_evb.c)
+    if("${BOARD}" STREQUAL "apollo510_evb" AND CONFIG_TAPESTRY_AP510_PIN_FINDER)
+        target_sources(app PRIVATE
+            ${TAPESTRY_OS_BOARDS}/apollo510_evb/ap510_pin_finder.c)
+    endif()
 elseif(CONFIG_PWM)
     target_sources(app PRIVATE
         ${TAPESTRY_OS_BOARDS}/crazyflie21bl/substrate_crazyflie21bl.c
