@@ -224,7 +224,48 @@ mock whenever the thing you would mock is the thing that broke.
 2. Make your changes. Run `pytest` and both ztest suites locally before
    pushing.
 3. Open a pull request against `main`. Describe what changed and why.
-4. CI must pass. A maintainer will review and merge.
+4. Sign the Contributor License Agreement (see below) on your first pull request.
+5. CI must pass. A maintainer will review and merge.
 
 For significant changes (new layers, protocol changes, API additions) open
 an issue first to discuss the design before writing code.
+
+**AI-assisted contributions.** Using AI tools is acceptable. What matters is that you
+have reviewed and understand everything you submit, and can explain and
+maintain it like any other code you wrote. If a substantial part of a change
+came from an AI tool, please say so in the pull request description, or add
+an `Assisted-by: <tool>` trailer to the commit message. This is a courtesy
+that helps reviewers, not a legal requirement.
+
+## Contributor License Agreement
+
+Every contributor signs a CLA before their first pull request is merged.
+It is a one-time step per GitHub account, not needed again after that.
+
+**What you keep.** You keep the copyright to everything you write. The CLA
+is a license, not an assignment — nothing is transferred away from you, and
+you remain free to use your own contribution anywhere else, for anything,
+including in your own products.
+
+**What you grant.** A perpetual, irrevocable, worldwide, royalty-free
+copyright and patent license covering your contribution, including the
+right to sublicense it. Alongside it you confirm the ordinary things: that
+the work is yours to give, and that if your employer has rights in it you
+have their permission.
+
+**Why we ask anyway.** Apache 2.0 already permits anyone, including us, 
+to build and sell a closed product on top of your contribution. A CLA doesn't expand
+that right; the sublicense it names is one Apache 2.0 already grants under
+its own section 5, the moment a contribution is submitted. The CLA adds an explicit statement, 
+from you, that the contribution is yours to give and that you have your employer's
+permission if they'd otherwise have a claim on it. 
+
+**Third-party code.** Vendored files keep their own license and their own
+copyright header; the CLA does not touch them and you must not relicense
+them. Do not vendor anything under a copyleft license (GPL, LGPL, AGPL) —
+it is incompatible with the Apache 2.0 platform and with the commercial
+tier. If a change needs third-party code, raise it in an issue first.
+
+If signing is a problem for you, open an issue. A design discussion, a bug
+report, or a reproduction case needs no CLA at all, and those are often
+worth more than a patch.

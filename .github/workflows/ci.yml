@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# CI only reads the repository; never hand it a write-capable token.
+permissions:
+  contents: read
+
 # Cancel in-progress runs for the same branch so a fast-follow push
 # doesn't queue behind a stale run.
 concurrency:
