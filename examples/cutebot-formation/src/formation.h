@@ -616,6 +616,108 @@ bool demo_discovery_detect(demo_discovery_state_t *st, bool dark_now);
  */
 bool demo_discovery_in_safe_zone(const demo_odometry_t *odo);
 
+/* ── Junction-based drift correction (Cutebot Pro's 4-way I2C sensor) ────── */
+/*
+ * CUTEBOT_PRO_LINE_DARK_THRESHOLD — app-level dark/light cutoff for
+ * cutebot_pro_read_line_gray()'s raw per-channel value (0-255, "darkness
+ * score" — higher means darker, despite the sensor's own doc calling it
+ * reflectance), used INSTEAD OF the board's own firmware-thresholded
+ * cutebot_pro_read_line_state() bit for building the line_state fed to
+ * demo_junction_correct() below (see main.c's call site).
+ *
+ * Exists because of a real 2026-09-22 bench finding: this printed
+ * chessboard's black ink does NOT cross the firmware's own fixed digital
+ * threshold (measured ~102-153, i.e. it sits somewhere in that gap) —
+ * the exact same "printed ink is IR-transparent to these sensors" problem
+ * Cutebot Mini hit on 2026-09-10 (see DEMO_LINE_SENSOR_SEPARATION_MM's
+ * doc below), just rediscovered on different hardware. Real measured
+ * per-channel ranges, one static bench session, one robot, held (not
+ * driven) over each surface:
+ *
+ *   white square:  ch1 0-48   ch2 0      ch3 0-6    ch4 0-9
+ *   black ink:     ch1 55-95  ch2 0-45   ch3 0-63   ch4 17-66
+ *   real marker:   ch1-4 all 102-255 (saturates near 255)
+ *   open air:      ch1-4 all 153-255 (indistinguishable from — even
+ *                  slightly exceeds — the real marker; see
+ *                  demo_junction_correct()'s doc for why this alone does
+ *                  NOT make junction detection safe against drift off the
+ *                  board edge)
+ *
+ * 50 sits just above every observed white/no-line reading (worst case 48,
+ * on ch1, which runs measurably "hotter" than the other three channels —
+ * watch that one first if this needs retuning) with real margin below the
+ * black-ink readings. It will still MISS some genuine ink crossings —
+ * ch2/ch3 were observed reading as low as 0 while sitting on the black
+ * square, so a channel that's only weakly over the ink, or a thin taped/
+ * inked line crossed briefly rather than a whole filled square sat on,
+ * may not register at all on every channel. That's the deliberate choice:
+ * demo_junction_correct() snaps position on a match, so missing a real
+ * corner (dead reckoning just continues uncorrected) is a far cheaper
+ * mistake than falsely firing one (a real position gets overwritten with
+ * a wrong one) — same bias toward "under-trigger, never over-trigger"
+ * DEMO_DISCOVERY_CONFIRM_POLLS/BACKUP_HOLDOFF already apply elsewhere in
+ * this file. Only bench-validated as a static hold on ONE robot over ONE
+ * filled square — not yet validated driving across an actual thin
+ * gridline at speed, which is a real, different, and untested case.
+ */
+#ifndef CUTEBOT_PRO_LINE_DARK_THRESHOLD
+#define CUTEBOT_PRO_LINE_DARK_THRESHOLD 50u
+#endif
+
+/*
+ * CUTEBOT_PRO_WHEEL_TRACK_MM — Cutebot Pro's real wheel-center-to-wheel-
+ * center distance, used by main.c's encoder-fed odometry (omega = wheel
+ * speed differential / wheel track — standard differential-drive
+ * kinematics) instead of DEMO_WHEEL_TRACK (Mini's own measured 85mm
+ * chassis, wrong hardware — Pro's is a visibly larger chassis).
+ *
+ * Derived from a real 2026-09-22 bench measurement, not guessed:
+ * DEMO_MODE_CIRCLE_BENCH's arc-turn phase (left=20, right=50 cm/s) ran
+ * for 8s and completed ~4 full rotations, observed by eye ("almost
+ * exactly 4 times" — not lab-precise, but a real physical count, not an
+ * assumption):
+ *   omega = 4 * 2*pi / 8s = pi rad/s (0.5 rev/s)
+ *   differential = 50 - 20 = 30 cm/s
+ *   wheel_track = differential / omega = 30/pi = 95.49 mm
+ * Re-derive (or measure directly with calipers) if a more precise value
+ * is ever needed — this is a single eyeballed-rotation-count estimate.
+ */
+#ifndef CUTEBOT_PRO_WHEEL_TRACK_MM
+#define CUTEBOT_PRO_WHEEL_TRACK_MM 95.5f
+#endif
+#define CUTEBOT_PRO_WHEEL_TRACK DEMO_MM(CUTEBOT_PRO_WHEEL_TRACK_MM)
+
+/*
+ * demo_junction_correct — snap BOTH odo->x and odo->y to the nearest grid
+ * intersection when the raw 4-way line-sensor state (cutebot_pro_read_
+ * line_state(), bit0..bit3 = channel 1..4) indicates a real intersection:
+ * a crossroads (all 4 channels lit) or a T-junction (any 3 lit — three
+ * bits set regardless of WHICH bit is the zero one; distinguishing which
+ * side is open would need the sensor array's physical spacing/layout,
+ * which is not documented anywhere checked so far — see cutebot_pro.h).
+ * Returns which kind fired, or DEMO_JUNCTION_NONE for every other state
+ * (line_state==0 no line, or 1-2 channels lit — ordinary line-following,
+ * not handled here; see demo_grid_correct() for the single-line-crossing
+ * case Cutebot Mini uses instead).
+ *
+ * A junction pins both axes at once (a real intersection is a known (x,y)
+ * point on the grid), unlike demo_grid_correct()'s single-line crossing,
+ * which only ever corrects one axis and needs the current heading to know
+ * which. No such ambiguity here — both axes snap unconditionally,
+ * regardless of which way the robot is facing when it crosses one.
+ *
+ * Deliberately takes the raw byte, not a cutebot_pro_*-typed sample, so
+ * this stays hardware-agnostic and host-testable, same reason
+ * demo_grid_correct() takes a plain bool instead of a sensor struct.
+ */
+typedef enum {
+    DEMO_JUNCTION_NONE       = 0,
+    DEMO_JUNCTION_T          = 1,
+    DEMO_JUNCTION_CROSSROADS = 2,
+} demo_junction_type_t;
+
+demo_junction_type_t demo_junction_correct(demo_odometry_t *odo, uint8_t line_state);
+
 /* ── Formation control ──────────────────────────────────────────────────── */
 
 /*

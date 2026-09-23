@@ -150,9 +150,38 @@ mismatch and 20% gossip loss — dead reckoning only, grid correction off):
 | Item | Details |
 |---|---|
 | Board | BBC micro:bit V2 (nRF52833, Cortex-M4F) |
-| Robot chassis | Elecfreaks Cutebot Mini |
+| Robot chassis | Elecfreaks Cutebot Mini (default) or Cutebot Pro (see below) |
 | Arena | 1266.25 mm × 1266.25 mm (printed chessboard: 8 squares + 1-square border) |
 | Ring diameter | ~760 mm (radius 30 logical units, `ring.choreo.toml`) |
+
+### Hardware variants (Kconfig choice `CUTEBOT_VARIANT`)
+
+- **`CUTEBOT_VARIANT_MINI` (default)** — the original hardware every mode in
+  this example was built and hardware-validated against. Open-loop drive
+  (`cutebot.c`, raw I2C percentage commands), 2 interrupt-driven GPIO line
+  sensors (`cutebot_line.c`).
+- **`CUTEBOT_VARIANT_PRO`** — ELECFREAKS Cutebot Pro (V2.1.0), replacing the
+  Mini fleet. Closed-loop encoder motors (real measured wheel speed/distance
+  feedback, driven via the controller's own firmware PID) and a 4-way I2C
+  line sensor that can distinguish crossroads and T-junctions directly,
+  instead of Mini's 2-sensor line-crossing-only setup. **Untested on real
+  hardware** — added and compile-verified before the physical units arrived;
+  see `Kconfig`'s `CUTEBOT_VARIANT_PRO` help text for the full protocol
+  writeup (verified against ELECFREAKS' own `pxt-Cutebot-Pro` firmware
+  source, not guessed) and exactly which calibration constants
+  (`CUTEBOT_PRO_MAX_SPEED_CMS`, `DEMO_WHEEL_TRACK`) are unverified
+  placeholders pending bench measurement. Run `DEMO_MODE_ENCODER_BENCH` and
+  the Pro branch of `DEMO_MODE_LINE_SENSOR_BENCH` first, on real hardware,
+  before trusting anything built on top of them — `DEMO_MODE_STRAIGHT_LINE`
+  and `DEMO_MODE_CONVERGE_TEST` are Mini-only for now (built around Mini's
+  line-crossing-timing signal, which Pro's I2C-polled sensor doesn't
+  provide the same way).
+
+  Build with:
+  ```sh
+  west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation \
+    -- -DCONFIG_CUTEBOT_VARIANT_PRO=y
+  ```
 
 ## Build
 

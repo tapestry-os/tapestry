@@ -502,6 +502,70 @@ ZTEST(formation_field, test_discovery_backup_restarts_the_holdoff)
     zassert_true(demo_discovery_motion_ok(&st, 0.5f, 100u));
 }
 
+/* ── demo_junction_correct (Cutebot Pro's I2C 4-way sensor) ───────────────── */
+
+ZTEST(formation_field, test_junction_correct_crossroads_snaps_both_axes)
+{
+    demo_odometry_t odo;
+    demo_odometry_init(&odo, 23.7f, 48.2f);
+
+    demo_junction_type_t type = demo_junction_correct(&odo, 0x0Fu /* all 4 lit */);
+
+    zassert_equal(type, DEMO_JUNCTION_CROSSROADS, "state 0x0F must read as crossroads");
+    zassert_within(odo.x, roundf(23.7f / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS, EPS,
+                    "crossroads must snap x to the nearest gridline");
+    zassert_within(odo.y, roundf(48.2f / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS, EPS,
+                    "crossroads must snap y to the nearest gridline");
+}
+
+/* Every 3-bit state (any one channel dark) must read as a T-junction and
+ * snap both axes the same way crossroads does — see formation.h's doc for
+ * why this deliberately doesn't try to infer which side is open. */
+ZTEST(formation_field, test_junction_correct_t_junction_snaps_both_axes)
+{
+    static const uint8_t three_bit_states[] = { 0x07u, 0x0Bu, 0x0Du, 0x0Eu };
+
+    for (size_t i = 0; i < ARRAY_SIZE(three_bit_states); i++) {
+        demo_odometry_t odo;
+        demo_odometry_init(&odo, 31.4f, 16.9f);
+
+        demo_junction_type_t type = demo_junction_correct(&odo, three_bit_states[i]);
+
+        zassert_equal(type, DEMO_JUNCTION_T,
+                      "state 0x%X must read as a T-junction", three_bit_states[i]);
+        zassert_within(odo.x, roundf(31.4f / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS, EPS,
+                        "T-junction 0x%X must snap x", three_bit_states[i]);
+        zassert_within(odo.y, roundf(16.9f / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS, EPS,
+                        "T-junction 0x%X must snap y", three_bit_states[i]);
+    }
+}
+
+/* No line (0000), and ordinary 1-2-channel line-following states, are not
+ * junctions — demo_junction_correct() only handles crossroads/T-junctions
+ * (see formation.h's doc on why plain line-following is out of scope for
+ * this function); position must be left untouched. */
+ZTEST(formation_field, test_junction_correct_ignores_non_junction_states)
+{
+    static const uint8_t non_junction_states[] = {
+        0x00u, 0x01u, 0x02u, 0x03u, 0x04u, 0x05u, 0x06u,
+        0x08u, 0x09u, 0x0Au, 0x0Cu,
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(non_junction_states); i++) {
+        demo_odometry_t odo;
+        demo_odometry_init(&odo, 23.7f, 48.2f);
+
+        demo_junction_type_t type = demo_junction_correct(&odo, non_junction_states[i]);
+
+        zassert_equal(type, DEMO_JUNCTION_NONE,
+                      "state 0x%X must not read as a junction", non_junction_states[i]);
+        zassert_within(odo.x, 23.7f, EPS,
+                        "state 0x%X must not touch x", non_junction_states[i]);
+        zassert_within(odo.y, 48.2f, EPS,
+                        "state 0x%X must not touch y", non_junction_states[i]);
+    }
+}
+
 ZTEST_SUITE(formation_field, NULL, NULL, NULL, NULL, NULL);
 
 /* ── Choreo script (L6 BSE + L7 Choreographer, singleton per process) ─────── */
