@@ -84,7 +84,13 @@
  * banner. */
 #include "choreo_script.h"
 #endif
-#ifdef CONFIG_I2C
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+/* Cutebot Pro: motor/encoder/LED/line-sensor are all one I2C peripheral —
+ * see cutebot_pro.h. Drives demo_junction_correct() (formation.h) below,
+ * not demo_grid_correct()/demo_grid_heading_correct() (Mini-only, need
+ * cutebot_line.h's edge-timing data this hardware doesn't provide). */
+#include "cutebot_pro.h"
+#elif defined(CONFIG_I2C)
 /* Ground-facing line-tracking sensors — real hardware only (CONFIG_I2C
  * is this app's proxy for "building for the physical Cutebot," same
  * condition CMakeLists.txt uses to compile cutebot_line.c at all).
@@ -237,7 +243,11 @@ int main(void)
         LOG_WRN("substrate init failed — movement and signal disabled");
     }
 
-#ifdef CONFIG_I2C
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+    /* Cutebot Pro's line sensor is the same I2C peripheral substrate_init()
+     * (-> cutebot_pro_init()) already brought up above — no separate init
+     * call, unlike Mini's genuinely-separate GPIO line-sensor bus below. */
+#elif defined(CONFIG_I2C)
     if (cutebot_line_init() != 0) {
         LOG_WRN("line sensor init failed — grid drift correction disabled");
     }
@@ -266,6 +276,14 @@ int main(void)
     uint32_t trace_right_edges = 0;
 #endif
 
+    /* Real elapsed time between iterations, not the nominal WM_CYCLE_MS —
+     * see the main CHOREO loop's identical pattern below for why: the
+     * loop body's own work (I2C, logging, gossip) makes the real period
+     * run visibly longer than the nominal tick, and integrating heading/
+     * position against the wrong (too-small) dt silently desyncs the
+     * estimate from reality every single tick. */
+    int64_t last_tick_ms = k_uptime_get();
+
     /*
      * Visual sign indicator for demo_grid_heading_correct()'s bench
      * verification (see formation.h's doc / README's "Known
@@ -290,7 +308,8 @@ int main(void)
         float rate_cmd  = 0.0f;
         demo_drive_straight(&odo, &speed_cmd, &rate_cmd);
 
-        demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
+        uint32_t dt_ms = (uint32_t)k_uptime_delta(&last_tick_ms);
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
 
 #ifdef CONFIG_I2C
         cutebot_line_sample_t line;
@@ -380,13 +399,15 @@ int main(void)
 #endif
 
     uint32_t trace_accum = 0;
+    int64_t  last_tick_ms = k_uptime_get();   /* see STRAIGHT_LINE mode's doc above */
 
     while (true) {
         float speed_cmd = 0.0f;
         float rate_cmd  = 0.0f;
         demo_drive_straight(&odo, &speed_cmd, &rate_cmd);
 
-        demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
+        uint32_t dt_ms = (uint32_t)k_uptime_delta(&last_tick_ms);
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
 
 #ifdef CONFIG_I2C
         cutebot_line_sample_t line;
@@ -611,6 +632,7 @@ int main(void)
     uint32_t trace_left_edges  = 0;
     uint32_t trace_right_edges = 0;
 #endif
+    int64_t last_tick_ms = k_uptime_get();   /* see STRAIGHT_LINE mode's doc above */
 
     while (true) {
         transport_drain(&wm, element_id);
@@ -620,7 +642,8 @@ int main(void)
         float rate_cmd  = 0.0f;
         demo_track_target(&wm, &odo, tx, ty, &speed_cmd, &rate_cmd);
 
-        demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
+        uint32_t dt_ms = (uint32_t)k_uptime_delta(&last_tick_ms);
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
 
 #ifdef CONFIG_I2C
         cutebot_line_sample_t line;
@@ -793,12 +816,41 @@ int main(void)
     }
 #elif defined(CONFIG_DEMO_MODE_LINE_SENSOR_BENCH)
     /*
-     * Raw line-sensor bring-up — see Kconfig's help text. No motors, no
-     * odometry, no interrupts: just log what P13/P14 actually read,
-     * unfiltered, so materials/angles/heights can be tested by eye
-     * against a live log instead of inferring anything from driving
-     * behavior.
+     * Sensor bring-up — see Kconfig's help text. No motors, no odometry:
+     * just log the raw sensor state, unfiltered, so materials/angles/
+     * heights can be tested by eye against a live log instead of
+     * inferring anything from driving behavior.
      */
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+    LOG_INF("LINE SENSOR BENCH MODE (Cutebot Pro) — logging the raw I2C "
+            "4-way state AND per-channel raw reflectance (0-255, "
+            "unthresholded) every 500 ms. bit0..bit3 = channel 1..4, "
+            "1 = line/dark.");
+
+    while (true) {
+        uint8_t state = 0;
+        int ret = cutebot_pro_read_line_state(&state);
+        if (ret) {
+            LOG_WRN("line state read failed: %d", ret);
+        } else {
+            uint8_t gray[4] = { 0 };
+            for (uint8_t ch = 1; ch <= 4; ch++) {
+                int gret = cutebot_pro_read_line_gray(ch, &gray[ch - 1]);
+                if (gret) {
+                    LOG_WRN("channel %u gray read failed: %d", (unsigned)ch, gret);
+                }
+            }
+            LOG_INF("ch1=%d ch2=%d ch3=%d ch4=%d  (state=0x%X)  "
+                    "gray: ch1=%u ch2=%u ch3=%u ch4=%u",
+                    (int)(state & 0x1), (int)((state >> 1) & 0x1),
+                    (int)((state >> 2) & 0x1), (int)((state >> 3) & 0x1),
+                    (unsigned)state,
+                    (unsigned)gray[0], (unsigned)gray[1],
+                    (unsigned)gray[2], (unsigned)gray[3]);
+        }
+        k_msleep(500);
+    }
+#else
     if (cutebot_line_bench_init() != 0) {
         LOG_ERR("cutebot_line_bench_init failed — P13/P14 not ready. "
                 "Check bbc_microbit_v2.overlay matches this board's "
@@ -820,9 +872,85 @@ int main(void)
 
         k_msleep(500);
     }
+#endif
+#elif defined(CONFIG_DEMO_MODE_ENCODER_BENCH)
+    /*
+     * Encoder bring-up (Cutebot Pro only) — see Kconfig's help text. Drive
+     * both wheels at a fixed, comfortably-in-range PID speed target, clear
+     * both counters, then log measured speed/distance every 500 ms. NOT
+     * run through the arena fence or any force model — long clear floor,
+     * not the chessboard, same caveat DEMO_MODE_WHEEL_CHARACTERIZE gives.
+     */
+#define ENCODER_BENCH_SPEED_CMS 30.0f   /* mid-range of the firmware's 20-50 cm/s legal window */
+
+    LOG_INF("ENCODER BENCH MODE — driving both wheels at %.0f cm/s, "
+            "logging measured speed/distance every 500 ms. Clear floor, "
+            "not the board.",
+            (double)ENCODER_BENCH_SPEED_CMS);
+
+    cutebot_pro_clear_encoders();
+    cutebot_pro_drive_cms(ENCODER_BENCH_SPEED_CMS, ENCODER_BENCH_SPEED_CMS);
+
+    while (true) {
+        cutebot_pro_encoders_t enc;
+        cutebot_pro_read_encoders(&enc);
+
+        LOG_INF("L: spd=%.1f cm/s dist=%d   R: spd=%.1f cm/s dist=%d "
+                "(distance unit UNVERIFIED — see cutebot_pro.h)",
+                (double)enc.left_speed_cms, (int)enc.left_distance,
+                (double)enc.right_speed_cms, (int)enc.right_distance);
+
+        k_msleep(500);
+    }
+#elif defined(CONFIG_DEMO_MODE_CIRCLE_BENCH)
+    /*
+     * Actuation bench (Cutebot Pro only) — see Kconfig's help text. Direct
+     * cutebot_pro_drive_cms() calls, bypassing formation.c entirely, so a
+     * passing run confirms the differential-preserving floor fix at the
+     * driver level: straight for 2s, then the sharpest arc turn this
+     * firmware can represent (20/50 cm/s, its 2.5:1 ceiling) for 8s,
+     * then straight for 2s again. NOT run through the arena fence — long
+     * clear floor, not the chessboard.
+     */
+#define CIRCLE_BENCH_STRAIGHT_CMS 30.0f
+#define CIRCLE_BENCH_TURN_SLOW_CMS 20.0f
+#define CIRCLE_BENCH_TURN_FAST_CMS 50.0f
+#define CIRCLE_BENCH_STRAIGHT_MS   2000u
+#define CIRCLE_BENCH_TURN_MS       8000u
+
+    LOG_INF("CIRCLE BENCH MODE — straight %.0f cm/s for %us, then an arc "
+            "turn (L=%.0f R=%.0f cm/s) for %us, then straight again. "
+            "Clear floor, not the board.",
+            (double)CIRCLE_BENCH_STRAIGHT_CMS, CIRCLE_BENCH_STRAIGHT_MS / 1000u,
+            (double)CIRCLE_BENCH_TURN_SLOW_CMS, (double)CIRCLE_BENCH_TURN_FAST_CMS,
+            CIRCLE_BENCH_TURN_MS / 1000u);
+
+    LOG_INF("phase 1/3: straight");
+    substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+    cutebot_pro_drive_cms(CIRCLE_BENCH_STRAIGHT_CMS, CIRCLE_BENCH_STRAIGHT_CMS);
+    k_msleep(CIRCLE_BENCH_STRAIGHT_MS);
+
+    LOG_INF("phase 2/3: arc turn — should visibly curve, NOT travel straight");
+    substrate_set_signal(SUBSTRATE_SIGNAL_DEGRADED);
+    cutebot_pro_drive_cms(CIRCLE_BENCH_TURN_SLOW_CMS, CIRCLE_BENCH_TURN_FAST_CMS);
+    k_msleep(CIRCLE_BENCH_TURN_MS);
+
+    LOG_INF("phase 3/3: straight again");
+    substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+    cutebot_pro_drive_cms(CIRCLE_BENCH_STRAIGHT_CMS, CIRCLE_BENCH_STRAIGHT_CMS);
+    k_msleep(CIRCLE_BENCH_STRAIGHT_MS);
+
+    LOG_INF("CIRCLE BENCH COMPLETE — motors off, halting.");
+    cutebot_pro_drive_cms(0.0f, 0.0f);
+    substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);   /* red: done, not an error */
+    while (true) {
+        k_msleep(1000);
+    }
 #else /* !CONFIG_DEMO_MODE_STRAIGHT_LINE / !CONFIG_DEMO_MODE_DISCOVERY_BENCH /
        * !CONFIG_DEMO_MODE_CONVERGE_TEST / !CONFIG_DEMO_MODE_WHEEL_CHARACTERIZE /
-       * !CONFIG_DEMO_MODE_LINE_SENSOR_BENCH — the normal swarm demo */
+       * !CONFIG_DEMO_MODE_LINE_SENSOR_BENCH / !CONFIG_DEMO_MODE_ENCODER_BENCH /
+       * !CONFIG_DEMO_MODE_CIRCLE_BENCH —
+       * the normal swarm demo */
 
     if (transport_init() != 0) {
         LOG_WRN("transport init failed — no peer awareness");
@@ -1038,13 +1166,97 @@ int main(void)
 
     LOG_INF("Demo ready — entering main loop");
 
+    int64_t last_tick_ms = k_uptime_get();   /* see STRAIGHT_LINE mode's doc above */
+
     while (true) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
 
-        demo_odometry_update(&odo, speed_cmd, rate_cmd, WM_CYCLE_MS);
+        /* Real elapsed time since the last iteration, NOT the nominal
+         * WM_CYCLE_MS this loop's own I2C/logging/gossip work routinely
+         * overruns — confirmed directly from a real hardware log this
+         * session: 1 Hz trace lines meant to fire every 1000 ms (10
+         * ticks of the assumed 100 ms) actually landed ~1587 ms apart, a
+         * consistent ~59% real-vs-assumed gap. Every demo_odometry_update()
+         * call below was integrating against a dt ~37% smaller than what
+         * actually elapsed, so the position/heading ESTIMATE tracked only
+         * ~63% of the robot's real motion every tick — a controller
+         * chasing that lagging estimate keeps commanding more turn/drive
+         * long after the real robot has already gotten there, which is
+         * exactly the "overturns and ends up displaced from where it
+         * thinks it is" symptom id=2 hit on a real re-form turn. */
+        uint32_t dt_ms = (uint32_t)k_uptime_delta(&last_tick_ms);
 
-#ifdef CONFIG_I2C
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+        /* Closed-loop odometry: feed MEASURED wheel speed, not the
+         * commanded speed_cmd/rate_cmd — real encoder feedback replaces
+         * Mini's open-loop "assume the command was obeyed" assumption.
+         * readEncoders() reports unsigned magnitude only (elecfreaks'
+         * own firmware protocol has no signed-speed field), so direction
+         * is reconstructed from speed_cmd/rate_cmd's sign as of the LAST
+         * tick's substrate_move() call — still in scope here since this
+         * tick hasn't overwritten them yet (that happens further below,
+         * via demo_track_target) — which is exactly the command whose
+         * resulting motion this encoder read reflects. */
+        cutebot_pro_encoders_t enc;
+        cutebot_pro_read_encoders(&enc);
+
+        float last_left_cmd  = speed_cmd - rate_cmd;
+        float last_right_cmd = speed_cmd + rate_cmd;
+        float left_meas_cms  = (last_left_cmd  < 0.0f) ? -enc.left_speed_cms  : enc.left_speed_cms;
+        float right_meas_cms = (last_right_cmd < 0.0f) ? -enc.right_speed_cms : enc.right_speed_cms;
+
+        /* cm/s -> logical units/s (DEMO_MM converts mm; *10 is cm->mm),
+         * then normalize by the SAME DEMO_MAX_SPEED/DEMO_MAX_OMEGA
+         * demo_odometry_update() itself scales by — see formation.h.
+         * CUTEBOT_PRO_WHEEL_TRACK (formation.h) is Pro's own real,
+         * bench-measured chassis dimension — NOT Mini's DEMO_WHEEL_TRACK,
+         * a visibly different (larger) chassis. */
+        float v_center_units_s = DEMO_MM((left_meas_cms + right_meas_cms) * 5.0f);
+        float omega_rad_s = DEMO_MM((right_meas_cms - left_meas_cms) * 10.0f) / CUTEBOT_PRO_WHEEL_TRACK;
+
+        float measured_speed_norm = v_center_units_s / DEMO_MAX_SPEED;
+        float measured_rate_norm  = omega_rad_s / DEMO_MAX_OMEGA;
+
+        demo_odometry_update(&odo, measured_speed_norm, measured_rate_norm, dt_ms);
+
+        /* Junction-based drift correction — a crossroads/T-junction pins
+         * both axes at once; see formation.h's demo_junction_correct().
+         * line_state/junction stay in scope (not gated by CONFIG_DEMO_
+         * GRID_CORRECTION) for the 1 Hz trace below, same pattern the
+         * Mini branch uses for `line`/edge counts regardless of whether
+         * correction itself is enabled.
+         *
+         * Built from 4 individual cutebot_pro_read_line_gray() reads and
+         * an app-level threshold (CUTEBOT_PRO_LINE_DARK_THRESHOLD,
+         * formation.h) — NOT cutebot_pro_read_line_state()'s firmware-
+         * thresholded bit, which real hardware showed never fires on this
+         * board's printed ink (see that constant's doc for the bench
+         * numbers). 4 I2C round-trips instead of 1, but comfortably
+         * inside the 100 ms tick budget alongside the encoder reads
+         * above. */
+        uint8_t line_state = 0;
+        int     line_ret   = 0;
+        for (uint8_t ch = 1; ch <= 4; ch++) {
+            uint8_t gray = 0;
+            int gret = cutebot_pro_read_line_gray(ch, &gray);
+            if (gret) {
+                line_ret = gret;
+                break;
+            }
+            if (gray >= CUTEBOT_PRO_LINE_DARK_THRESHOLD) {
+                line_state |= (uint8_t)(1u << (ch - 1));
+            }
+        }
+        demo_junction_type_t junction = DEMO_JUNCTION_NONE;
+#ifdef CONFIG_DEMO_GRID_CORRECTION
+        if (line_ret == 0) {
+            junction = demo_junction_correct(&odo, line_state);
+        }
+#endif
+#elif defined(CONFIG_I2C)
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
+
         /* Grid-based drift correction — it only touches odo, nothing
          * goal-specific, before the corrected estimate is broadcast
          * below. cutebot_line_poll() is read-and-clear and interrupt-driven
@@ -1122,6 +1334,8 @@ int main(void)
         static uint32_t trace_right_edges;
         trace_left_edges  += line.left_edges;
         trace_right_edges += line.right_edges;
+#else
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
 #endif
 
         own_state.position.x = odo.x;
@@ -1263,7 +1477,17 @@ int main(void)
                         (double)odo.x, (double)odo.y, (int)dir->type,
                         (double)speed_cmd, (double)rate_cmd);
             }
-#ifdef CONFIG_I2C
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+            /* Sanity signal for bench-verifying the sensor itself before
+             * trusting it in a full run — same purpose as the Mini trace
+             * below, adapted to the I2C 4-way state instead of GPIO
+             * edge counts. */
+            LOG_INF("id=%u line_state=0x%X (read %s) junction=%d "
+                    "enc_L=%.1fcm/s enc_R=%.1fcm/s",
+                    (unsigned)element_id, (unsigned)line_state,
+                    (line_ret == 0) ? "ok" : "FAIL", (int)junction,
+                    (double)enc.left_speed_cms, (double)enc.right_speed_cms);
+#elif defined(CONFIG_I2C)
             /* Sanity signal for bench-verifying the sensor itself before
              * trusting it in a full run: drag a robot BY HAND across a
              * few gridlines with the trace running and confirm L/R flip

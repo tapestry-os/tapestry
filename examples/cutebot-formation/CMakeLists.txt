@@ -64,8 +64,17 @@ if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)
 endif()
 
-# Substrate: Cutebot on micro:bit, null stub everywhere else.
-if(CONFIG_I2C)
+# Substrate: Cutebot on micro:bit, null stub everywhere else. CUTEBOT_VARIANT
+# (Kconfig) picks which physical Cutebot — Mini and Pro are genuinely
+# different I2C protocols/hardware (see cutebot_pro.h), not just a
+# parameter difference, hence two full driver+substrate file sets rather
+# than one parameterized set.
+if(CONFIG_CUTEBOT_VARIANT_PRO)
+    target_sources(app PRIVATE
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot_pro.c
+        ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot_pro.c
+    )
+elseif(CONFIG_I2C)
     target_sources(app PRIVATE
         ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/substrate_cutebot.c
         ${TAPESTRY_OS_BOARDS}/bbc_microbit_v2/cutebot.c

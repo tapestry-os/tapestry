@@ -22,6 +22,22 @@ LOG_MODULE_REGISTER(formation, LOG_LEVEL_DBG);
  * speed command is snapped up to this so the motors actually turn. */
 #define MIN_STICTION    22
 
+/* |cos(bearing error)| below which demo_force_to_twist() stops blending
+ * forward+turn and rotates in place instead — see that function's doc
+ * for why. 0.5 brackets bearing errors of 60-120 degrees, the region
+ * close enough to the true 90-degree singularity that cos's derivative
+ * (hence its sensitivity to heading noise) is near its own maximum.
+ * Deliberately NOT a blanket "beyond 60 degrees" gate: bearing errors
+ * near 180 degrees are the opposite case (cos near ITS extremum, so
+ * near-zero sensitivity to noise) and must keep reversing straight
+ * toward the target instead — see test_track_reverses_when_exactly_
+ * behind (exactly 180, well outside this band). A turn that starts
+ * inside the band (e.g. the ~105-degree re-form case) still converges:
+ * it rotates in place until the remaining error exits the band, then
+ * resumes the normal blend — see those tests' results, not just their
+ * starting angle. */
+#define DEMO_TRACK_ROTATE_IN_PLACE_COS_MAX  0.5f
+
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
 static float clampf(float v, float lo, float hi)
@@ -250,6 +266,37 @@ bool demo_discovery_in_safe_zone(const demo_odometry_t *odo)
            odo->y >= DEMO_SQUARE_UNITS && odo->y <= (WORLD_SIZE - DEMO_SQUARE_UNITS);
 }
 
+/* ── Junction-based drift correction (Cutebot Pro, see formation.h) ──────── */
+
+demo_junction_type_t demo_junction_correct(demo_odometry_t *odo, uint8_t line_state)
+{
+    int bits = __builtin_popcount((unsigned int)(line_state & 0x0Fu));
+
+    demo_junction_type_t type;
+    if (bits == 4) {
+        type = DEMO_JUNCTION_CROSSROADS;
+    } else if (bits == 3) {
+        type = DEMO_JUNCTION_T;
+    } else {
+        return DEMO_JUNCTION_NONE;
+    }
+
+    /* A junction (3 or 4 lit channels) pins BOTH axes at once, unlike a
+     * single-line crossing (demo_grid_correct(), one axis, heading-gated) —
+     * snap both unconditionally. No axis-selection-by-heading needed here:
+     * a real intersection is a real intersection regardless of which way
+     * the robot happens to be facing when it crosses one. */
+    odo->x = roundf(odo->x / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS;
+    odo->y = roundf(odo->y / DEMO_SQUARE_UNITS) * DEMO_SQUARE_UNITS;
+
+    LOG_INF("junction correct: state=0x%X (%s) -> snapped to (%.1f,%.1f)",
+            (unsigned)line_state,
+            (type == DEMO_JUNCTION_CROSSROADS) ? "crossroads" : "T-junction",
+            (double)odo->x, (double)odo->y);
+
+    return type;
+}
+
 /* ── Force → twist projection (shared by demo_drive_straight and
  * demo_track_target) ─────────────────────────────────────────────────────
  *
@@ -279,6 +326,25 @@ static void demo_force_to_twist(const demo_odometry_t *odo, float fx, float fy,
     float sin_h = sinf(odo->heading);
     float f_fwd = fx *  cos_h + fy * sin_h;
     float f_lat = fx * -sin_h + fy * cos_h;
+
+    /* f_fwd / hypotf(f_fwd, f_lat) is cos(bearing error) — the force
+     * magnitude is rotation-invariant, so this needs no atan2. Near the
+     * 90-degree singularity, f_fwd sits close to its own zero crossing:
+     * any small heading-estimate noise flips its sign, which flips
+     * speed's sign every tick. Real hardware hit exactly this on a >90
+     * degree re-form turn (2026-09-22 bench log: spd flipped +-0.34
+     * nearly every 160 ms tick for 14s straight, dist barely moved) —
+     * Cutebot Pro's firmware floor turns every nonzero speed command into
+     * a real ~20+ cm/s move, so each sign flip is a full-speed reversal,
+     * and that corrupts the closed-loop heading estimate (fed from real,
+     * never-settled encoder readings), which sustains the flip instead of
+     * letting it damp out. Fix: near that bearing, stop translating and
+     * rotate in place until pointed clearly enough to resume. */
+    float force_mag = hypotf(f_fwd, f_lat);
+    if (force_mag > 0.0f &&
+        fabsf(f_fwd) < DEMO_TRACK_ROTATE_IN_PLACE_COS_MAX * force_mag) {
+        f_fwd = 0.0f;
+    }
 
     float speed = clampf(f_fwd * FORCE_TO_SPEED, -max_speed, max_speed);
     float turn  = clampf(f_lat * TURN_GAIN / DEMO_TARGET_SPACING,

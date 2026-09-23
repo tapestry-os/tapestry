@@ -42,7 +42,14 @@ config DEMO_MODE_CHOREO
 
 config DEMO_MODE_STRAIGHT_LINE
 	bool "Straight-line drive test (single robot, no swarm/Choreo/SCR)"
+	depends on CUTEBOT_VARIANT_MINI
 	help
+	  CUTEBOT_VARIANT_MINI only: built around cutebot_line.h's edge-timing
+	  data (demo_grid_heading_correct()'s sign-verification flash below),
+	  which Cutebot Pro's I2C-polled 4-way sensor doesn't provide the same
+	  way — DEMO_MODE_ENCODER_BENCH is Pro's equivalent bring-up
+	  diagnostic instead.
+
 	  Isolated motion-primitive test — skips transport_init(), auto-ID,
 	  SCR, and Choreo entirely. There is no peer repulsion here, not
 	  because it's disabled but because it structurally cannot fire:
@@ -76,7 +83,11 @@ config DEMO_MODE_STRAIGHT_LINE
 
 config DEMO_MODE_CONVERGE_TEST
 	bool "Two-robot converge/swap test (real gossip, no SCR/Choreo)"
+	depends on CUTEBOT_VARIANT_MINI
 	help
+	  CUTEBOT_VARIANT_MINI only, same reason as DEMO_MODE_STRAIGHT_LINE
+	  above — not yet ported to Cutebot Pro's I2C line sensor.
+
 	  The next motion primitive after DEMO_MODE_STRAIGHT_LINE: two
 	  robots swap positions via demo_track_target() — real transport +
 	  gossip for live peer-position awareness (the repulsion backstop
@@ -144,7 +155,7 @@ config DEMO_MODE_WHEEL_CHARACTERIZE
 	  physically on the floor.
 
 config DEMO_MODE_LINE_SENSOR_BENCH
-	bool "Line sensor bring-up: log raw P13/P14 every 500 ms"
+	bool "Line sensor bring-up: log raw sensor state every 500 ms"
 	help
 	  Diagnostic for "are the line sensors even connected/responding at
 	  all" — built after a DEMO_MODE_STRAIGHT_LINE run that stayed
@@ -154,17 +165,18 @@ config DEMO_MODE_LINE_SENSOR_BENCH
 	  config itself is fine) uncovered while bench-verifying the new
 	  grid-based heading correction.
 
+	  CUTEBOT_VARIANT_MINI: no motors, no odometry, no interrupts — just
+	  cutebot_line_bench.c configuring the two edge-connector pins (P13,
+	  P14) as plain inputs and logging their RAW levels (no "true means
+	  line" inversion — see cutebot_line_bench.h for why) once every
+	  500 ms, forever:
+
+	    P13: 1  P14: 1
+
 	  Originally also logged P11/P12, on a report that a physical unit
 	  might have four IR modules wired instead of the documented two —
 	  confirmed on the bench that P11/P12 never toggle, so this now
 	  covers only the two real pins.
-
-	  No motors, no odometry, no interrupts — just cutebot_line_bench.c
-	  configuring the two edge-connector pins (P13, P14) as plain inputs
-	  and logging their RAW levels (no "true means line" inversion — see
-	  cutebot_line_bench.h for why) once every 500 ms, forever:
-
-	    P13: 1  P14: 1
 
 	  Hold different materials/colors under the sensors and vary the
 	  angle/height while watching the log — this isolates the sensor
@@ -173,8 +185,16 @@ config DEMO_MODE_LINE_SENSOR_BENCH
 	  depend on catching a brief transition while physically dragging a
 	  robot around.
 
+	  CUTEBOT_VARIANT_PRO: no GPIO pins at all — the 4-way sensor lives
+	  entirely behind the same I2C bus as the motor/encoder controller
+	  (cutebot_pro_read_line_state(), cmd 0x60/0x00). Logs the raw 4-bit
+	  state (bit0..bit3 = channel 1..4) every 500 ms instead:
+
+	    state=0000 (no line)   state=0110 (on line)   state=1111 (crossroads)
+
 config DEMO_MODE_DISCOVERY_BENCH
 	bool "Discovery detection bench: drive straight over the real target marker"
+	depends on CUTEBOT_VARIANT_MINI
 	help
 	  Diagnostic for choreo-2 ("king")/choreo-3 ("spill") — bench-confirms
 	  demo_discovery_detect() (formation.c) against the real printed
@@ -202,6 +222,126 @@ config DEMO_MODE_DISCOVERY_BENCH
 	  doc) and confirm: no dark reading anywhere else on the clear
 	  board, a confirmed hit only when crossing the marker itself, and
 	  the LED/log firing on the very pass that crosses it.
+
+	  CUTEBOT_VARIANT_MINI only — built on cutebot_line.h's GPIO sensor,
+	  same as DEMO_MODE_STRAIGHT_LINE; not ported to Cutebot Pro's I2C
+	  sensor (DEMO_MODE_ENCODER_BENCH covers Pro's own bring-up needs
+	  instead, and king/spill's discovery machinery is not wired for
+	  CUTEBOT_VARIANT_PRO at all yet — see main.c).
+
+config DEMO_MODE_ENCODER_BENCH
+	bool "Encoder bring-up (Cutebot Pro only): log measured wheel speed/distance"
+	depends on CUTEBOT_VARIANT_PRO
+	help
+	  Diagnostic for "what does the encoder actually report" — Cutebot
+	  Pro is the first hardware in this repo with real closed-loop wheel
+	  feedback, and cutebot_pro_read_encoders()'s distance units are
+	  UNVERIFIED (ELECFREAKS' own firmware source calls it "rotation
+	  degrees" but returns a 4-byte value — never bench-checked). Same
+	  "characterize before trusting" role DEMO_MODE_WHEEL_CHARACTERIZE
+	  plays for Mini's open-loop wheels.
+
+	  Drives both wheels forward at a fixed cutebot_pro_drive_cms()
+	  target (comfortably inside the firmware's 20-50 cm/s legal range),
+	  clears both encoder counters via cutebot_pro_clear_encoders(), then
+	  logs measured left/right speed and cumulative distance every
+	  500 ms. Compare the logged distance against a physically measured
+	  travel distance to pin down the real unit and scale factor before
+	  any odometry code trusts this value. Not run through the arena
+	  fence or any force model — a long clear stretch of floor, not the
+	  chessboard, same caveat DEMO_MODE_WHEEL_CHARACTERIZE gives.
+
+config DEMO_MODE_CIRCLE_BENCH
+	bool "Actuation bench (Cutebot Pro only): straight, then an arc turn, then straight"
+	depends on CUTEBOT_VARIANT_PRO
+	help
+	  Diagnostic for a real 2026-09-22 hardware bug: a 4-robot ring
+	  re-form (triangle after one robot powered off) needed real turns
+	  and got none — robots only rocked back and forth in a straight
+	  line. Root cause: cutebot_pro_drive_cms() floored each wheel's
+	  magnitude into the firmware's [20,50] cm/s range INDEPENDENTLY,
+	  which silently erases any turn whose natural differential is
+	  smaller than the floor (nearly every real arc turn, since
+	  formation.c's angular.z is inherently much smaller than linear.x
+	  — see substrate_cutebot_pro.c's doc) by snapping both wheels to
+	  the same floored speed. Fixed by scaling both wheels together to
+	  preserve their ratio instead of flooring separately — see
+	  cutebot_pro_drive_cms()'s own doc for the exact fix.
+
+	  Bypasses formation.c's whole control law — direct
+	  cutebot_pro_drive_cms() calls, same "isolate the actuation
+	  primitive" philosophy as DEMO_MODE_WHEEL_CHARACTERIZE — so a
+	  passing run here confirms the fix at the driver level before
+	  trusting it through the full choreo/force-model stack again:
+
+	    1. straight for 2s  (both wheels equal, 30 cm/s)
+	    2. an arc turn for 8s (left=20 cm/s, right=50 cm/s — the
+	       firmware's maximum representable 2.5:1 ratio, the sharpest
+	       turn this hardware can do at all) — should visibly curve,
+	       not travel in a straight line
+	    3. straight for 2s again (both wheels equal, 30 cm/s)
+
+	  8s is a starting guess, not a calibrated "exactly 360 degrees"
+	  duration (no real wheel-track measurement exists yet for this
+	  chassis — see DEMO_WHEEL_TRACK's doc, formation.h). Time/count how
+	  much it actually turns and report back so the duration (or the
+	  wheel-track constant, for anything that needs a real angle) can be
+	  calibrated from a real number instead of a guess. NOT run through
+	  the arena fence — long clear floor, not the chessboard.
+
+endchoice
+
+choice CUTEBOT_VARIANT
+	prompt "Cutebot hardware variant"
+	default CUTEBOT_VARIANT_MINI
+
+config CUTEBOT_VARIANT_MINI
+	bool "Cutebot Mini (open-loop drive, 2-sensor GPIO line following)"
+	help
+	  The original hardware every mode in this example was built and
+	  hardware-validated against: cutebot.c's raw-percentage I2C drive,
+	  cutebot_line.c's interrupt-driven GPIO line sensors. Stays default
+	  until Cutebot Pro hardware (below) is in hand and validated —
+	  see project history for why.
+
+config CUTEBOT_VARIANT_PRO
+	bool "Cutebot Pro V2.1 (closed-loop encoder motors, I2C 4-way IR)"
+	help
+	  ELECFREAKS Cutebot Pro, V2-generation firmware protocol (verified
+	  against elecfreaks/pxt-Cutebot-Pro's own v2.ts/main.ts source, not
+	  guessed) — NOT the same I2C protocol as CUTEBOT_VARIANT_MINI despite
+	  sharing the same address (0x10) and bus:
+	    - Motor: cmd 0x80, a continuous non-blocking closed-loop cm/s
+	      target per wheel (firmware PID, 20-50 cm/s legal nonzero range)
+	      — NOT the open-loop raw percentage Mini uses.
+	    - Encoders: cmd 0xA0, real measured per-wheel speed + cumulative
+	      distance — Mini has no equivalent; formation.c's odometry is
+	      open-loop dead reckoning only.
+	    - 4-way line sensor: cmd 0x60, one I2C-polled byte (bit0..bit3 =
+	      channel 1..4) — a genuinely different sensor arrangement from
+	      Mini's 2 interrupt-driven GPIO pins, and rich enough to detect
+	      crossroads (all 4 bits) and T-junctions (any 3 bits) directly,
+	      not just a line-present/absent edge.
+
+	  Untested on real hardware as of this Kconfig entry — hardware has
+	  not arrived yet. Calibration constants (CUTEBOT_PRO_MAX_SPEED_CMS,
+	  CUTEBOT_PRO_WHEEL_TRACK_CM, see substrate_cutebot_pro.c) are
+	  UNVERIFIED PLACEHOLDERS pending bench measurement, same as Mini's
+	  own DEMO_MAX_SPEED/DEMO_WHEEL_TRACK were before their 2026-09
+	  bench sessions. Run DEMO_MODE_ENCODER_BENCH and the Pro branch of
+	  DEMO_MODE_LINE_SENSOR_BENCH first, on real hardware, before
+	  trusting anything built on top of them.
+
+	  This board revision (V2.1.0) added an onboard gyroscope over
+	  V2.0.2 ("improved turning accuracy" per ELECFREAKS' own version
+	  comparison table) — no host-readable I2C register for it is
+	  documented anywhere (not in the official firmware source, not in
+	  an independent V2.0.2/V2.1.0-specific community driver, not in the
+	  vendor wiki), so it is not read here; the working assumption is
+	  that it feeds the firmware's own PID angle/steering loop
+	  internally, meaning cmd 0x80's closed-loop turning already
+	  benefits from it with no code on our side. Revisit if a real
+	  register ever turns up.
 
 endchoice
 
