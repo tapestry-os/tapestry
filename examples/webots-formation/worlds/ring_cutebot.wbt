@@ -93,10 +93,11 @@ ChessboardFloor {
 # formula cutebot-formation/src/main.c's compute_start_pos() uses,
 # converted through METERS_PER_UNIT=0.03 (see
 # ../controllers/cutebot/main.c). ring.choreo.toml's FORM step uses
-# frame="collective" (recomputes each vertex from live rank every cycle),
-# so this exact placement isn't load-bearing the way change_partners.wbt's
-# EXCHANGE placement is -- it's for hardware-parity/readability. z=0.0462
-# == WHEEL_RADIUS_M, so each robot's axle starts exactly at floor height.
+# frame="absolute" around a fixed center, with each vertex assigned from
+# live rank, so this exact placement isn't load-bearing the way
+# change_partners.wbt's EXCHANGE placement is -- it's for hardware-parity/
+# readability. z=0.0462 == WHEEL_RADIUS_M, so each robot spawns resting on
+# the floor (spawn height only, not part of the kinematics contract).
 
 CutebotRover {
   translation 0.3 0 0.0462

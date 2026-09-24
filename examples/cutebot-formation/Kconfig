@@ -226,8 +226,8 @@ config DEMO_MODE_DISCOVERY_BENCH
 	  CUTEBOT_VARIANT_MINI only — built on cutebot_line.h's GPIO sensor,
 	  same as DEMO_MODE_STRAIGHT_LINE; not ported to Cutebot Pro's I2C
 	  sensor (DEMO_MODE_ENCODER_BENCH covers Pro's own bring-up needs
-	  instead, and king/spill's discovery machinery is not wired for
-	  CUTEBOT_VARIANT_PRO at all yet — see main.c).
+	  instead). king/spill discovery itself does run on Pro, via
+	  cutebot_pro_line_watch_*() in the choreo loop — see main.c.
 
 config DEMO_MODE_ENCODER_BENCH
 	bool "Encoder bring-up (Cutebot Pro only): log measured wheel speed/distance"
