@@ -2,8 +2,8 @@
  * cutebot_pro.c — ELECFREAKS Cutebot Pro (V2.1.0) driver (I2C)
  *
  * See cutebot_pro.h for the protocol overview and what's verified vs.
- * unverified. Untested on real hardware as of this file's authoring —
- * hardware had not arrived yet; see Kconfig's CUTEBOT_VARIANT_PRO help.
+ * unverified. Motor, encoder and line-gray paths are hardware-verified
+ * (2026-09-22/23); the background line watcher is not yet.
  */
 
 #include "cutebot_pro.h"
@@ -45,10 +45,17 @@ LOG_MODULE_REGISTER(cutebot_pro, LOG_LEVEL_INF);
 
 static const struct device *i2c_dev;
 
+/* Serializes whole command/reply exchanges. The I2C driver only locks
+ * each transfer; a command's reply is a separate transfer, so without
+ * this the line-watch thread could slip its own command in between
+ * another caller's command and reply and steal (or corrupt) the reply. */
+static K_MUTEX_DEFINE(s_bus_lock);
+
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
-/* [0xFF][0xF9][CMD][PARAM_LEN][params...] — see cutebot_pro.h's top doc. */
-static int frame_send(uint8_t cmd, const uint8_t *params, uint8_t param_len)
+/* [0xFF][0xF9][CMD][PARAM_LEN][params...] — see cutebot_pro.h's top doc.
+ * Caller holds s_bus_lock. */
+static int frame_write(uint8_t cmd, const uint8_t *params, uint8_t param_len)
 {
     uint8_t buf[4 + 8];   /* every command used here has <= 8 params */
 
@@ -67,18 +74,29 @@ static int frame_send(uint8_t cmd, const uint8_t *params, uint8_t param_len)
     return i2c_write(i2c_dev, buf, (uint32_t)(4 + param_len), CUTEBOT_PRO_I2C_ADDR);
 }
 
+static int frame_send(uint8_t cmd, const uint8_t *params, uint8_t param_len)
+{
+    k_mutex_lock(&s_bus_lock, K_FOREVER);
+    int ret = frame_write(cmd, params, param_len);
+    k_mutex_unlock(&s_bus_lock);
+    return ret;
+}
+
 /* A command's reply is a SEPARATE I2C transaction after the command frame
  * (matches elecfreaks/pxt-Cutebot-Pro's own i2cCommandSend() followed by a
  * distinct i2cReadBuffer()/i2cReadNumber() call — not a single repeated-
- * START transaction), so this issues frame_send() then a plain i2c_read(). */
+ * START transaction), so this issues the frame then a plain i2c_read(),
+ * both under s_bus_lock. */
 static int frame_send_and_read(uint8_t cmd, const uint8_t *params, uint8_t param_len,
                                 uint8_t *reply, size_t reply_len)
 {
-    int ret = frame_send(cmd, params, param_len);
-    if (ret) {
-        return ret;
+    k_mutex_lock(&s_bus_lock, K_FOREVER);
+    int ret = frame_write(cmd, params, param_len);
+    if (ret == 0) {
+        ret = i2c_read(i2c_dev, reply, (uint32_t)reply_len, CUTEBOT_PRO_I2C_ADDR);
     }
-    return i2c_read(i2c_dev, reply, (uint32_t)reply_len, CUTEBOT_PRO_I2C_ADDR);
+    k_mutex_unlock(&s_bus_lock);
+    return ret;
 }
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
@@ -259,4 +277,93 @@ int cutebot_pro_read_line_gray(uint8_t channel, uint8_t *gray)
     }
     *gray = reply[0];
     return 0;
+}
+
+/* ── Background line watcher (see cutebot_pro.h) ────────────────────────── */
+
+#define LINE_WATCH_STACK_SIZE  1024
+/* Same priority as main (CONFIG_MAIN_THREAD_PRIORITY=0): time slicing
+ * (CONFIG_TIMESLICE_SIZE) then bounds how long either can hold the CPU, so
+ * a busy main tick delays a sample by at most one slice. Each sample is
+ * four bit-banged I2C exchanges (a few ms of CPU), so the period is also
+ * the knob for how much CPU this costs. */
+#define LINE_WATCH_PRIORITY    0
+
+K_THREAD_STACK_DEFINE(s_lw_stack, LINE_WATCH_STACK_SIZE);
+static struct k_thread s_lw_thread;
+static struct k_spinlock s_lw_lock;
+static cutebot_pro_line_sample_t s_lw;
+static uint8_t  s_lw_threshold;
+static uint32_t s_lw_period_ms;
+static bool     s_lw_started;
+
+static void line_watch_fn(void *p1, void *p2, void *p3)
+{
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+
+    while (true) {
+        uint8_t gray[4];
+        bool ok = true;
+        for (uint8_t ch = 1; ch <= 4 && ok; ch++) {
+            ok = (cutebot_pro_read_line_gray(ch, &gray[ch - 1]) == 0);
+        }
+
+        uint8_t mask = 0;
+        if (ok) {
+            for (int i = 0; i < 4; i++) {
+                if (gray[i] >= s_lw_threshold) {
+                    mask |= (uint8_t)(1u << i);
+                }
+            }
+        }
+
+        k_spinlock_key_t key = k_spin_lock(&s_lw_lock);
+        if (ok) {
+            for (int i = 0; i < 4; i++) {
+                s_lw.gray[i] = gray[i];
+            }
+            s_lw.dark_mask  = mask;
+            s_lw.seen_mask |= mask;
+            s_lw.samples++;
+            s_lw.valid = true;
+        } else {
+            s_lw.errors++;
+        }
+        k_spin_unlock(&s_lw_lock, key);
+
+        k_msleep(s_lw_period_ms);
+    }
+}
+
+int cutebot_pro_line_watch_start(uint8_t dark_threshold, uint32_t period_ms)
+{
+    if (!i2c_dev) {
+        return -ENODEV;
+    }
+    if (s_lw_started) {
+        return -EALREADY;
+    }
+    s_lw_threshold = dark_threshold;
+    s_lw_period_ms = period_ms;
+    s_lw_started   = true;
+
+    k_thread_create(&s_lw_thread, s_lw_stack, K_THREAD_STACK_SIZEOF(s_lw_stack),
+                    line_watch_fn, NULL, NULL, NULL,
+                    LINE_WATCH_PRIORITY, 0, K_NO_WAIT);
+    k_thread_name_set(&s_lw_thread, "cutebot_pro_lw");
+    LOG_INF("line watch: threshold %u, period %u ms",
+            (unsigned)dark_threshold, (unsigned)period_ms);
+    return 0;
+}
+
+void cutebot_pro_line_watch_poll(cutebot_pro_line_sample_t *out)
+{
+    k_spinlock_key_t key = k_spin_lock(&s_lw_lock);
+    *out = s_lw;
+    s_lw.seen_mask = 0;
+    s_lw.samples   = 0;
+    s_lw.errors    = 0;
+    k_spin_unlock(&s_lw_lock, key);
 }

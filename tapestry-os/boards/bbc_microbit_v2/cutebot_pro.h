@@ -111,6 +111,36 @@ int cutebot_pro_read_line_state(uint8_t *state);
  */
 int cutebot_pro_read_line_gray(uint8_t channel, uint8_t *gray);
 
+/*
+ * Background line watcher — the Pro's stand-in for Mini's interrupt-driven
+ * cutebot_line.c. The sensor is I2C-only (no GPIO to interrupt on) and the
+ * firmware won't drive a wheel slower than 20 cm/s, so a main loop polling
+ * every ~150 ms moves ~3 cm between reads and can hop over a 2 cm line.
+ * cutebot_pro_line_watch_start() spawns a thread that reads all four raw
+ * gray channels every period_ms and latches which channels read at or
+ * above dark_threshold; cutebot_pro_line_watch_poll() returns the latest
+ * sample plus everything latched since the previous poll, then clears the
+ * latch (read-and-clear, same contract as cutebot_line_poll()).
+ *
+ * Raw gray values rather than cutebot_pro_read_line_state()'s firmware
+ * bit: that bit read ch1/ch4 dark over a bare table (see
+ * cutebot_pro_read_line_gray()'s doc).
+ */
+typedef struct {
+    uint8_t  gray[4];     /* latest sample, ch1..ch4 (0-255, higher = darker) */
+    uint8_t  dark_mask;   /* latest sample: bit n set = ch n+1 >= threshold */
+    uint8_t  seen_mask;   /* OR of dark_mask over every sample since last poll */
+    uint16_t samples;     /* good samples since last poll */
+    uint16_t errors;      /* failed samples (any channel's read failed) since last poll */
+    bool     valid;       /* at least one good sample has ever been taken */
+} cutebot_pro_line_sample_t;
+
+/* Returns 0, -ENODEV if cutebot_pro_init() hasn't succeeded, or -EALREADY. */
+int cutebot_pro_line_watch_start(uint8_t dark_threshold, uint32_t period_ms);
+
+/* Latest sample + latched state since the last call, then clears the latch. */
+void cutebot_pro_line_watch_poll(cutebot_pro_line_sample_t *out);
+
 #ifdef __cplusplus
 }
 #endif

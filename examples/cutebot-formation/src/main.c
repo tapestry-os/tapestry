@@ -107,6 +107,30 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
 
 #define M_PI_F       3.14159265f
 
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+/* Signed per-wheel distance (cm) since the previous call, from the raw
+ * cumulative counters. Shared by the choreo loop's odometry and
+ * DEMO_MODE_ENCODER_BENCH so the bench exercises the exact sign/scale
+ * handling the demo uses. Direction comes from the command that was
+ * driving the wheel (fabsf first — correct whether the firmware counter
+ * is signed or magnitude-only; see CUTEBOT_PRO_DIST_COUNTS_PER_CM). */
+static void pro_wheel_deltas_cm(const cutebot_pro_encoders_t *enc,
+                                int32_t *prev_l, int32_t *prev_r,
+                                float left_cmd, float right_cmd,
+                                float *dl_cm, float *dr_cm)
+{
+    int32_t raw_l = enc->left_distance  - *prev_l;
+    int32_t raw_r = enc->right_distance - *prev_r;
+    *prev_l = enc->left_distance;
+    *prev_r = enc->right_distance;
+
+    *dl_cm = fabsf((float)raw_l) / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
+    *dr_cm = fabsf((float)raw_r) / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
+    if (left_cmd  < 0.0f) { *dl_cm = -*dl_cm; }
+    if (right_cmd < 0.0f) { *dr_cm = -*dr_cm; }
+}
+#endif
+
 /*
  * Convergence hold, shared by the swarm branch and
  * DEMO_MODE_CONVERGE_TEST: wait until fresh peers actually show up in
@@ -875,32 +899,117 @@ int main(void)
 #endif
 #elif defined(CONFIG_DEMO_MODE_ENCODER_BENCH)
     /*
-     * Encoder bring-up (Cutebot Pro only) — see Kconfig's help text. Drive
-     * both wheels at a fixed, comfortably-in-range PID speed target, clear
-     * both counters, then log measured speed/distance every 500 ms. NOT
-     * run through the arena fence or any force model — long clear floor,
-     * not the chessboard, same caveat DEMO_MODE_WHEEL_CHARACTERIZE gives.
+     * Odometry bench (Cutebot Pro only). Each step drives until the
+     * ENCODER ESTIMATE says it has arrived, then stops — so any error in
+     * sign, distance scale, or wheel track shows up as a visible
+     * mismatch on the floor. Uses pro_wheel_deltas_cm(), the same
+     * sign/scale step the choreo loop uses. Clear floor, not the board.
+     *
+     * Before starting: mark the robot's start position and put a piece
+     * of tape on the chassis pointing forward. Then per step:
+     *   1 fwd 100 cm   — tape-measure the real distance travelled
+     *   2 back to 0    — should return to the start mark; raw counters
+     *                    in the log show whether they count DOWN in
+     *                    reverse (signed) or keep climbing (magnitude)
+     *   3 CCW 2 turns  — should end facing the start direction
+     *   4 CW 2 turns   — back to heading 0, facing the start direction
      */
-#define ENCODER_BENCH_SPEED_CMS 30.0f   /* mid-range of the firmware's 20-50 cm/s legal window */
+#define ODO_BENCH_LINEAR_CMS  30.0f
+#define ODO_BENCH_SPIN_CMS    20.0f
+#define ODO_BENCH_DIST_CM     100.0f
+#define ODO_BENCH_TURNS       2.0f
+#define ODO_BENCH_PAUSE_MS    4000u
+#define ODO_BENCH_TIMEOUT_MS  8000u   /* each step should take ~3-4 s */
 
-    LOG_INF("ENCODER BENCH MODE — driving both wheels at %.0f cm/s, "
-            "logging measured speed/distance every 500 ms. Clear floor, "
-            "not the board.",
-            (double)ENCODER_BENCH_SPEED_CMS);
+    const float track_cm = CUTEBOT_PRO_WHEEL_TRACK_MM / 10.0f;
+    const float spin_rad = ODO_BENCH_TURNS * 2.0f * M_PI_F;
 
-    cutebot_pro_clear_encoders();
-    cutebot_pro_drive_cms(ENCODER_BENCH_SPEED_CMS, ENCODER_BENCH_SPEED_CMS);
+    struct {
+        const char *label;
+        float       l_cms, r_cms;
+        bool        linear;    /* true: stop on distance, false: on heading */
+        float       goal;      /* cm, or rad (unwrapped) */
+    } steps[] = {
+        { "1 fwd 100cm",      ODO_BENCH_LINEAR_CMS,  ODO_BENCH_LINEAR_CMS,  true,  ODO_BENCH_DIST_CM },
+        { "2 back to start", -ODO_BENCH_LINEAR_CMS, -ODO_BENCH_LINEAR_CMS,  true,  0.0f },
+        { "3 CCW 2 turns",   -ODO_BENCH_SPIN_CMS,    ODO_BENCH_SPIN_CMS,    false, spin_rad },
+        { "4 CW 2 turns",     ODO_BENCH_SPIN_CMS,   -ODO_BENCH_SPIN_CMS,    false, 0.0f },
+    };
 
-    while (true) {
-        cutebot_pro_encoders_t enc;
-        cutebot_pro_read_encoders(&enc);
+    LOG_INF("ODOMETRY BENCH — counts/cm=%.2f track=%.1fmm. Mark start "
+            "position and forward direction now; starting in %u s.",
+            (double)CUTEBOT_PRO_DIST_COUNTS_PER_CM,
+            (double)CUTEBOT_PRO_WHEEL_TRACK_MM, ODO_BENCH_PAUSE_MS / 1000u);
+    k_msleep(ODO_BENCH_PAUSE_MS);
 
-        LOG_INF("L: spd=%.1f cm/s dist=%d   R: spd=%.1f cm/s dist=%d "
-                "(distance unit UNVERIFIED — see cutebot_pro.h)",
-                (double)enc.left_speed_cms, (int)enc.left_distance,
-                (double)enc.right_speed_cms, (int)enc.right_distance);
+    cutebot_pro_encoders_t enc;
+    cutebot_pro_read_encoders(&enc);
+    int32_t prev_l = enc.left_distance;
+    int32_t prev_r = enc.right_distance;
+    float dist_cm = 0.0f;   /* along the robot's own forward axis */
+    float head    = 0.0f;   /* unwrapped, rad, CCW positive */
 
+    for (size_t i = 0; i < ARRAY_SIZE(steps); i++) {
+        float start = steps[i].linear ? dist_cm : head;
+        float sign  = (steps[i].goal > start) ? 1.0f : -1.0f;
+
+        LOG_INF("step %s: raw L=%d R=%d  est dist=%.1fcm head=%.1fdeg",
+                steps[i].label, (int)enc.left_distance, (int)enc.right_distance,
+                (double)dist_cm, (double)(head * 180.0f / M_PI_F));
+
+        substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+        cutebot_pro_drive_cms(steps[i].l_cms, steps[i].r_cms);
+
+        uint32_t elapsed = 0;
+        uint32_t log_accum = 0;
+        while (elapsed < ODO_BENCH_TIMEOUT_MS) {
+            k_msleep(20);
+            elapsed += 20;
+            cutebot_pro_read_encoders(&enc);
+            float dl, dr;
+            pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
+                                steps[i].l_cms, steps[i].r_cms, &dl, &dr);
+            dist_cm += 0.5f * (dl + dr);
+            head    += (dr - dl) / track_cm;
+
+            float now = steps[i].linear ? dist_cm : head;
+            if ((now - steps[i].goal) * sign >= 0.0f) {
+                break;
+            }
+            log_accum += 20;
+            if (log_accum >= 200) {
+                log_accum = 0;
+                LOG_INF("  raw L=%d R=%d  est dist=%.1fcm head=%.1fdeg",
+                        (int)enc.left_distance, (int)enc.right_distance,
+                        (double)dist_cm, (double)(head * 180.0f / M_PI_F));
+            }
+        }
+        cutebot_pro_drive_cms(0.0f, 0.0f);
+        substrate_set_signal(SUBSTRATE_SIGNAL_IDLE);
+
+        /* Let it coast to a stop, then account for any coast motion so
+         * the next step starts from the true estimate. */
         k_msleep(500);
+        cutebot_pro_read_encoders(&enc);
+        float dl, dr;
+        pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
+                            steps[i].l_cms, steps[i].r_cms, &dl, &dr);
+        dist_cm += 0.5f * (dl + dr);
+        head    += (dr - dl) / track_cm;
+
+        LOG_INF("step %s DONE%s: raw L=%d R=%d  est dist=%.1fcm "
+                "head=%.1fdeg — measure now",
+                steps[i].label,
+                (elapsed >= ODO_BENCH_TIMEOUT_MS) ? " (TIMEOUT)" : "",
+                (int)enc.left_distance, (int)enc.right_distance,
+                (double)dist_cm, (double)(head * 180.0f / M_PI_F));
+        k_msleep(ODO_BENCH_PAUSE_MS);
+    }
+
+    LOG_INF("ODOMETRY BENCH COMPLETE — motors off.");
+    substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);   /* red: done, not an error */
+    while (true) {
+        k_msleep(1000);
     }
 #elif defined(CONFIG_DEMO_MODE_CIRCLE_BENCH)
     /*
@@ -1168,6 +1277,25 @@ int main(void)
 
     int64_t last_tick_ms = k_uptime_get();   /* see STRAIGHT_LINE mode's doc above */
 
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+    /* Baseline for the distance-delta odometry below — see that block's
+     * doc. One throwaway read before the loop starts, same pattern as
+     * last_tick_ms above, so the very first in-loop delta reflects real
+     * motion since NOW, not since encoder power-on (whatever the counter
+     * already held before this run started). */
+    cutebot_pro_encoders_t enc_seed;
+    cutebot_pro_read_encoders(&enc_seed);
+    int32_t prev_left_dist  = enc_seed.left_distance;
+    int32_t prev_right_dist = enc_seed.right_distance;
+
+    /* Fast background line sampling — replaces the main loop's own
+     * once-per-tick gray reads; see cutebot_pro_line_watch_start(). */
+    if (cutebot_pro_line_watch_start(CUTEBOT_PRO_TARGET_DARK_THRESHOLD,
+                                     CUTEBOT_PRO_LINE_WATCH_PERIOD_MS) != 0) {
+        LOG_ERR("line watch failed to start — no line sensing this run");
+    }
+#endif
+
     while (true) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
@@ -1188,23 +1316,52 @@ int main(void)
         uint32_t dt_ms = (uint32_t)k_uptime_delta(&last_tick_ms);
 
 #if defined(CONFIG_CUTEBOT_VARIANT_PRO)
-        /* Closed-loop odometry: feed MEASURED wheel speed, not the
-         * commanded speed_cmd/rate_cmd — real encoder feedback replaces
-         * Mini's open-loop "assume the command was obeyed" assumption.
-         * readEncoders() reports unsigned magnitude only (elecfreaks'
-         * own firmware protocol has no signed-speed field), so direction
-         * is reconstructed from speed_cmd/rate_cmd's sign as of the LAST
-         * tick's substrate_move() call — still in scope here since this
-         * tick hasn't overwritten them yet (that happens further below,
-         * via demo_track_target) — which is exactly the command whose
+        /* Closed-loop odometry via distance DELTAS, not sampled speed —
+         * leaning harder into the encoder after real hardware showed
+         * visible drift with grid correction as the backstop (2026-09-23
+         * session: grid correction disabled entirely made no difference,
+         * pointing at the dead-reckoning integration itself). A single
+         * instantaneous speed sample per tick (the old approach) is
+         * rectangle-rule integration: it represents the WHOLE interval by
+         * one point, missing real motion between samples — worst exactly
+         * during the accel/decel transients a turn or continuous spin
+         * produces (both a running theme this session). The wheel's own
+         * encoder integrates continuously in real hardware; reading its
+         * cumulative distance and differencing against the LAST tick's
+         * reading recovers the TRUE distance traveled over this exact
+         * interval, with no sampling assumption at all. See
+         * CUTEBOT_PRO_DIST_COUNTS_PER_CM's doc (formation.h) for the
+         * scale factor's derivation and its two flagged open questions
+         * (derived not tape-measured; magnitude-only sign assumed by
+         * analogy with the speed field, not independently confirmed).
+         *
+         * Direction is reconstructed exactly as it always was for speed:
+         * from speed_cmd/rate_cmd's sign as of the LAST tick's
+         * substrate_move() call — still in scope here since this tick
+         * hasn't overwritten them yet (that happens further below, via
+         * demo_track_target) — which is exactly the command whose
          * resulting motion this encoder read reflects. */
         cutebot_pro_encoders_t enc;
         cutebot_pro_read_encoders(&enc);
 
         float last_left_cmd  = speed_cmd - rate_cmd;
         float last_right_cmd = speed_cmd + rate_cmd;
-        float left_meas_cms  = (last_left_cmd  < 0.0f) ? -enc.left_speed_cms  : enc.left_speed_cms;
-        float right_meas_cms = (last_right_cmd < 0.0f) ? -enc.right_speed_cms : enc.right_speed_cms;
+
+        float left_delta_cm, right_delta_cm;
+        pro_wheel_deltas_cm(&enc, &prev_left_dist, &prev_right_dist,
+                            last_left_cmd, last_right_cmd,
+                            &left_delta_cm, &right_delta_cm);
+
+        /* Recover an "effective average cm/s over this exact interval"
+         * from the real measured distance, rather than a sampled
+         * instantaneous value — demo_odometry_update() below multiplies
+         * this back out by the SAME dt_ms, so the true measured delta is
+         * reproduced EXACTLY (v*dt = (delta/dt)*dt = delta), not
+         * approximated. dt_s>0 guard: the very first tick after the
+         * seed read above could in principle see dt_ms==0. */
+        float dt_s = (float)dt_ms * 0.001f;
+        float left_meas_cms  = (dt_s > 0.0f) ? (left_delta_cm  / dt_s) : 0.0f;
+        float right_meas_cms = (dt_s > 0.0f) ? (right_delta_cm / dt_s) : 0.0f;
 
         /* cm/s -> logical units/s (DEMO_MM converts mm; *10 is cm->mm),
          * then normalize by the SAME DEMO_MAX_SPEED/DEMO_MAX_OMEGA
@@ -1227,25 +1384,20 @@ int main(void)
          * Mini branch uses for `line`/edge counts regardless of whether
          * correction itself is enabled.
          *
-         * Built from 4 individual cutebot_pro_read_line_gray() reads and
-         * an app-level threshold (CUTEBOT_PRO_LINE_DARK_THRESHOLD,
+         * Built from the line watcher's latest raw gray sample and an
+         * app-level threshold (CUTEBOT_PRO_LINE_DARK_THRESHOLD,
          * formation.h) — NOT cutebot_pro_read_line_state()'s firmware-
          * thresholded bit, which real hardware showed never fires on this
          * board's printed ink (see that constant's doc for the bench
-         * numbers). 4 I2C round-trips instead of 1, but comfortably
-         * inside the 100 ms tick budget alongside the encoder reads
-         * above. */
+         * numbers). */
+        cutebot_pro_line_sample_t lw;
+        cutebot_pro_line_watch_poll(&lw);
+
         uint8_t line_state = 0;
-        int     line_ret   = 0;
-        for (uint8_t ch = 1; ch <= 4; ch++) {
-            uint8_t gray = 0;
-            int gret = cutebot_pro_read_line_gray(ch, &gray);
-            if (gret) {
-                line_ret = gret;
-                break;
-            }
-            if (gray >= CUTEBOT_PRO_LINE_DARK_THRESHOLD) {
-                line_state |= (uint8_t)(1u << (ch - 1));
+        int     line_ret   = lw.valid ? 0 : -EIO;
+        for (int i = 0; i < 4; i++) {
+            if (lw.gray[i] >= CUTEBOT_PRO_LINE_DARK_THRESHOLD) {
+                line_state |= (uint8_t)(1u << i);
             }
         }
         demo_junction_type_t junction = DEMO_JUNCTION_NONE;
@@ -1254,6 +1406,20 @@ int main(void)
             junction = demo_junction_correct(&odo, line_state);
         }
 #endif
+        /* Target (king/spill) signals at CUTEBOT_PRO_TARGET_DARK_THRESHOLD
+         * — the board's own black squares stay below it. seen_mask covers
+         * every background sample since the last tick, so a 2 cm outline
+         * crossed between ticks still counts (Mini's entry flags' job). */
+        bool line_dark_level = lw.dark_mask != 0;
+        bool line_dark_seen  = lw.seen_mask != 0;
+
+        /* For the 1 Hz trace — see the Mini branch's edge counters. */
+        static uint32_t trace_lw_samples;
+        static uint32_t trace_lw_errors;
+        static uint8_t  trace_lw_seen;
+        trace_lw_samples += lw.samples;
+        trace_lw_errors  += lw.errors;
+        trace_lw_seen    |= lw.seen_mask;
 #elif defined(CONFIG_I2C)
         demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
 
@@ -1270,7 +1436,28 @@ int main(void)
                                    line.left_entered, line.left_entry_ms,
                                    line.right_entered, line.right_entry_ms);
 #endif
-        /* Independent of CONFIG_DEMO_GRID_CORRECTION — see the
+        bool line_dark_level = line.left || line.right;
+        bool line_dark_seen  = line.left_entered || line.right_entered;
+
+        /* Accumulated for the 1 Hz trace below — a single 100 ms poll
+         * usually shows 0 edges even seconds after a real crossing
+         * (crossings are brief), so the per-poll count alone is a poor
+         * "is this sensor even working" signal over serial. These sum
+         * across the whole 1 s window and are cleared when it prints. */
+        static uint32_t trace_left_edges;
+        static uint32_t trace_right_edges;
+        trace_left_edges  += line.left_edges;
+        trace_right_edges += line.right_edges;
+#else
+        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
+#endif
+
+#ifdef CONFIG_I2C
+        /* Discovery (king/spill) — shared by both variants; each branch
+         * above supplies line_dark_level (dark right now) and
+         * line_dark_seen (went dark at any point since the last tick).
+         *
+         * Independent of CONFIG_DEMO_GRID_CORRECTION — see the
          * declaration site's comment. Gated on demo_discovery_in_safe_
          * zone(): a reflectance sensor cannot tell "dark surface" from
          * "no surface at all" — a robot that drifts off the physical
@@ -1295,7 +1482,7 @@ int main(void)
         {
             static bool ignored_logged;
             bool ignoring = peer_finder >= 0 && !discovery.discovered &&
-                            (line.left || line.right);
+                            line_dark_level;
             if (ignoring && !ignored_logged) {
                 LOG_INF("id=%u dark hit IGNORED — peer %d is already the "
                         "finder", (unsigned)element_id, peer_finder);
@@ -1304,12 +1491,17 @@ int main(void)
         }
 #endif
 
-        bool dark_now = line.left || line.right;
+        bool dark_now = line_dark_level;
 #ifndef DEMO_DISCOVERY_SINGLE_FINDER
         /* Outline target (spill): its boundary can be crossed in well under
-         * one poll, so also accept the interrupt-driven ENTRY flags — see
+         * one tick, so also accept "went dark since the last tick" (Mini:
+         * interrupt entry flags; Pro: background line watcher) — see
          * demo_discovery_state_t::confirm_polls, set to 1 at init. */
-        dark_now = dark_now || line.left_entered || line.right_entered;
+        dark_now = dark_now || line_dark_seen;
+#else
+        /* king: its 120 mm disc is crossed over several ticks, so it uses
+         * the steady level with confirm_polls consecutive hits instead. */
+        ARG_UNUSED(line_dark_seen);
 #endif
         /* Forward motion only, and not within 0.5 s of a backup — a robot
          * that is carried, lifted or rocking back on its wheels sees no
@@ -1324,19 +1516,7 @@ int main(void)
             LOG_INF("id=%u DISCOVERED the target at est=(%.1f,%.1f)",
                     (unsigned)element_id, (double)odo.x, (double)odo.y);
         }
-
-        /* Accumulated for the 1 Hz trace below — a single 100 ms poll
-         * usually shows 0 edges even seconds after a real crossing
-         * (crossings are brief), so the per-poll count alone is a poor
-         * "is this sensor even working" signal over serial. These sum
-         * across the whole 1 s window and are cleared when it prints. */
-        static uint32_t trace_left_edges;
-        static uint32_t trace_right_edges;
-        trace_left_edges  += line.left_edges;
-        trace_right_edges += line.right_edges;
-#else
-        demo_odometry_update(&odo, speed_cmd, rate_cmd, dt_ms);
-#endif
+#endif /* CONFIG_I2C — discovery */
 
         own_state.position.x = odo.x;
         own_state.position.y = odo.y;
@@ -1483,10 +1663,18 @@ int main(void)
              * below, adapted to the I2C 4-way state instead of GPIO
              * edge counts. */
             LOG_INF("id=%u line_state=0x%X (read %s) junction=%d "
-                    "enc_L=%.1fcm/s enc_R=%.1fcm/s",
+                    "gray=%u/%u/%u/%u target_seen(1s)=0x%X "
+                    "samples(1s)=%u err=%u enc_L=%.1fcm/s enc_R=%.1fcm/s",
                     (unsigned)element_id, (unsigned)line_state,
                     (line_ret == 0) ? "ok" : "FAIL", (int)junction,
+                    (unsigned)lw.gray[0], (unsigned)lw.gray[1],
+                    (unsigned)lw.gray[2], (unsigned)lw.gray[3],
+                    (unsigned)trace_lw_seen, (unsigned)trace_lw_samples,
+                    (unsigned)trace_lw_errors,
                     (double)enc.left_speed_cms, (double)enc.right_speed_cms);
+            trace_lw_samples = 0;
+            trace_lw_errors  = 0;
+            trace_lw_seen    = 0;
 #elif defined(CONFIG_I2C)
             /* Sanity signal for bench-verifying the sensor itself before
              * trusting it in a full run: drag a robot BY HAND across a

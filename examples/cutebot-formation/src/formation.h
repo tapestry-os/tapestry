@@ -665,27 +665,114 @@ bool demo_discovery_in_safe_zone(const demo_odometry_t *odo);
 #endif
 
 /*
+ * CUTEBOT_PRO_TARGET_DARK_THRESHOLD — gray level (0-255) at or above which
+ * a channel counts as over a king/spill TARGET, as opposed to the board's
+ * own black squares. Deliberately far above CUTEBOT_PRO_LINE_DARK_THRESHOLD
+ * (which is tuned to SEE the board's ink). Bench (2026-09-22/23): white
+ * <= 48, board black ink 55-95, king marker and spill outline ~255 ("true
+ * black"). 150 leaves ~55 margin over the ink and ~100 under the targets,
+ * so a channel only partly over the 2 cm outline still registers. Open air
+ * reads 153-255 too — same ambiguity Mini has, handled the same way by
+ * demo_discovery_in_safe_zone() and the forward-motion gate, not by this.
+ */
+#ifndef CUTEBOT_PRO_TARGET_DARK_THRESHOLD
+#define CUTEBOT_PRO_TARGET_DARK_THRESHOLD 150u
+#endif
+
+/*
+ * CUTEBOT_PRO_LINE_WATCH_PERIOD_MS — sleep between background line-sensor
+ * samples (cutebot_pro_line_watch_start()). Sized for spill's 2 cm outline:
+ * the firmware floor is 20 cm/s and patrol runs ~20-30 cm/s, so crossing
+ * 2 cm takes ~65-100 ms; a sample every ~15 ms plus the sample's own
+ * I2C time gives several samples on the line, even with one time slice
+ * (20 ms) of delay when main is busy. Each sample is 4 bit-banged I2C
+ * exchanges of CPU, so going much lower costs real CPU. The 1 Hz trace
+ * logs the actual samples/s achieved.
+ */
+#ifndef CUTEBOT_PRO_LINE_WATCH_PERIOD_MS
+#define CUTEBOT_PRO_LINE_WATCH_PERIOD_MS 15u
+#endif
+
+/*
  * CUTEBOT_PRO_WHEEL_TRACK_MM — Cutebot Pro's real wheel-center-to-wheel-
  * center distance, used by main.c's encoder-fed odometry (omega = wheel
  * speed differential / wheel track — standard differential-drive
  * kinematics) instead of DEMO_WHEEL_TRACK (Mini's own measured 85mm
  * chassis, wrong hardware — Pro's is a visibly larger chassis).
  *
- * Derived from a real 2026-09-22 bench measurement, not guessed:
- * DEMO_MODE_CIRCLE_BENCH's arc-turn phase (left=20, right=50 cm/s) ran
- * for 8s and completed ~4 full rotations, observed by eye ("almost
- * exactly 4 times" — not lab-precise, but a real physical count, not an
- * assumption):
- *   omega = 4 * 2*pi / 8s = pi rad/s (0.5 rev/s)
- *   differential = 50 - 20 = 30 cm/s
- *   wheel_track = differential / omega = 30/pi = 95.49 mm
- * Re-derive (or measure directly with calipers) if a more precise value
- * is ever needed — this is a single eyeballed-rotation-count estimate.
+ * 92.0 mm: measured directly between the centers of each wheel's width
+ * (2026-09-23; an earlier 90 mm reading wasn't center-to-center). The
+ * bench trend below also pointed above 89.2. DEMO_MODE_ENCODER_BENCH's
+ * odometry runs, each
+ * spinning in place until the encoder estimate read 2 full turns
+ * (720 deg); implied track = track_used * estimated / real:
+ *   run 1 (95.5): CCW ~765 real -> 89.9mm   CW ~810 real -> 84.9mm
+ *   run 2 (87.3): CCW ~700 real -> 89.8mm   CW ~710 real -> 88.5mm
+ *   run 3 (89.2): both "a little" short -> still slightly above 89.2
+ * Run 1's CW figure is the outlier. All runs' 100 cm out-and-back was
+ * exact, so the distance scale is not in question.
+ *
+ * Replaces 95.5 mm, which came from counting "~4 rotations" by eye in
+ * DEMO_MODE_CIRCLE_BENCH (20/50 cm/s arc for 8s) — too coarse: a ~4%
+ * under-count of heading, accumulating over the ring's continuous spin,
+ * fits the "forms fine, then drifts" symptom.
  */
 #ifndef CUTEBOT_PRO_WHEEL_TRACK_MM
-#define CUTEBOT_PRO_WHEEL_TRACK_MM 95.5f
+#define CUTEBOT_PRO_WHEEL_TRACK_MM 92.0f
 #endif
 #define CUTEBOT_PRO_WHEEL_TRACK DEMO_MM(CUTEBOT_PRO_WHEEL_TRACK_MM)
+
+/*
+ * CUTEBOT_PRO_DIST_COUNTS_PER_CM — scale factor for
+ * cutebot_pro_encoders_t.left_distance/right_distance (cutebot_pro.h:
+ * "the raw, unit-unverified cumulative count"), used by main.c's
+ * distance-delta odometry to convert a per-tick raw counter delta
+ * straight to real cm, instead of sampling instantaneous speed once per
+ * tick and multiplying by an assumed interval (rectangle-rule
+ * integration — loses real motion between samples, worst exactly during
+ * the accel/decel transients turns and continuous spin produce).
+ *
+ * DERIVED, not directly tape-measured: cross-checked against the
+ * ALREADY-validated speed field (finding: commanded 30 cm/s -> measured
+ * exactly 300 cm/10 s, real hardware, real ruler) rather than a fresh
+ * ground run, using the elevated ENCODER_BENCH log from the id=3
+ * loose-cable session (2026-09-22, ~/tmp/cutebot_pro_id3_elevated.log,
+ * before the runaway/stall pathology in that log kicked in — see
+ * [[project-cutebot-pro-bringup]]). For each pair of consecutive samples,
+ * distance_cm = trapezoidal-average(speed_i, speed_i+1) * dt, compared
+ * against the raw left_distance delta over the same interval:
+ *   0.58-1.10s: 32.0 cm/s avg, dt=0.523s -> 16.75cm -> 370 counts -> 22.09/cm
+ *   1.10-1.63s: 31.5 cm/s avg, dt=0.523s -> 16.49cm -> 372 counts -> 22.56/cm
+ *   1.63-2.15s: 32.5 cm/s avg, dt=0.523s -> 17.01cm -> 386 counts -> 22.69/cm
+ *   2.15-2.67s: 33.5 cm/s avg, dt=0.523s -> 17.54cm -> 391 counts -> 22.30/cm
+ *   (5 more intervals through 4.77s, same method: 22.48-22.82/cm)
+ * 8 independent intervals (the very first, 0.06-0.58s, excluded — it
+ * spans the initial 0->33 cm/s ramp-up, where trapezoidal-averaging the
+ * endpoints underestimates a nonlinear accelerating ramp) agree to
+ * within about +-2%: mean 22.56 counts/cm. Free-spinning (elevated, no
+ * ground load) data was used deliberately: this is a fixed mechanical
+ * ratio (encoder pulses per motor-shaft turn * gearing * wheel
+ * circumference), not a function of load, and elevated data has zero
+ * wheel-slip contamination, unlike a ground run would.
+ *
+ * NOT yet confirmed against an actual physical tape measure specifically
+ * for this constant (only cross-derived from the speed field, which
+ * itself WAS tape-measured) — cutebot_pro.h's own header doc already
+ * names DEMO_MODE_ENCODER_BENCH as the intended way to pin this down for
+ * real; do that once (command a run over a taped/measured ground
+ * distance, compare to the raw counter delta) if these numbers need to
+ * be trusted beyond "internally consistent to +-2% across 8 intervals."
+ *
+ * Sign convention of the raw counter (signed position vs. magnitude-only)
+ * is still unconfirmed on the bench, but real hardware (2026-09-23)
+ * strongly suggested SIGNED: negating the raw delta on reverse commands
+ * double-inverted it (bots backed up for extended periods). main.c now
+ * takes fabsf() of the delta and applies the last command's sign, which
+ * is correct under either convention.
+ */
+#ifndef CUTEBOT_PRO_DIST_COUNTS_PER_CM
+#define CUTEBOT_PRO_DIST_COUNTS_PER_CM 22.56f
+#endif
 
 /*
  * demo_junction_correct — snap BOTH odo->x and odo->y to the nearest grid

@@ -17,10 +17,14 @@
 # ../controllers/cutebot/substrate_webots_cutebot.c — device names below
 # and the two constants that follow MUST stay numerically consistent:
 #   Devices:  "gps", "inertial_unit", "left_wheel_motor", "right_wheel_motor"
-#   Wheel anchor Y offset (+/-0.0425) == substrate_webots_cutebot.c's
-#     WHEEL_TRACK_M / 2
-#   Wheel Cylinder radius (0.021)     == substrate_webots_cutebot.c's
-#     WHEEL_RADIUS_M
+#   Wheel anchor Y offset (+/-0.0935) == substrate_webots_cutebot.c's
+#     WHEEL_TRACK_M / 2   (0.187)
+#   Wheel Cylinder radius (0.0462)    == substrate_webots_cutebot.c's
+#     WHEEL_RADIUS_M      (0.0462)
+# Not part of that contract, but keep in step: the default translation z
+# below and each robot's z in the .wbt worlds should equal the wheel
+# radius so robots spawn resting on the floor (higher just drops them at
+# t=0; lower starts the wheels inside the floor).
 # A change to either side without the other silently miscalibrates the
 # differential-drive kinematics conversion in code (motion becomes
 # imprecise, not broken outright — no compiler or Webots error catches
