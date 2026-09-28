@@ -13,7 +13,7 @@ including commercially.
 
 This Agreement applies to Your present and future Contributions submitted by
 You or on Your behalf. Except for the licenses granted here, You reserve all
-right, title, and interest in Your Contributions.
+rights, title, and interest in Your Contributions.
 
 ## 1. Definitions
 
