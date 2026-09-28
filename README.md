@@ -1,7 +1,7 @@
 # Tapestry
 
 An open-source operating system framework for physically reconfigurable matter.
-For full documentation, see [tapestry-os.com/docs](https://tapestry-os.com/docs/).
+For full documentation, see [tapestry-os.com/docs](https://tapestry-os.com/docs/), the repo.
 
 ## Vision
 
