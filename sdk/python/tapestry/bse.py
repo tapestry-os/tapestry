@@ -112,6 +112,7 @@ class BSEAnchorSelector(IntEnum):
     SELF          = 2
     LOWEST_ENERGY = 3
     DISCOVERER    = 4   # wire v6 — see bse.h's doc
+    DISCOVERY_POINT = 5 # where it was found, latched — see bse.h's doc
 
 
 ANCHOR_HOLD_MS     = 2000   # mirrors TAPESTRY_BSE_ANCHOR_HOLD_MS (bse.h)
@@ -187,6 +188,8 @@ class BSE:
         self._intent    = BSEIntent()
         self._directive = BSEDirective()
         self._track_scope: int = 0
+        # DISCOVERY_POINT (bse.h): latched once, outlives every goal.
+        self._discovery_point: Optional[Tuple[float, float, float]] = None
         self._reset_goal_state()
         # Preemption stack (mirrors bse.c's s_parked_intent/s_parked_act).
         self._parked_intent: List[BSEIntent] = []
@@ -288,6 +291,11 @@ class BSE:
         self._goal_pt = None
         return 0
 
+    def discovery_point(self) -> Optional[Tuple[float, float, float]]:
+        """The DISCOVERY_POINT latch, or None before anything has been
+        discovered.  Mirrors bse_discovery_point()."""
+        return self._discovery_point
+
     def has_parked_intent(self) -> bool:
         """True if preempt_intent() has saved an intent that
         resume_intent() would restore. Mirrors bse_has_parked_intent()."""
@@ -297,6 +305,7 @@ class BSE:
         intent = self._intent
         self._goal_pt = None
         self._anchor_lost = False
+        self._note_discovery_point(wm_entries)
 
         if intent.type == BSEIntentType.IDLE:
             self._directive = BSEDirective(type=BSEDirectiveType.IDLE)
@@ -462,6 +471,27 @@ class BSE:
             return best_id
         return None
 
+    def _note_discovery_point(self, wm_entries: List[dict]) -> None:
+        """Latch DISCOVERY_POINT (mirrors bse.c's note_discovery_point()):
+        the first tick any candidate's 'discovered' bit is visible, record
+        that element's position (lowest id if several), then never look
+        again."""
+        if self._discovery_point is not None:
+            return
+        best_id: Optional[int] = None
+        for e in wm_entries:
+            is_self = e.get('is_self', False)
+            if not is_self and not (e.get('is_active') and not e.get('is_stale')):
+                continue
+            if not e.get('discovered', False):
+                continue
+            eid = self.element_id if is_self else e.get('id')
+            if best_id is None or eid < best_id:
+                best_id = eid
+                self._discovery_point = (float(e.get('x', 0.0)),
+                                         float(e.get('y', 0.0)),
+                                         float(e.get('z', 0.0)))
+
     def _resolve_effective_target(self, wm_entries: List[dict], intent: BSEIntent,
                                   scr_state: dict) -> Optional[Tuple[float, float, float]]:
         """Resolve the effective FORM/CONVERGE target for this tick, per
@@ -492,8 +522,13 @@ class BSE:
         # so anchor_lost() (CHOREO_EVENT_ANCHOR_LOST's source) has one
         # place to be set, instead of repeating it at every return.
         resolved = None
-        raw_id = self._resolve_anchor_selector(wm_entries, intent, scr_state)
-        if raw_id is None:
+        raw_id = None
+        if intent.anchor != BSEAnchorSelector.DISCOVERY_POINT:
+            raw_id = self._resolve_anchor_selector(wm_entries, intent, scr_state)
+        if intent.anchor == BSEAnchorSelector.DISCOVERY_POINT:
+            # A fixed latched point: nothing to debounce, nothing to look up.
+            resolved = self._discovery_point
+        elif raw_id is None:
             self._anchor_locked_id    = None
             self._anchor_candidate_id = None
         elif self._anchor_locked_id is not None and raw_id == self._anchor_locked_id:

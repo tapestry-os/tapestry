@@ -84,6 +84,7 @@ ANCHOR_ENUM = {
     "self":          "TAPESTRY_BSE_ANCHOR_SELF",
     "lowest-energy": "TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY",
     "discoverer":    "TAPESTRY_BSE_ANCHOR_DISCOVERER",
+    "discovery-point": "TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT",
 }
 
 MOTION_ENUM = {
@@ -170,8 +171,8 @@ def c_string(s: str) -> str:
 
 def uses_discovery(script: ChoreoScript) -> bool:
     """True if the script reacts to the wire-v6 `discovered` bit at all —
-    a `discovery`/`discovery_any` transition, a `discoverer` anchor, or a
-    `discovered` track filter.  The application uses this to keep its own
+    a `discovery`/`discovery_any` transition, a `discoverer` or
+    `discovery-point` anchor, or a `discovered` track filter.  The application uses this to keep its own
     detection machinery (sensor latch, stop-on-discovery reflex) inert in
     scripts that never look at the bit."""
     tracks = script.tracks or []
@@ -179,7 +180,7 @@ def uses_discovery(script: ChoreoScript) -> bool:
     if any(t.requires_discovered for t in tracks):
         return True
     for st in steps:
-        if st.anchor_select == "discoverer":
+        if st.anchor_select in ("discoverer", "discovery-point"):
             return True
         if any(t.event in ("discovery", "discovery_any") for t in (st.on or [])):
             return True
@@ -191,8 +192,22 @@ def uses_discovery_define(script: ChoreoScript) -> str:
     pre-existing script's header byte-identical."""
     if not uses_discovery(script):
         return ""
-    return ("#define CHOREO_USES_DISCOVERY           1u   "
+    line = ("#define CHOREO_USES_DISCOVERY           1u   "
             "/* reacts to the wire-v6 discovered bit */\n")
+    if uses_discovery_point(script):
+        # The finder rejoins the collective after discovery instead of
+        # staying put as the anchor, so the application must release its
+        # stop-on-discovery reflex once the script moves on.
+        line += ("#define CHOREO_USES_DISCOVERY_POINT     1u   "
+                 "/* anchors on where it was found */\n")
+    return line
+
+
+def uses_discovery_point(script: ChoreoScript) -> bool:
+    """True if any step anchors on a `discovery-point`."""
+    tracks = script.tracks or []
+    steps  = list(script.steps) + [st for t in tracks for st in t.steps]
+    return any(st.anchor_select == "discovery-point" for st in steps)
 
 
 def emit_step(s: NormalizedStep) -> str:

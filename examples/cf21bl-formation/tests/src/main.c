@@ -2136,6 +2136,54 @@ ZTEST(choreo_script, test_frame_element_discoverer_anchor_lowest_id_tiebreak)
                    "lowest id (1) wins the simultaneous-discovery tie");
 }
 
+/* DISCOVERY_POINT latches WHERE the finder was the first tick its bit is
+ * visible: the finder backing out, or going stale altogether, must not
+ * move the anchor.  No debounce — the point never changes. */
+ZTEST(choreo_script, test_frame_element_discovery_point_stays_where_it_was_found)
+{
+    choreo_init(0);
+    scr_state_t scr;
+    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 5.0f, 5.0f, false);
+    wm_set_peer(2, 9.0f, 9.0f, false);
+    scr_tick(&scr, &wm);
+
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
+                  "nothing discovered yet");
+
+    wm.entries[2].state.discovered = true;
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
+                   "latched on the first tick the bit is visible");
+
+    wm_set_peer(2, 1.0f, 8.0f, false);               /* finder backs out */
+    wm.entries[2].state.discovered = true;
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
+                   "the point must not follow the finder");
+
+    wm_set_peer(2, 1.0f, 8.0f, true);                /* finder removed */
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
+                   "the point must outlive the finder");
+
+    position_t pt;
+    zassert_true(bse_discovery_point(&pt), "getter reports the latch");
+    zassert_within(pt.y, 9.0f, EPS, "getter returns the latched point");
+}
+
 /* ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────── */
 
 ZTEST(choreo_script, test_motion_spin_rotates_the_form_vertex)

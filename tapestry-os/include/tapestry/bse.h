@@ -171,6 +171,23 @@ typedef enum {
      * "nobody has found it yet" signal, same as every other selector.
      */
     TAPESTRY_BSE_ANCHOR_DISCOVERER     = 4,
+    /*
+     * WHERE it was found, not who found it: the position the discoverer
+     * reported in the first gossiped state this element saw with its
+     * discovered bit set (same candidate set and lowest-id tiebreak as
+     * DISCOVERER), latched once per bse_init() and never moved again.
+     * bse_tick() watches for it every tick whatever goal is active, so the
+     * point is already latched by the time a FORM needs it. Unlike
+     * DISCOVERER, the finder is then free to move (e.g. to take its own
+     * slot in a ring around the point) and may even leave the swarm
+     * without taking the centre with it. Not debounced — a latched point
+     * never changes, so there is nothing to thrash. The finder must stay
+     * put until its peers have heard it (a short HOLD after discovery);
+     * a peer that first hears the bit after the finder moved latches
+     * wherever the finder was by then. Fails to resolve until something
+     * is discovered, same as DISCOVERER.
+     */
+    TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT = 5,
 } tapestry_bse_anchor_selector_t;
 
 /* Anchor selector re-resolution debounce, §5.2: "a selector result must be
@@ -444,6 +461,15 @@ bool bse_goal_achieved(void);
  * bse_tick().  This is CHOREO_EVENT_ANCHOR_LOST's source (choreo.h §8.2).
  */
 bool bse_anchor_lost(void);
+
+/*
+ * bse_discovery_point — The TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT latch
+ * (see that selector's doc): true and *out set once any element's
+ * discovered bit has been seen since bse_init(), false before.  Read-only
+ * diagnostics — the latch itself runs inside bse_tick() whatever goal is
+ * active.
+ */
+bool bse_discovery_point(position_t *out);
 
 /*
  * bse_set_track_scope — Choreo SDK Design doc §7 tracks: tell bse.c

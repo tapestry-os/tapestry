@@ -224,6 +224,13 @@ def test_discoverer_anchor_is_emitted_as_the_matching_c_enum():
     assert ".anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER" in c
 
 
+def test_discovery_point_anchor_is_emitted_as_the_matching_c_enum():
+    c = choreoc.emit_step(NormalizedStep(
+        goal="form", max_duration_ms=1000, target=(0.0, 0.0, 0.0),
+        radius=5.0, frame="element", anchor_select="discovery-point"))
+    assert ".anchor = TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT" in c
+
+
 def test_requires_discovered_filter_is_emitted():
     c = choreoc.emit_track_filter(NormalizedTrack(requires_discovered=True))
     assert ".requires_discovered = true" in c

@@ -211,6 +211,7 @@ Choreos that shouldn't care where the collective happens to be:
 | `"self"` | this element (degenerate — station-keeps on itself) |
 | `"lowest-energy"` | the fresh peer (or self) with the lowest `energy_level` |
 | `"discoverer"` | the fresh peer (or self) that has latched its gossiped `discovered` bit (lowest id wins a tie; no anchor at all until someone has discovered) |
+| `"discovery-point"` | WHERE the discoverer was when its bit was first seen — a point latched once per element and never moved again, so the finder can leave (or drop out) without taking the centre with it; not debounced. Give the finder a short `hold` after discovery so its peers hear it before it moves |
 | `"id:N"` | the explicit element `N` (testing/debug only) |
 
 `"newest"`/`"oldest"` (most/longest recently joined) are named in the
