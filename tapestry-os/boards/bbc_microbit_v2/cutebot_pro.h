@@ -73,8 +73,10 @@ void cutebot_pro_drive_cms(float left_cms, float right_cms);
 /* Set both RGB headlights to the given color (cmd 0x20, LIGHT=2/both). */
 void cutebot_pro_set_leds(uint8_t r, uint8_t g, uint8_t b);
 
-/* Read both wheels' measured speed and cumulative distance (cmd 0xA0). */
-void cutebot_pro_read_encoders(cutebot_pro_encoders_t *out);
+/* Read both wheels' measured speed and cumulative distance (cmd 0xA0).
+ * Returns 0, or a negative errno if any of the four reads failed — in
+ * which case *out is left untouched (see the definition for why). */
+int cutebot_pro_read_encoders(cutebot_pro_encoders_t *out);
 
 /* Clear both wheels' cumulative distance counters (cmd 0x50). */
 void cutebot_pro_clear_encoders(void);

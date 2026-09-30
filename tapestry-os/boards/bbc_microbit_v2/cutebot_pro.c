@@ -196,39 +196,50 @@ void cutebot_pro_set_leds(uint8_t r, uint8_t g, uint8_t b)
     if (ret) { LOG_WRN("LED write failed: %d", ret); }
 }
 
-void cutebot_pro_read_encoders(cutebot_pro_encoders_t *out)
+int cutebot_pro_read_encoders(cutebot_pro_encoders_t *out)
 {
     if (!i2c_dev || !out) {
-        return;
+        return -ENODEV;
     }
 
     uint8_t speed_l[1], speed_r[1];
     uint8_t dist_l[4], dist_r[4];
-
     uint8_t sub;
-    int ret;
 
+    /* All four reads or nothing: *out is written only when every one
+     * succeeded.  Reporting a failed distance read as 0 (as this used to)
+     * looks, to the odometry differencing successive readings, like the
+     * wheel jumping by its whole accumulated count — a phantom move of
+     * metres from a single I2C glitch, and another on recovery. */
     sub = ENCODER_SUB_SPEED_L;
-    ret = frame_send_and_read(CMD_ENCODER, &sub, 1, speed_l, sizeof(speed_l));
-    out->left_speed_cms = ret ? 0.0f : (float)speed_l[0];
-
-    sub = ENCODER_SUB_SPEED_R;
-    ret = frame_send_and_read(CMD_ENCODER, &sub, 1, speed_r, sizeof(speed_r));
-    out->right_speed_cms = ret ? 0.0f : (float)speed_r[0];
-
+    int ret = frame_send_and_read(CMD_ENCODER, &sub, 1, speed_l, sizeof(speed_l));
+    if (ret == 0) {
+        sub = ENCODER_SUB_SPEED_R;
+        ret = frame_send_and_read(CMD_ENCODER, &sub, 1, speed_r, sizeof(speed_r));
+    }
     /* Int32LE per elecfreaks/pxt-Cutebot-Pro's v2.ts (NumberFormat.Int32LE) —
      * see cutebot_pro.h's doc for why the physical unit is still unverified. */
-    sub = ENCODER_SUB_DIST_L;
-    ret = frame_send_and_read(CMD_ENCODER, &sub, 1, dist_l, sizeof(dist_l));
-    out->left_distance = ret ? 0 :
-        (int32_t)((uint32_t)dist_l[0] | ((uint32_t)dist_l[1] << 8) |
-                   ((uint32_t)dist_l[2] << 16) | ((uint32_t)dist_l[3] << 24));
+    if (ret == 0) {
+        sub = ENCODER_SUB_DIST_L;
+        ret = frame_send_and_read(CMD_ENCODER, &sub, 1, dist_l, sizeof(dist_l));
+    }
+    if (ret == 0) {
+        sub = ENCODER_SUB_DIST_R;
+        ret = frame_send_and_read(CMD_ENCODER, &sub, 1, dist_r, sizeof(dist_r));
+    }
+    if (ret != 0) {
+        return ret;
+    }
 
-    sub = ENCODER_SUB_DIST_R;
-    ret = frame_send_and_read(CMD_ENCODER, &sub, 1, dist_r, sizeof(dist_r));
-    out->right_distance = ret ? 0 :
+    out->left_speed_cms  = (float)speed_l[0];
+    out->right_speed_cms = (float)speed_r[0];
+    out->left_distance =
+        (int32_t)((uint32_t)dist_l[0] | ((uint32_t)dist_l[1] << 8) |
+                  ((uint32_t)dist_l[2] << 16) | ((uint32_t)dist_l[3] << 24));
+    out->right_distance =
         (int32_t)((uint32_t)dist_r[0] | ((uint32_t)dist_r[1] << 8) |
-                   ((uint32_t)dist_r[2] << 16) | ((uint32_t)dist_r[3] << 24));
+                  ((uint32_t)dist_r[2] << 16) | ((uint32_t)dist_r[3] << 24));
+    return 0;
 }
 
 void cutebot_pro_clear_encoders(void)
@@ -329,7 +340,13 @@ static void line_watch_fn(void *p1, void *p2, void *p3)
             s_lw.samples++;
             s_lw.valid = true;
         } else {
+            /* Don't keep presenting the last good sample: a chassis that
+             * stops answering (power off, loose cable) would otherwise
+             * read as whatever it last saw — "dark" forever if that was
+             * a lifted sensor — and could declare a false discovery. */
             s_lw.errors++;
+            s_lw.dark_mask = 0;
+            s_lw.valid     = false;
         }
         k_spin_unlock(&s_lw_lock, key);
 
