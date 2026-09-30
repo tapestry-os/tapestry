@@ -384,3 +384,15 @@ config TAPESTRY_QUORUM_TARGET
 	depends on DEMO_MODE_CHOREO
 	range 0 4
 	default 1
+
+config DEMO_BLE_DEBUG
+	bool "Broadcast debug telemetry over BLE (legacy advertising)"
+	depends on DEMO_MODE_CHOREO && BT
+	help
+	  Adds a second, legacy-format BLE advertising set carrying a status
+	  packet (~2 Hz: step, quorum, estimate, target, latched discovery
+	  point) and the demo's key log events as text, for untethered runs.
+	  Enable with
+	  -DEXTRA_CONF_FILE=ble_debug.conf, which also raises
+	  BT_EXT_ADV_MAX_ADV_SET to 2 — this app's Kconfig sources Zephyr's
+	  first, so it cannot raise that default itself.  See src/ble_debug.h.

@@ -64,6 +64,11 @@ if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)
 endif()
 
+# Wireless debug telemetry (Kconfig DEMO_BLE_DEBUG, via ble_debug.conf).
+if(CONFIG_DEMO_BLE_DEBUG)
+    target_sources(app PRIVATE src/ble_debug.c)
+endif()
+
 # Substrate: Cutebot on micro:bit, null stub everywhere else. CUTEBOT_VARIANT
 # (Kconfig) picks which physical Cutebot — Mini and Pro are genuinely
 # different I2C protocols/hardware (see cutebot_pro.h), not just a

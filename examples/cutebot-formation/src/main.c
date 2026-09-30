@@ -102,8 +102,25 @@
 #endif
 
 #include "formation.h"
+#ifdef CONFIG_DEMO_BLE_DEBUG
+#include "ble_debug.h"
+#endif
 
 LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
+
+/* A log line that is also a debug EVENT: with CONFIG_DEMO_BLE_DEBUG it is
+ * mirrored into the wireless text stream (ble_debug.h) for untethered
+ * runs. Kept to state changes — the 1 Hz trace stays serial-only (the
+ * status packet carries its numbers). */
+#ifdef CONFIG_DEMO_BLE_DEBUG
+#define DEMO_EVT(level, ...)                 \
+    do {                                     \
+        LOG_##level(__VA_ARGS__);            \
+        ble_debug_printf(__VA_ARGS__);       \
+    } while (0)
+#else
+#define DEMO_EVT(level, ...) LOG_##level(__VA_ARGS__)
+#endif
 
 #define M_PI_F       3.14159265f
 
@@ -209,7 +226,10 @@ static void pro_wheel_deltas_cm(const cutebot_pro_encoders_t *enc,
  * other both stay latched (lowest id anchors).  Robots only hear the king
  * once its bit arrives.
  */
-#if defined(CHOREO_N_TRACKS) && defined(CHOREO_USES_DISCOVERY)
+#if defined(CHOREO_USES_DISCOVERY) && \
+    (defined(CHOREO_N_TRACKS) || defined(CHOREO_USES_DISCOVERY_POINT))
+/* leak.choreo.toml has no tracks but rings a single discovery point, so it
+ * wants one finder exactly as king does. */
 #define DEMO_DISCOVERY_SINGLE_FINDER 1
 #endif
 
@@ -942,8 +962,8 @@ int main(void)
             (double)CUTEBOT_PRO_WHEEL_TRACK_MM, ODO_BENCH_PAUSE_MS / 1000u);
     k_msleep(ODO_BENCH_PAUSE_MS);
 
-    cutebot_pro_encoders_t enc;
-    cutebot_pro_read_encoders(&enc);
+    cutebot_pro_encoders_t enc = {0};
+    (void)cutebot_pro_read_encoders(&enc);
     int32_t prev_l = enc.left_distance;
     int32_t prev_r = enc.right_distance;
     float dist_cm = 0.0f;   /* along the robot's own forward axis */
@@ -1064,6 +1084,9 @@ int main(void)
     if (transport_init() != 0) {
         LOG_WRN("transport init failed — no peer awareness");
     }
+#ifdef CONFIG_DEMO_BLE_DEBUG
+    ble_debug_init();
+#endif
 
     int n_total;
     element_id_t element_id = transport_negotiate_id(&n_total);
@@ -1078,17 +1101,20 @@ int main(void)
          * solo-allowed escape hatch here (unlike cf21bl-formation) since a
          * grid formation with one missing robot is a visibly different
          * demo, not a silent degradation worth shipping quietly. */
-        LOG_ERR("id=%u auto-ID heard NO peers — grounded self-healing "
-                "recovery (renegotiates until a peer is found)",
-                (unsigned)element_id);
+        DEMO_EVT(ERR, "id=%u auto-ID heard NO peers — grounded self-healing "
+                 "recovery (renegotiates until a peer is found)",
+                 (unsigned)element_id);
         substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);
 
         element_id = transport_negotiate_id_retry(element_id, &n_total);
 
-        LOG_WRN("id=%u recovered — n_total=%d, proceeding",
-                (unsigned)element_id, n_total);
+        DEMO_EVT(WRN, "id=%u recovered — n_total=%d, proceeding",
+                 (unsigned)element_id, n_total);
         substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
     }
+#ifdef CONFIG_DEMO_BLE_DEBUG
+    ble_debug_set_id((uint8_t)element_id);
+#endif
 
     /*
      * Announce the negotiated id BEFORE compute_start_pos() seeds this
@@ -1138,6 +1164,12 @@ int main(void)
     /* Every robot's own crossing of a thin outline target counts (spill):
      * one entry edge is enough, no multi-poll confirmation. */
     discovery.confirm_polls = 1u;
+#endif
+#ifdef CHOREO_USES_DISCOVERY_POINT
+    /* The script step this robot discovered on, and ticks since the script
+     * left it — see the stop-on-discovery block in the loop. */
+    int      discovery_step           = -1;
+    uint32_t discovery_released_ticks = 0u;
 #endif
 #endif
 
@@ -1196,7 +1228,7 @@ int main(void)
         substrate_set_power(SUBSTRATE_POWER_SLEEP);
         return -1;
     }
-    LOG_INF("id=%u choreo \"%s\" loaded — %u steps, time bound %u s",
+    DEMO_EVT(INF, "id=%u choreo \"%s\" loaded — %u steps, time bound %u s",
             (unsigned)element_id, CHOREO_NAME,
             (unsigned)CHOREO_SCRIPT_LEN,
             (unsigned)(CHOREO_SCRIPT_TOTAL_TIMEOUT_MS / 1000u));
@@ -1245,10 +1277,10 @@ int main(void)
         }
 
         if (waited_ms % DEMO_SYNC_LOG_INTERVAL_MS == 0) {
-            LOG_INF("id=%u still waiting for peers: %d/%d fresh (%u ms, "
-                    "stable %u/%u ms)", (unsigned)element_id, fresh,
-                    n_total - 1, (unsigned)waited_ms,
-                    (unsigned)peers_ready_ms, (unsigned)DEMO_SYNC_SETTLE_MS);
+            DEMO_EVT(INF, "id=%u still waiting for peers: %d/%d fresh (%u ms, "
+                     "stable %u/%u ms)", (unsigned)element_id, fresh,
+                     n_total - 1, (unsigned)waited_ms,
+                     (unsigned)peers_ready_ms, (unsigned)DEMO_SYNC_SETTLE_MS);
         }
 
         /* Advance this element's Lamport clock every tick, as the main loop
@@ -1273,7 +1305,8 @@ int main(void)
         k_msleep(WM_CYCLE_MS);
     }
 
-    LOG_INF("Demo ready — entering main loop");
+    DEMO_EVT(INF, "id=%u demo ready — entering main loop",
+             (unsigned)element_id);
 
     int64_t last_tick_ms = k_uptime_get();   /* see STRAIGHT_LINE mode's doc above */
 
@@ -1283,8 +1316,10 @@ int main(void)
      * last_tick_ms above, so the very first in-loop delta reflects real
      * motion since NOW, not since encoder power-on (whatever the counter
      * already held before this run started). */
-    cutebot_pro_encoders_t enc_seed;
-    cutebot_pro_read_encoders(&enc_seed);
+    cutebot_pro_encoders_t enc_seed = {0};
+    /* No good baseline yet if this read fails: the first good read in the
+     * loop then only sets it (see enc_prev_valid there). */
+    bool    enc_prev_valid  = cutebot_pro_read_encoders(&enc_seed) == 0;
     int32_t prev_left_dist  = enc_seed.left_distance;
     int32_t prev_right_dist = enc_seed.right_distance;
 
@@ -1341,16 +1376,32 @@ int main(void)
          * hasn't overwritten them yet (that happens further below, via
          * demo_track_target) — which is exactly the command whose
          * resulting motion this encoder read reflects. */
-        cutebot_pro_encoders_t enc;
-        cutebot_pro_read_encoders(&enc);
+        cutebot_pro_encoders_t enc = {0};
+        int enc_ret = cutebot_pro_read_encoders(&enc);
 
         float last_left_cmd  = speed_cmd - rate_cmd;
         float last_right_cmd = speed_cmd + rate_cmd;
 
-        float left_delta_cm, right_delta_cm;
-        pro_wheel_deltas_cm(&enc, &prev_left_dist, &prev_right_dist,
-                            last_left_cmd, last_right_cmd,
-                            &left_delta_cm, &right_delta_cm);
+        /* A failed read contributes no motion this tick (prev_* kept, so
+         * the next good read measures the whole interval) — never a
+         * delta against a garbage counter. */
+        float left_delta_cm = 0.0f, right_delta_cm = 0.0f;
+        if (enc_ret == 0 && !enc_prev_valid) {
+            prev_left_dist  = enc.left_distance;    /* baseline only */
+            prev_right_dist = enc.right_distance;
+            enc_prev_valid  = true;
+        } else if (enc_ret == 0) {
+            pro_wheel_deltas_cm(&enc, &prev_left_dist, &prev_right_dist,
+                                last_left_cmd, last_right_cmd,
+                                &left_delta_cm, &right_delta_cm);
+        } else {
+            static uint32_t enc_fail_count;
+            if ((enc_fail_count++ % 50u) == 0u) {
+                DEMO_EVT(WRN, "id=%u encoder read failed (%d), %u so far — "
+                         "odometry held", (unsigned)element_id, enc_ret,
+                         (unsigned)enc_fail_count);
+            }
+        }
 
         /* Recover an "effective average cm/s over this exact interval"
          * from the real measured distance, rather than a sampled
@@ -1410,8 +1461,12 @@ int main(void)
          * — the board's own black squares stay below it. seen_mask covers
          * every background sample since the last tick, so a 2 cm outline
          * crossed between ticks still counts (Mini's entry flags' job). */
-        bool line_dark_level = lw.dark_mask != 0;
-        bool line_dark_seen  = lw.seen_mask != 0;
+        /* Only fresh, error-free samples may count as dark: a chassis that
+         * stops answering must not keep its last reading (see the line
+         * watcher) and declare a discovery from it. */
+        bool line_fresh      = lw.valid && lw.samples > 0u && lw.errors == 0u;
+        bool line_dark_level = line_fresh && lw.dark_mask != 0;
+        bool line_dark_seen  = line_fresh && lw.seen_mask != 0;
 
         /* For the 1 Hz trace — see the Mini branch's edge counters. */
         static uint32_t trace_lw_samples;
@@ -1484,7 +1539,7 @@ int main(void)
             bool ignoring = peer_finder >= 0 && !discovery.discovered &&
                             line_dark_level;
             if (ignoring && !ignored_logged) {
-                LOG_INF("id=%u dark hit IGNORED — peer %d is already the "
+                DEMO_EVT(INF, "id=%u dark hit IGNORED — peer %d is already the "
                         "finder", (unsigned)element_id, peer_finder);
             }
             ignored_logged = ignoring;
@@ -1513,7 +1568,10 @@ int main(void)
                                demo_discovery_in_safe_zone(&odo));
         if (!was_discovered && discovery.discovered) {
             own_state.discovered = true;
-            LOG_INF("id=%u DISCOVERED the target at est=(%.1f,%.1f)",
+#ifdef CHOREO_USES_DISCOVERY_POINT
+            discovery_step = choreo_script_step();
+#endif
+            DEMO_EVT(INF, "id=%u DISCOVERED the target at est=(%.1f,%.1f)",
                     (unsigned)element_id, (double)odo.x, (double)odo.y);
         }
 #endif /* CONFIG_I2C — discovery */
@@ -1538,10 +1596,14 @@ int main(void)
             last_abort_state != SCR_ABORT_TRIGGERED) {
             own_state.update_seq++;
             choreo_publish_state(&own_state);
-            LOG_WRN("id=%u quorum LOST — sending HARD_RT gossip now",
-                    (unsigned)element_id);
+            DEMO_EVT(WRN, "id=%u quorum LOST — sending HARD_RT gossip now",
+                     (unsigned)element_id);
             transport_send(&own_state, TAPESTRY_QOS_HARD_RT);
             gossip_accum = 0;
+        }
+        if (abort_state == SCR_ABORT_CLEARED &&
+            last_abort_state != SCR_ABORT_CLEARED) {
+            DEMO_EVT(INF, "id=%u quorum recovered", (unsigned)element_id);
         }
         last_abort_state = abort_state;
 
@@ -1557,7 +1619,7 @@ int main(void)
         static int last_step = -2;
         if (choreo_script_step() != last_step) {
             last_step = choreo_script_step();
-            LOG_INF("id=%u choreo track %u step %d %s", (unsigned)element_id,
+            DEMO_EVT(INF, "id=%u choreo track %u step %d %s", (unsigned)element_id,
                     (unsigned)choreo_current_track(), last_step,
                     choreo_goal_status() == CHOREO_STATE_SUSPENDED
                         ? "(suspended)" : "");
@@ -1573,13 +1635,47 @@ int main(void)
                 if (e->is_active && !e->is_self && e->state.discovered &&
                     !peer_logged[i]) {
                     peer_logged[i] = true;
-                    LOG_INF("id=%u sees peer %u DISCOVERED (peer track %u, "
+                    DEMO_EVT(INF, "id=%u sees peer %u DISCOVERED (peer track %u, "
                             "own track %u, stale=%d)",
                             (unsigned)element_id, (unsigned)e->state.id,
                             (unsigned)e->state.current_track,
                             (unsigned)choreo_current_track(),
                             (int)e->is_stale);
                 }
+            }
+        }
+
+        /* One-shot: where this robot latched the leak (discovery-point
+         * anchor, bse.h) — the centre every ring vertex is computed from. */
+        position_t disc_point = {0};
+        bool disc_point_valid = bse_discovery_point(&disc_point);
+        {
+            static bool point_logged;
+            if (disc_point_valid && !point_logged) {
+                point_logged = true;
+                DEMO_EVT(INF, "id=%u latched discovery point (%.1f,%.1f) "
+                         "own est=(%.1f,%.1f)", (unsigned)element_id,
+                         (double)disc_point.x, (double)disc_point.y,
+                         (double)odo.x, (double)odo.y);
+            }
+        }
+
+        /* Fresh-peer count changes: what element_lost/joined and quorum
+         * are computed from, and the first thing to look at when a robot
+         * re-forms for no visible reason. */
+        int fresh_peers = 0;
+        for (int i = 0; i < MAX_ELEMENTS; i++) {
+            const wm_entry_t *e = &wm.entries[i];
+            if (e->is_active && !e->is_self && !e->is_stale) {
+                fresh_peers++;
+            }
+        }
+        {
+            static int last_fresh = -1;
+            if (fresh_peers != last_fresh) {
+                DEMO_EVT(INF, "id=%u fresh peers %d -> %d",
+                         (unsigned)element_id, last_fresh, fresh_peers);
+                last_fresh = fresh_peers;
             }
         }
 
@@ -1614,8 +1710,25 @@ int main(void)
          * nowhere near it).  On spill the discovery event has no debounce,
          * but the new step's directive still lags one tick.  Once stopped
          * here, the HOLD that finally captures its station captures THIS
-         * position. */
-        if (discovery.discovered) {
+         * position.
+         *
+         * leak (CHOREO_USES_DISCOVERY_POINT) instead wants the finder back
+         * in the ring, so the stop lasts only until the script has left the
+         * step it discovered on — plus one tick, since the tick the step
+         * changes still carries the old step's directive (the new goal's
+         * first bse_tick() is the next choreo_tick()). By then its "found"
+         * HOLD has captured this position, and its peers latch it as the
+         * discovery point while it holds there. */
+        bool discovery_stop = discovery.discovered;
+#ifdef CHOREO_USES_DISCOVERY_POINT
+        if (discovery_stop && choreo_script_step() != discovery_step) {
+            discovery_stop = discovery_released_ticks < 1u;
+            if (discovery_released_ticks < 1u) {
+                discovery_released_ticks++;
+            }
+        }
+#endif
+        if (discovery_stop) {
             speed_cmd = 0.0f;
             rate_cmd  = 0.0f;
         }
@@ -1704,6 +1817,32 @@ int main(void)
             transport_send(&own_state, TAPESTRY_QOS_SOFT_RT);
             gossip_accum = 0;
         }
+
+#ifdef CONFIG_DEMO_BLE_DEBUG
+        {
+            ble_debug_status_t st = {
+                .step         = (int8_t)choreo_script_step(),
+                .track        = choreo_current_track(),
+                .quorum       = (uint8_t)scr.quorum_state,
+                .fresh_peers  = (uint8_t)fresh_peers,
+                .suspended    = choreo_goal_status() == CHOREO_STATE_SUSPENDED,
+                .discovered   = own_state.discovered,
+                .point_valid  = disc_point_valid,
+                .target_valid = dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
+                .x = odo.x, .y = odo.y, .heading = odo.heading,
+                .tx = dir->target.x, .ty = dir->target.y,
+                .px = disc_point.x, .py = disc_point.y,
+            };
+#if defined(CONFIG_CUTEBOT_VARIANT_PRO)
+            for (int i = 0; i < 4; i++) {
+                st.gray_max = MAX(st.gray_max, lw.gray[i]);
+            }
+#elif defined(CONFIG_I2C)
+            st.gray_max = line_dark_level ? 255u : 0u;
+#endif
+            ble_debug_set_status(&st);
+        }
+#endif
 
         k_msleep(WM_CYCLE_MS);
     }
