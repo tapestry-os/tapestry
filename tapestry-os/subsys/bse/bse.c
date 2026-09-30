@@ -80,6 +80,14 @@ static tapestry_bse_directive_t s_directive;
  * counts peers actually helping the SAME track — see that function. */
 static uint8_t s_track_scope;
 
+/* TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT (bse.h): where the target was found.
+ * Latched by note_discovery_point() on the first tick any candidate's
+ * discovered bit is visible, whatever intent is active, and kept until
+ * bse_init() — not part of bse_activation_t, since it outlives every goal
+ * (and every preemption) by design. */
+static bool       s_discovery_point_valid;
+static position_t s_discovery_point;
+
 /* ── Per-activation state ─────────────────────────────────────────────────── */
 /*
  * bse_activation_t — everything an intent accumulates between the moment it
@@ -376,8 +384,40 @@ static bool resolve_anchor_selector(const world_model_t *wm,
     }
 
     default:
+        /* DISCOVERY_POINT is a point, not an element — resolve_effective_
+         * target() handles it before ever calling this. */
         return false;
     }
+}
+
+/* Latch TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT (bse.h): the first tick any
+ * candidate's discovered bit is visible, record that element's position
+ * (lowest id if several, same candidate set as DISCOVERER), then never
+ * look again. Runs every bse_tick() regardless of the active intent. */
+static void note_discovery_point(const world_model_t *wm,
+                                 const scr_state_t *scr)
+{
+    if (s_discovery_point_valid) {
+        return;
+    }
+    bool         found  = false;
+    element_id_t min_id = 0;
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        bool candidate = e->is_self ||
+                         (e->is_active && !e->is_stale &&
+                          scr_peer_is_trusted(scr, e->state.id));
+        if (!candidate || !e->state.discovered) {
+            continue;
+        }
+        element_id_t id = e->is_self ? s_self_id : e->state.id;
+        if (!found || id < min_id) {
+            found              = true;
+            min_id             = id;
+            s_discovery_point  = e->state.position;
+        }
+    }
+    s_discovery_point_valid = found;
 }
 
 /*
@@ -435,7 +475,13 @@ static bool resolve_effective_target(const world_model_t *wm,
      * return. */
     bool resolved = false;
     element_id_t raw_id;
-    if (!resolve_anchor_selector(wm, scr, &raw_id)) {
+    if (s_intent.anchor == TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT) {
+        /* A fixed latched point: nothing to debounce, nothing to look up. */
+        if (s_discovery_point_valid) {
+            *out     = s_discovery_point;
+            resolved = true;
+        }
+    } else if (!resolve_anchor_selector(wm, scr, &raw_id)) {
         s_act.anchor_locked          = false;
         s_act.anchor_candidate_valid = false;
     } else if (s_act.anchor_locked && raw_id == s_act.anchor_locked_id) {
@@ -638,6 +684,7 @@ void bse_init(element_id_t self_id)
     s_parked_depth   = 0;
     s_track_scope    = 0;
     s_prev_goal_valid = false;   /* no outgoing intent yet to inherit from */
+    s_discovery_point_valid = false;
 
     reset_activation();
 }
@@ -722,6 +769,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 {
     s_goal_pt_valid = false;
     s_anchor_lost   = false;
+    note_discovery_point(wm, scr);
 
     switch (s_intent.type) {
 
@@ -1104,6 +1152,14 @@ bool bse_goal_achieved(void)
 bool bse_anchor_lost(void)
 {
     return s_anchor_lost;
+}
+
+bool bse_discovery_point(position_t *out)
+{
+    if (s_discovery_point_valid && out != NULL) {
+        *out = s_discovery_point;
+    }
+    return s_discovery_point_valid;
 }
 
 void bse_set_track_scope(uint8_t track)

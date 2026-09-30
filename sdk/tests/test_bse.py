@@ -325,6 +325,52 @@ def test_frame_element_discoverer_anchor_lowest_id_tiebreak():
     approx_xy(b.get_directive().target, (5.0, 5.0))
 
 
+def test_frame_element_discovery_point_stays_where_it_was_found():
+    """DISCOVERY_POINT latches the finder's position the first tick its
+    bit is visible — the finder then moving away, or going stale
+    altogether, must not move the anchor."""
+    b = BSE(0)
+    entries = wm([(0, 0), (5, 5), (9, 9)], self_id=0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.DISCOVERY_POINT))
+    b.tick(entries, HEALTHY)
+    assert b.get_directive().type == BSEDirectiveType.HOLD
+    assert b.anchor_lost() is True, "nothing discovered yet"
+    assert b.discovery_point() is None
+
+    entries[2]['discovered'] = True
+    b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (9.0, 9.0))   # no debounce
+
+    entries[2]['x'], entries[2]['y'] = 1.0, 8.0          # finder backs out
+    b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (9.0, 9.0))
+
+    entries[2]['is_stale'] = True                        # finder removed
+    b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (9.0, 9.0))
+    assert b.anchor_lost() is False
+    approx_xy(b.discovery_point(), (9.0, 9.0))
+
+
+def test_frame_element_discovery_point_latches_before_the_goal_needs_it():
+    """The point is latched by whatever goal is active when the bit first
+    shows (here a HOLD), so a later FORM finds it even though the finder
+    has already moved by then."""
+    b = BSE(0)
+    entries = wm([(0, 0), (5, 5)], self_id=0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.HOLD))
+    entries[1]['discovered'] = True
+    b.tick(entries, HEALTHY)
+    entries[1]['x'], entries[1]['y'] = 7.0, 1.0
+    b.submit_intent(BSEIntent(type=BSEIntentType.CONVERGE,
+                              frame=BSEFrame.ELEMENT,
+                              anchor=BSEAnchorSelector.DISCOVERY_POINT))
+    b.tick(entries, HEALTHY)
+    approx_xy(b.get_directive().target, (5.0, 5.0))
+
+
 # ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────────
 
 def test_motion_spin_rotates_the_form_vertex():

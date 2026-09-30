@@ -526,7 +526,8 @@ def test_frame_element_needs_an_anchor(tmp_path):
                             goal="converge"))
 
 
-@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy", "discoverer"])
+@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy", "discoverer",
+                                    "discovery-point"])
 def test_frame_element_anchor_selectors_are_recognised(select, tmp_path):
     s = parse_file(one_step(
         f'duration = "5s", frame = "element", '

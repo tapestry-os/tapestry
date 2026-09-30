@@ -199,7 +199,8 @@ FRAMES = {"absolute": 0, "collective": 1, "element": 2}
 # here (so an author gets "not yet implemented", not "unknown selector")
 # but rejected explicitly — they need L4 join-order tracking that doesn't
 # exist yet. "id:N" is parsed separately (embeds the id in the string).
-ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3, "discoverer": 4}
+ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3, "discoverer": 4,
+                    "discovery-point": 5}
 _ANCHOR_SELECTORS_DEFERRED = {"newest", "oldest"}
 
 # §12 Stage 5 effect: indicator = "<name>" mirrors substrate_signal_t
@@ -300,6 +301,7 @@ _ANCHOR_ENUM = {
     "self":           BSEAnchorSelector.SELF,
     "lowest-energy":  BSEAnchorSelector.LOWEST_ENERGY,
     "discoverer":     BSEAnchorSelector.DISCOVERER,
+    "discovery-point": BSEAnchorSelector.DISCOVERY_POINT,
 }
 _MOTION_ENUM = {
     "static": BSEMotion.STATIC,
