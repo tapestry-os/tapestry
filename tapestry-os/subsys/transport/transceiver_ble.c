@@ -125,22 +125,34 @@ static struct bt_le_ext_adv *ext_adv;
 
 struct parse_ctx {
     bool    found;
+    int8_t  rssi;
     uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE]; /* raw frame + optional auth tag */
 };
+
+__weak void ble_transceiver_other_tapestry_ad(const uint8_t *data, uint8_t len,
+                                              int8_t rssi)
+{
+    ARG_UNUSED(data);
+    ARG_UNUSED(len);
+    ARG_UNUSED(rssi);
+}
 
 static bool parse_ad_element(struct bt_data *data, void *user_data)
 {
     struct parse_ctx *ctx = user_data;
 
     if (data->type != BT_DATA_MANUFACTURER_DATA ||
-        data->data_len < MFR_DATA_SIZE) {
+        data->data_len < MFR_OFF_TYPE + 1u) {
         return true;
     }
 
     const uint8_t *d = data->data;
     if (d[MFR_OFF_COMPANY]     != TAPESTRY_BLE_COMPANY_ID_LO ||
-        d[MFR_OFF_COMPANY + 1] != TAPESTRY_BLE_COMPANY_ID_HI ||
-        d[MFR_OFF_TYPE]        != TAPESTRY_MSG_GOSSIP) {
+        d[MFR_OFF_COMPANY + 1] != TAPESTRY_BLE_COMPANY_ID_HI) {
+        return true;
+    }
+    if (data->data_len < MFR_DATA_SIZE || d[MFR_OFF_TYPE] != TAPESTRY_MSG_GOSSIP) {
+        ble_transceiver_other_tapestry_ad(d, data->data_len, ctx->rssi);
         return true;
     }
 
@@ -153,10 +165,9 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
                     struct net_buf_simple *buf)
 {
     ARG_UNUSED(addr);
-    ARG_UNUSED(rssi);
     ARG_UNUSED(adv_type);
 
-    struct parse_ctx ctx = {0};
+    struct parse_ctx ctx = { .rssi = rssi };
     bt_data_parse(buf, parse_ad_element, &ctx);
     if (!ctx.found) {
         return;

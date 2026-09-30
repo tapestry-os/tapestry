@@ -34,5 +34,16 @@ int ble_transceiver_drain_nonces(uint32_t *out, int max);
  * Returns frames drained. */
 int ble_transceiver_drain_claimed(bool *claimed_out, int max_id);
 
+/*
+ * Weak hook, called from the BT RX thread for every Tapestry-tagged
+ * manufacturer AD (company TAPESTRY_BLE_COMPANY_ID) that is NOT a gossip
+ * frame — e.g. an application's own diagnostic advertising set.  `data`
+ * starts at the company id.  The default does nothing; an application
+ * overrides it by defining a function with this signature.  Keep it
+ * short: it runs inside the scan callback.
+ */
+void ble_transceiver_other_tapestry_ad(const uint8_t *data, uint8_t len,
+                                       int8_t rssi);
+
 #endif /* CONFIG_BT */
 #endif /* TAPESTRY_TRANSCEIVER_BLE_H */
