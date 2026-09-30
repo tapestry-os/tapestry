@@ -74,7 +74,7 @@ Other scripts in this directory compile the same way (swap the `.toml` name;
 `form-grid.choreo.toml` (the earlier near-square grid), and the two
 discovery demos below.
 
-### Discovery demos: `king.choreo.toml` and `spill.choreo.toml`
+### Discovery demos: `king.choreo.toml`, `spill.choreo.toml`, `leak.choreo.toml`
 
 A hidden **IR-dark target** is printed on the board (ink or IR tape — the
 fabric chessboard itself does not read dark).  A **120 mm printed disc** is
@@ -89,6 +89,13 @@ ground IR sensor confirms a dark hit it latches `discovered` — a wire v6 field
 - **spill** — no ring, no tracks: each robot that crosses the (larger, odd)
   target stops on its own edge, green; robots that never touch it hold
   orange.  The finished picture is the target's cordon.
+- **leak** — king's disc and patrol, but the finder rejoins: everyone
+  parks for 4 s (`found`) while the finder's position spreads, then ALL
+  robots, finder included, form a radius-20 circle around the spot where it
+  was found (`anchor = discovery-point`).  Switch one robot OFF (lifting it
+  is not removal: it keeps gossiping) and after ~6 s the rest re-form around
+  the same spot — four robots make a square, three an equilateral
+  triangle.  Same placement rules as king.
 
 Build and flash (from the workspace root; the committed ring header is
 untouched if you write the header to a scratch copy, or regenerate it
@@ -283,6 +290,28 @@ Place the powered-off robot anywhere in the arena and power it on. During its
 takes the lowest unclaimed slot. Once its arrival has been fresh for
 `CHOREO_MEMBERSHIP_HOLD_MS`, the settled hold's `element_joined` transition
 fires on the other robots and the ring re-forms to include it.
+
+## Wireless debug telemetry (untethered runs)
+
+Build with `-DEXTRA_CONF_FILE=ble_debug.conf` (adds `CONFIG_DEMO_BLE_DEBUG`
+and a second BLE advertising set; leave it out for demo firmware).  Each
+robot then broadcasts, in LEGACY advertising format so any BLE scanner can
+hear it:
+
+- a status packet, ~2 Hz: step, quorum, fresh peers, estimate and heading,
+  directive target, latched discovery point, darkest line-sensor reading;
+- the key log events as text: step changes, discovery, `sees peer N
+  DISCOVERED`, `latched discovery point`, `fresh peers a -> b`, quorum
+  lost/recovered, auto-ID and barrier progress.
+
+Every packet carries a sequence number, and each text chunk is sent twice,
+so a receiver can drop duplicates and mark gaps.  Robots ignore these
+packets (too short to be gossip).  See `src/ble_debug.h` for the packet
+format.  A receiver is not part of this example yet.
+
+Debug builds also log, over serial every 5 s, how many debug packets the
+robot queued and how many of each peer's it heard (`dbg tx: ... | heard
+peers' dbg: ...`) — a quick check that the radio is not congested.
 
 ## Auto-ID
 

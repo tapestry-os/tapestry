@@ -45,6 +45,7 @@ HEALTHY = scr(QUORUM_HEALTHY)
 
 KING_TOML  = REPO_ROOT / "examples" / "cutebot-formation" / "king.choreo.toml"
 SPILL_TOML = REPO_ROOT / "examples" / "cutebot-formation" / "spill.choreo.toml"
+LEAK_TOML  = REPO_ROOT / "examples" / "cutebot-formation" / "leak.choreo.toml"
 
 
 def _names(path, track=None):
@@ -188,12 +189,76 @@ def test_spill_script_loads_and_self_discovery_ends_the_patrol():
     assert d.target == pytest.approx((10.0, 20.0, 0.0))
 
 
+# ── leak.choreo.toml ────────────────────────────────────────────────────────
+
+LEAK_FOUND_AT = (60.0, 65.0)
+
+
+def _leak_ring_targets(ids, finder_stale_after_latch=False):
+    """Drive each element in `ids` through the real leak script: id0 (the
+    finder) discovers at LEAK_FOUND_AT, then backs out to a new position —
+    and optionally drops out of the swarm — before anyone reaches "ring".
+    Returns {id: ring vertex}."""
+    from tapestry.script_toml import load_steps
+    steps = load_steps(LEAK_TOML)
+    names = _names(LEAK_TOML)
+    found, ring = names.index("found"), names.index("ring")
+
+    targets = {}
+    for me in ids:
+        c = Choreo(element_id=me)
+        entries = wm([LEAK_FOUND_AT, (30.0, 30.0), (40.0, 80.0), (75.0, 30.0)],
+                     self_id=me)
+        assert c.submit_script(steps) == 0
+        entries[0]['discovered'] = True
+        c.tick(entries, HEALTHY)
+        assert c.script_step() == found, \
+            "discovery_any must park everyone on 'found' first"
+
+        entries[0]['x'], entries[0]['y'] = 45.0, 50.0   # finder backs out
+        if finder_stale_after_latch:
+            entries[0]['is_stale'] = True
+        for _ in range(4000 // WM_CYCLE_MS + 2):         # the 4 s found hold
+            c.tick(entries, HEALTHY)
+        assert c.script_step() == ring
+        c.tick(entries, HEALTHY)
+        d = c.get_directive()
+        assert d.type == BSEDirectiveType.MOVE_TO_POINT
+        targets[me] = d.target
+    return targets
+
+
+def _check_ring(targets, side):
+    pts = list(targets.values())
+    for t in pts:
+        r = math.hypot(t[0] - LEAK_FOUND_AT[0], t[1] - LEAK_FOUND_AT[1])
+        assert r == pytest.approx(20.0, abs=1e-3), \
+            f"vertex must be radius 20 from where the leak was FOUND, got {r}"
+    near = [min(math.hypot(a[0] - b[0], a[1] - b[1])
+                for j, b in enumerate(pts) if j != i)
+            for i, a in enumerate(pts)]
+    assert near == pytest.approx([side] * len(pts), abs=1e-3)
+
+
+def test_leak_all_four_ring_the_discovery_point_including_the_finder():
+    """No tracks: the finder takes a slot — four vertices 28.3 apart (a
+    square), centred where it FOUND the marker, not where it is now."""
+    _check_ring(_leak_ring_targets((0, 1, 2, 3)), 20.0 * math.sqrt(2.0))
+
+
+def test_leak_three_survivors_make_an_equilateral_triangle():
+    """The finder leaves the swarm after telling the others: the centre
+    stays put and three vertices are 34.6 apart."""
+    _check_ring(_leak_ring_targets((1, 2, 3), finder_stale_after_latch=True),
+                20.0 * math.sqrt(3.0))
+
+
 def test_scripts_end_a_fruitless_lap_on_a_visible_searched_hold():
     """Both scripts must have a "searched" step that is orange (degraded)
     — the lap is a single pass, so a robot that never found anything needs
     somewhere visible to stop instead of looping into drift."""
     from tapestry.script_toml import parse_file
-    for path, track in ((KING_TOML, 1), (SPILL_TOML, None)):
+    for path, track in ((KING_TOML, 1), (SPILL_TOML, None), (LEAK_TOML, None)):
         p = parse_file(path)
         steps = p.tracks[track].steps if track is not None else p.steps
         names = [st.name for st in steps]
@@ -213,7 +278,7 @@ def test_committed_ring_header_has_no_discovery_define():
 
 def test_king_and_spill_scripts_use_discovery():
     base = REPO_ROOT / "examples" / "cutebot-formation"
-    for name in ("king", "spill"):
+    for name in ("king", "spill", "leak"):
         out = base / "src" / "choreo_script.h"
         text = choreoc.render(base / f"{name}.choreo.toml", out)[1]
         assert "#define CHOREO_USES_DISCOVERY" in text, name

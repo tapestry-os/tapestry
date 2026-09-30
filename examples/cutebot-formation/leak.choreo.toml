@@ -1,0 +1,225 @@
+# leak.choreo.toml — "find the leak, cordon it": four robots search the
+# arena for the IR-dark marker (king's printed disc).  The finder stops and
+# holds while its peers hear where it is; then ALL FOUR, finder included,
+# form a circle around that spot.  Power one robot off and the other three
+# re-balance into an equilateral triangle around the same spot.
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/leak.choreo.toml \
+#       -o tapestry/examples/cutebot-formation/src/choreo_script.h
+#
+# Units are this app's abstract [0, WORLD_SIZE] world, same as the others.
+#
+# How it differs from king.choreo.toml:
+#   - No [[tracks]]: the finder does not move to an "anchor" track, so
+#     bse.c's collect_participants() counts it — four vertices, not three.
+#   - The ring anchors on { select = "discovery-point" }, not "discoverer":
+#     the POSITION the finder gossiped with its discovered bit, latched by
+#     every robot the first tick it sees that bit and never moved again.
+#     "discoverer" would follow the finder as it backs out to its own slot
+#     (the circle would chase its own member) and would lose its centre if
+#     the finder is the robot taken away.
+#   - "found" is a short HOLD everyone enters on discovery_any.  It keeps
+#     the finder parked on the marker until its peers have heard it — a
+#     peer that first hears the bit after the finder has moved would latch
+#     the wrong spot.  main.c releases the finder's stop-on-discovery once
+#     the script leaves the step it discovered on
+#     (CHOREO_USES_DISCOVERY_POINT, emitted by choreoc for this anchor).
+#   - One finder, as king: once any peer's bit is visible a robot ignores
+#     its own dark hits (DEMO_DISCOVERY_SINGLE_FINDER), so robots driving
+#     over the marker while forming the ring do not re-discover it.
+#
+# Removing a robot: switch it OFF.  Lifting it is not removal — it keeps
+# gossiping, and a lifted sensor reads dark.  The survivors notice after
+# the world model's stale threshold (3 s) plus Choreo's membership hold
+# (3 s), fire element_lost, and re-form the ring with count 3.
+#
+# Geometry (DEMO_TRACK_MIN_SEP = 25.3 units): radius 20 puts four robots
+# 28.3 units apart and three 34.6 units apart, both clear of it.  The
+# latched point is where the finder's line sensors confirmed dark — the
+# disc's near edge, not its centre — so the circle sits up to about half a
+# disc (~5 units) off the marker's middle.
+#
+# PLACEMENT: same as king — marker >= ~27 units from every board edge, off
+# the central boot cross, on a patrol line (README coverage map).
+#
+# Patrol: king's nine FORM circle legs, unchanged — see king.choreo.toml
+# for why FORM circle and not MOVE, and why every leg is self-scoped.
+
+choreo      = "leak"
+max_runtime = "15min"
+
+[[steps]]
+name = "leg1"
+[steps.form]
+shape    = "circle"
+target   = [32.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg2"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg3"
+[steps.form]
+shape    = "circle"
+target   = [68.0, 32.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg4"
+[steps.form]
+shape    = "circle"
+target   = [68.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg5"
+[steps.form]
+shape    = "circle"
+target   = [68.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg6"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg7"
+[steps.form]
+shape    = "circle"
+target   = [32.0, 68.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg8"
+[steps.form]
+shape    = "circle"
+target   = [32.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+name = "leg9"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 20.0
+until    = "achieved"
+eps      = 3.0
+settle   = "2s"
+timeout  = "90s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+
+[[steps]]
+# Lap finished without finding anything — hold, orange.  Still listens: a
+# slower robot may yet find it.
+name = "searched"
+[steps.hold]
+duration  = "10min"
+requires  = ["locomotion"]
+indicator = "degraded"
+on        = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+# Everyone parks — the finder on the marker, its peers wherever they
+# heard it.  Long enough for the discovered bit (and the finder's position
+# with it) to reach every peer before the finder moves off.
+name = "found"
+[steps.hold]
+duration  = "4s"
+requires  = ["locomotion"]
+indicator = "active"
+
+[[steps]]
+name = "ring"
+[steps.form]
+shape         = "circle"
+frame         = "element"
+anchor        = { select = "discovery-point" }
+radius        = 20.0
+until         = "achieved"
+eps           = 3.0
+settle        = "2s"
+timeout       = "90s"
+requires      = ["locomotion"]
+indicator     = "active"
+telemetry_tag = "leak"
+on            = [ { event = "achieved", goto = "settled" } ]
+
+[[steps]]
+# Holds the achieved ring; re-forms (4 -> 3 robots: a triangle) on a
+# debounced membership change, same as ring.choreo.toml's "settled".
+name = "settled"
+[steps.hold]
+duration  = "300s"
+requires  = ["locomotion"]
+indicator = "active"
+on = [
+  { event = "element_lost",   goto = "ring" },
+  { event = "element_joined", goto = "ring" },
+]
