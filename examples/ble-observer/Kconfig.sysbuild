@@ -1,0 +1,13 @@
+# The network core runs the BLE controller (samples/bluetooth/hci_ipc),
+# configured by sysbuild/hci_ipc/prj.conf in this directory.
+
+source "share/sysbuild/Kconfig"
+
+config NET_CORE_BOARD
+	string
+	default "nrf5340dk/nrf5340/cpunet" if $(BOARD) = "nrf5340dk"
+
+config NET_CORE_IMAGE_HCI_IPC
+	bool "HCI IPC image on network core"
+	default y
+	depends on NET_CORE_BOARD != ""
