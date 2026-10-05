@@ -1,0 +1,6 @@
+/* 1 Mbaud on the DK's USB serial (the J-Link VCOM): four robots produce
+ * roughly 110 lines/s of up to ~170 bytes, ~19 kB/s, which 115200 cannot
+ * carry. */
+&uart0 {
+	current-speed = <1000000>;
+};

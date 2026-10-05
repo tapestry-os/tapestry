@@ -45,6 +45,7 @@ TARGETS = [
     REPO_ROOT / "tapestry-scr-sim" / "orchestrator" / "protocol.py",
     REPO_ROOT / "tapestry-scr-hw" / "telemetry" / "protocol.py",
     REPO_ROOT / "sdk" / "tools" / "directive_probe.py",
+    REPO_ROOT / "examples" / "ble-observer" / "tools" / "observer_log.py",
 ]
 
 BEGIN_MARKER = "# === BEGIN GENERATED WIRE PROTOCOL (tools/gen_wire_protocol.py — DO NOT EDIT) ==="
