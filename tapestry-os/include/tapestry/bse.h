@@ -276,6 +276,12 @@ typedef struct {
     tapestry_bse_motion_t          motion;
     float                          spin_rate_radps;  /* motion == SPIN only */
 
+    /* FORM only: the shape's orientation in its frame — a rotation about
+     * the frame origin, radians, CCW (a circle's first vertex at
+     * rotation_rad instead of along +x). SPIN's rotation adds to it. 0 is
+     * the default, so every existing intent is unaffected. */
+    float                          rotation_rad;
+
     /* EXCHANGE: ring rotation amount.  0 is treated as 1 (the common case)
      * so a zero-initialized intent still swaps. */
     uint8_t                    slot_shift;

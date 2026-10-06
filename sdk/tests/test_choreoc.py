@@ -536,3 +536,13 @@ def test_uses_discovery_is_emitted_for_discovery_any(tmp_path):
     body = ('choreo = "x"\n' + _HOLD.format(
         extra='on = [ { event = "discovery_any", goto = "b" } ]'))
     assert _uses_discovery(tmp_path, body)
+
+
+def test_rotation_is_emitted_only_when_set():
+    plain = choreoc.emit_step(NormalizedStep(goal="form", max_duration_ms=1000,
+                                             target=(0.0, 0.0, 0.0), radius=3.0))
+    assert ".rotation_rad" not in plain
+    c = choreoc.emit_step(NormalizedStep(goal="form", max_duration_ms=1000,
+                                         target=(0.0, 0.0, 0.0), radius=3.0,
+                                         rotation_rad=0.5))
+    assert ".rotation_rad = 0.5f" in c

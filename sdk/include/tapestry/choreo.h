@@ -340,6 +340,7 @@ typedef struct {
      * default.  CONVERGE never reads this (see bse.c's CONVERGE case). */
     tapestry_bse_motion_t motion;
     float                 spin_rate_radps;  /* motion == SPIN only */
+    float                 rotation_rad;        /* FORM: orientation in its frame, rad CCW */
 
     uint8_t               slot_shift;    /* EXCHANGE ring rotation (0 → 1)        */
     bool                  direct_path;   /* EXCHANGE beeline vs centroid arc

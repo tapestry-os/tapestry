@@ -9,6 +9,7 @@ value that comes out — a parser that accepts a typo silently is the
 failure mode that matters here.
 """
 
+import math
 import textwrap
 from pathlib import Path
 
@@ -1393,3 +1394,26 @@ def test_a_tracks_script_is_submittable(tmp_path):
     c = Choreo(element_id=0, capabilities=None)
     assert c.submit_tracks(solo(), tracks) == 0
     assert c.current_track() == 1
+
+
+@pytest.mark.parametrize("text,rad", [
+    ('"45deg"', math.pi / 4), ('"-90deg"', -math.pi / 2),
+    ('"0.5rad"', 0.5), ("0.25", 0.25),
+])
+def test_form_rotation_units(text, rad, tmp_path):
+    s = parse_file(one_step(
+        f'duration = "10s", target = [0, 0, 0], radius = 3, rotation = {text}',
+        tmp_path, goal="form"))
+    assert s.steps[0].rotation_rad == pytest.approx(rad)
+
+
+def test_rotation_rejected_outside_form(tmp_path):
+    with pytest.raises(ScriptError, match=r"unknown parameter\(s\) \['rotation'\]"):
+        parse_file(one_step('duration = "1s", rotation = "10deg"', tmp_path))
+
+
+def test_rotation_converts_to_the_sdk_goal(tmp_path):
+    s = parse_file(one_step(
+        'duration = "10s", target = [0, 0, 0], radius = 3, rotation = "30deg"',
+        tmp_path, goal="form"))
+    assert to_choreo_steps(s)[0].goal.rotation_rad == pytest.approx(math.pi / 6)

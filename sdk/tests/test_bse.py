@@ -731,3 +731,28 @@ def test_exchange_direct_path_same_altitude_still_gets_a_standoff():
     d = b.get_directive()
     assert d.target[2] == pytest.approx(1.0)
     assert -1.0 < d.target[0] < 1.0
+
+
+def test_rotation_turns_the_form_shape():
+    # A solo element is rank 0: its vertex sits along +x without rotation,
+    # and rotation turns it about the frame origin.
+    for rot in (0.0, math.pi / 2, math.radians(225.0)):
+        b = BSE(0)
+        b.submit_intent(BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.CIRCLE,
+                                  radius=5.0, target=(0.0, 0.0, 0.0),
+                                  rotation_rad=rot))
+        b.tick(solo(5.0, 0.0), HEALTHY)
+        approx_xy(b.get_directive().target,
+                  (5.0 * math.cos(rot), 5.0 * math.sin(rot)), tol=1e-4)
+
+
+def test_rotation_adds_to_spin():
+    b = BSE(0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.FORM, shape=BSEShape.CIRCLE,
+                              radius=5.0, target=(0.0, 0.0, 0.0),
+                              motion=BSEMotion.SPIN, spin_rate_radps=0.5,
+                              rotation_rad=1.0))
+    b.tick(solo(5.0, 0.0), HEALTHY)   # t=0.1s
+    theta = 1.0 + 0.5 * 0.1
+    approx_xy(b.get_directive().target,
+              (5.0 * math.cos(theta), 5.0 * math.sin(theta)), tol=1e-4)

@@ -230,6 +230,8 @@ def emit_step(s: NormalizedStep) -> str:
         goal_fields.append(f".motion = {MOTION_ENUM[s.motion]}")
     if s.spin_rate_radps is not None:
         goal_fields.append(f".spin_rate_radps = {c_float(s.spin_rate_radps)}")
+    if s.rotation_rad is not None:
+        goal_fields.append(f".rotation_rad = {c_float(s.rotation_rad)}")
     if s.required_caps:
         goal_fields.append(f".required_caps = {caps_expr(s.required_caps)}")
     if s.slot_shift is not None:
