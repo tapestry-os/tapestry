@@ -40,11 +40,29 @@
 # disc's near edge, not its centre — so the circle sits up to about half a
 # disc (~5 units) off the marker's middle.
 #
-# PLACEMENT: same as king — marker >= ~27 units from every board edge, off
-# the central boot cross, on a patrol line (README coverage map).
+# PLACEMENT: 2 to 3.5 squares from the centre (radius 15-35 units), in
+# any direction. Inside 1.5 squares the robots only cross on their way
+# out; beyond 3.5 the ring around the find would leave the arena.
 #
-# Patrol: king's nine FORM circle legs, unchanged — see king.choreo.toml
-# for why FORM circle and not MOVE, and why every leg is self-scoped.
+# Search: an outward spiral, symmetric by construction. Each "leg" is a
+# FORM circle about the board centre, 1/18 of a turn (20 degrees) further
+# round and ~0.8 units larger than the last (rotation 45 -> 405 degrees,
+# radius 22 -> 37), so each robot walks its own spiral arm, 90 degrees
+# from its neighbours, turning ~20 degrees per leg. Every point at the
+# same distance from the centre is reached at the same time — the old
+# translated-circle patrol found (30,30) first and (70,70) late. Host
+# coverage check (112 marker spots): worst 19 s, mean 4.4 s, the four
+# diagonals at 1.6 s.
+#
+# Legs are TIMED (duration), not "until achieved": every robot moves to
+# the next angle on the same clock (they start the script together after
+# the peer barrier), so the four stay 90 degrees apart. With per-robot
+# "achieved" legs a quick robot ran up to ~3 legs ahead in simulation,
+# bringing neighbours within ~11 units. A robot that falls behind just
+# chases its moving vertex. Leg 1 (out from the start cross) gets 3 s, the
+# rest 1.5 s: ~30 s for the whole spiral. Radius starts at 22 so
+# neighbours 90 degrees apart are ~31 units apart, clear of
+# DEMO_TRACK_MIN_SEP (25.3).
 
 choreo      = "leak"
 max_runtime = "15min"
@@ -53,127 +71,210 @@ max_runtime = "15min"
 name = "leg1"
 [steps.form]
 shape    = "circle"
-target   = [32.0, 32.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 22.00
+rotation = "45deg"
+duration = "3s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg2"
 [steps.form]
 shape    = "circle"
-target   = [50.0, 32.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 22.83
+rotation = "65deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg3"
 [steps.form]
 shape    = "circle"
-target   = [68.0, 32.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 23.67
+rotation = "85deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg4"
 [steps.form]
 shape    = "circle"
-target   = [68.0, 50.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 24.50
+rotation = "105deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg5"
 [steps.form]
 shape    = "circle"
-target   = [68.0, 68.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 25.33
+rotation = "125deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg6"
 [steps.form]
 shape    = "circle"
-target   = [50.0, 68.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 26.17
+rotation = "145deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg7"
 [steps.form]
 shape    = "circle"
-target   = [32.0, 68.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 27.00
+rotation = "165deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg8"
 [steps.form]
 shape    = "circle"
-target   = [32.0, 50.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+target   = [50.0, 50.0, 0.0]
+radius   = 27.83
+rotation = "185deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
-
 
 [[steps]]
 name = "leg9"
 [steps.form]
 shape    = "circle"
 target   = [50.0, 50.0, 0.0]
-radius   = 20.0
-until    = "achieved"
-eps      = 3.0
-settle   = "2s"
-timeout  = "90s"
+radius   = 28.67
+rotation = "205deg"
+duration = "1.5s"
 requires = ["locomotion", "abs_position"]
 on       = [ { event = "discovery_any", goto = "found" } ]
 
+[[steps]]
+name = "leg10"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 29.50
+rotation = "225deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg11"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 30.33
+rotation = "245deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg12"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 31.17
+rotation = "265deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg13"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 32.00
+rotation = "285deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg14"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 32.83
+rotation = "305deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg15"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 33.67
+rotation = "325deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg16"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 34.50
+rotation = "345deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg17"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 35.33
+rotation = "365deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg18"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 36.17
+rotation = "385deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
+
+[[steps]]
+name = "leg19"
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 37.00
+rotation = "405deg"
+duration = "1.5s"
+requires = ["locomotion", "abs_position"]
+on       = [ { event = "discovery_any", goto = "found" } ]
 
 [[steps]]
 # Lap finished without finding anything — hold, orange.  Still listens: a

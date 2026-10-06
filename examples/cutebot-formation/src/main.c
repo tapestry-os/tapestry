@@ -73,6 +73,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <math.h>
+#include <string.h>
 #include <tapestry/csm.h>
 #include <tapestry/transport.h>
 #include <tapestry/substrate.h>
@@ -90,6 +91,9 @@
  * not demo_grid_correct()/demo_grid_heading_correct() (Mini-only, need
  * cutebot_line.h's edge-timing data this hardware doesn't provide). */
 #include "cutebot_pro.h"
+#include "turn_calibration.h"
+#include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/hwinfo.h>
 #elif defined(CONFIG_I2C)
 /* Ground-facing line-tracking sensors — real hardware only (CONFIG_I2C
  * is this app's proxy for "building for the physical Cutebot," same
@@ -131,13 +135,59 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
  * handling the demo uses. Direction comes from the command that was
  * driving the wheel (fabsf first — correct whether the firmware counter
  * is signed or magnitude-only; see CUTEBOT_PRO_DIST_COUNTS_PER_CM). */
-static void pro_wheel_deltas_cm(const cutebot_pro_encoders_t *enc,
-                                int32_t *prev_l, int32_t *prev_r,
-                                float left_cmd, float right_cmd,
-                                float *dl_cm, float *dr_cm)
+/* Encoder plausibility guard (2026-10-06): the Pro's replies carry no
+ * checksum, so a read that completes is trusted. Twice in one run a robot
+ * whose chassis was browning out returned a nonsense distance counter
+ * (all-ones bytes as its controller dropped off the bus), and the
+ * odometry turned it into a jump of 50-66 units while parked. A wheel
+ * cannot beat the firmware's 50 cm/s ceiling, so any delta beyond
+ * 1.5 x that over the interval, plus PRO_ENC_SLACK_CM, is a bad read:
+ * it contributes no motion and the last good counter stays the baseline.
+ * PRO_ENC_REBASE_STREAK implausible reads in a row are taken as a real
+ * counter reset and become the new baseline. */
+#define PRO_ENC_MAX_CMS        50.0f
+#define PRO_ENC_SLACK_CM       3.0f
+#define PRO_ENC_REBASE_STREAK  3u
+
+typedef enum {
+    PRO_ENC_OK = 0,
+    PRO_ENC_REJECTED,     /* implausible: ignored, baseline kept */
+    PRO_ENC_REBASED,      /* implausible PRO_ENC_REBASE_STREAK times: new baseline */
+} pro_enc_result_t;
+
+typedef struct {
+    uint8_t  streak;      /* implausible reads in a row */
+    uint32_t total;       /* implausible reads since start */
+    int32_t  last_raw_l;  /* the latest delta, counts (for logging) */
+    int32_t  last_raw_r;
+} pro_enc_guard_t;
+
+static __maybe_unused pro_enc_result_t pro_wheel_deltas_cm(const cutebot_pro_encoders_t *enc,
+                                            int32_t *prev_l, int32_t *prev_r,
+                                            float left_cmd, float right_cmd,
+                                            uint32_t dt_ms, pro_enc_guard_t *g,
+                                            float *dl_cm, float *dr_cm)
 {
     int32_t raw_l = enc->left_distance  - *prev_l;
     int32_t raw_r = enc->right_distance - *prev_r;
+    g->last_raw_l = raw_l;
+    g->last_raw_r = raw_r;
+    *dl_cm = 0.0f;
+    *dr_cm = 0.0f;
+
+    float max_counts = (PRO_ENC_MAX_CMS * 1.5f * (float)dt_ms * 0.001f +
+                        PRO_ENC_SLACK_CM) * CUTEBOT_PRO_DIST_COUNTS_PER_CM;
+    if (fabsf((float)raw_l) > max_counts || fabsf((float)raw_r) > max_counts) {
+        g->total++;
+        if (++g->streak < PRO_ENC_REBASE_STREAK) {
+            return PRO_ENC_REJECTED;
+        }
+        g->streak = 0;
+        *prev_l = enc->left_distance;
+        *prev_r = enc->right_distance;
+        return PRO_ENC_REBASED;
+    }
+    g->streak = 0;
     *prev_l = enc->left_distance;
     *prev_r = enc->right_distance;
 
@@ -145,6 +195,21 @@ static void pro_wheel_deltas_cm(const cutebot_pro_encoders_t *enc,
     *dr_cm = fabsf((float)raw_r) / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
     if (left_cmd  < 0.0f) { *dl_cm = -*dl_cm; }
     if (right_cmd < 0.0f) { *dr_cm = -*dr_cm; }
+    return PRO_ENC_OK;
+}
+
+/* This micro:bit's key in turn_calibration.h: the first four bytes of its
+ * device id, computed as transport.c's auto-ID nonce is (so a robot's key
+ * is also visible in the observer's beacon events). */
+static __maybe_unused uint32_t demo_hw_id(void)
+{
+    uint8_t buf[4] = {0};
+    if (hwinfo_get_device_id(buf, sizeof(buf)) < (ssize_t)sizeof(buf)) {
+        return 0u;
+    }
+    uint32_t id;
+    memcpy(&id, buf, sizeof(id));
+    return id ? id : 1u;
 }
 #endif
 
@@ -969,6 +1034,7 @@ int main(void)
     float dist_cm = 0.0f;   /* along the robot's own forward axis */
     float head    = 0.0f;   /* unwrapped, rad, CCW positive */
 
+    pro_enc_guard_t enc_guard = {0};
     for (size_t i = 0; i < ARRAY_SIZE(steps); i++) {
         float start = steps[i].linear ? dist_cm : head;
         float sign  = (steps[i].goal > start) ? 1.0f : -1.0f;
@@ -988,7 +1054,8 @@ int main(void)
             cutebot_pro_read_encoders(&enc);
             float dl, dr;
             pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
-                                steps[i].l_cms, steps[i].r_cms, &dl, &dr);
+                                steps[i].l_cms, steps[i].r_cms, 20u, &enc_guard,
+                                &dl, &dr);
             dist_cm += 0.5f * (dl + dr);
             head    += (dr - dl) / track_cm;
 
@@ -1013,7 +1080,8 @@ int main(void)
         cutebot_pro_read_encoders(&enc);
         float dl, dr;
         pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
-                            steps[i].l_cms, steps[i].r_cms, &dl, &dr);
+                            steps[i].l_cms, steps[i].r_cms, 520u, &enc_guard,
+                            &dl, &dr);
         dist_cm += 0.5f * (dl + dr);
         head    += (dr - dl) / track_cm;
 
@@ -1075,10 +1143,126 @@ int main(void)
     while (true) {
         k_msleep(1000);
     }
+#elif defined(CONFIG_DEMO_MODE_TURN_CALIBRATE)
+    /*
+     * Turn-scale calibration (Cutebot Pro only) — see Kconfig's help text.
+     * Button A: spin CCW, button B: spin CW, CONFIG_DEMO_TURN_CAL_TURNS
+     * full turns by the encoder each, at the wheel speed the demo turns
+     * at. Reports the encoder total including the coast after stopping;
+     * the operator measures the true end heading.
+     */
+#define TURN_CAL_SPIN_CMS  20.0f    /* the firmware's floor: demo turns */
+#define TURN_CAL_HANDS_MS  1500u    /* after the press, before moving */
+#define TURN_CAL_COAST_MS  1000u
+
+    static const struct gpio_dt_spec btn_a = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+    static const struct gpio_dt_spec btn_b = GPIO_DT_SPEC_GET(DT_ALIAS(sw1), gpios);
+    gpio_pin_configure_dt(&btn_a, GPIO_INPUT);
+    gpio_pin_configure_dt(&btn_b, GPIO_INPUT);
+
+    if (transport_init() != 0) {
+        LOG_WRN("transport init failed — results on serial only");
+    }
+#ifdef CONFIG_DEMO_BLE_DEBUG
+    ble_debug_init();
+#endif
+    uint32_t hw_id = demo_hw_id();
+    const float track_cm = CUTEBOT_PRO_WHEEL_TRACK_MM / 10.0f;
+    const int   turns    = CONFIG_DEMO_TURN_CAL_TURNS;
+    const demo_turn_cal_t *cal = demo_turn_cal_lookup(hw_id);
+    int runs[2] = {0};
+    /* This robot's trims from turn_calibration.h (1.0 without an entry):
+     * the spin is counted in trimmed degrees, so with correct trims it
+     * ends where the report says. It stops early by the coast measured
+     * on the previous run that way (17 degrees to start). */
+    const float trim[2] = { cal ? cal->ccw : 1.0f, cal ? cal->cw : 1.0f };
+    float coast_deg[2] = { 17.0f, 17.0f };
+
+    substrate_set_signal(SUBSTRATE_SIGNAL_IDLE);
+    uint32_t prompt_ms = 0;
+
+    while (true) {
+        /* The prompt repeats, so a logger started late still sees it. */
+        if (k_uptime_get_32() - prompt_ms >= 15000u) {
+            prompt_ms = k_uptime_get_32();
+            DEMO_EVT(INF, "turn cal hw 0x%08x: A = CCW, B = CW, %d turns "
+                     "(table %.4f/%.4f)", (unsigned)hw_id, turns,
+                     (double)(cal ? cal->ccw : 1.0f),
+                     (double)(cal ? cal->cw : 1.0f));
+        }
+        int dir = gpio_pin_get_dt(&btn_a) > 0 ? 0 :
+                  gpio_pin_get_dt(&btn_b) > 0 ? 1 : -1;   /* 0 CCW, 1 CW */
+        if (dir < 0) {
+            k_msleep(20);
+            continue;
+        }
+
+        substrate_set_signal(SUBSTRATE_SIGNAL_DEGRADED);
+        k_msleep(TURN_CAL_HANDS_MS);
+
+        float l = dir == 0 ? -TURN_CAL_SPIN_CMS : TURN_CAL_SPIN_CMS;
+        float r = -l;
+        cutebot_pro_encoders_t enc = {0};
+        (void)cutebot_pro_read_encoders(&enc);
+        int32_t prev_l = enc.left_distance, prev_r = enc.right_distance;
+        pro_enc_guard_t enc_guard = {0};
+        uint32_t last_read_ms = k_uptime_get_32();
+        float   head = 0.0f;                 /* raw encoder, rad */
+        const float goal = (2.0f * M_PI_F * (float)turns -
+                            coast_deg[dir] * M_PI_F / 180.0f) / trim[dir];
+
+        substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+        cutebot_pro_drive_cms(l, r);
+        uint32_t t0 = k_uptime_get_32();
+        while (head < goal && k_uptime_get_32() - t0 < 60000u) {
+            k_msleep(10);
+            if (cutebot_pro_read_encoders(&enc) == 0) {
+                float dl, dr;
+                uint32_t now_ms = k_uptime_get_32();
+                pro_wheel_deltas_cm(&enc, &prev_l, &prev_r, l, r,
+                                    now_ms - last_read_ms, &enc_guard, &dl, &dr);
+                last_read_ms = now_ms;
+                head += fabsf(dr - dl) / track_cm;
+            }
+        }
+        cutebot_pro_drive_cms(0.0f, 0.0f);
+        uint32_t spin_ms = k_uptime_get_32() - t0;
+        float at_stop = head;
+        k_msleep(TURN_CAL_COAST_MS);
+        if (cutebot_pro_read_encoders(&enc) == 0) {
+            float dl, dr;
+            pro_wheel_deltas_cm(&enc, &prev_l, &prev_r, l, r,
+                                k_uptime_get_32() - last_read_ms, &enc_guard,
+                                &dl, &dr);
+            head += fabsf(dr - dl) / track_cm;   /* coast */
+        }
+        if (enc_guard.total > 0u) {
+            DEMO_EVT(WRN, "turn cal: %u implausible encoder reads ignored "
+                     "this run", (unsigned)enc_guard.total);
+        }
+        substrate_set_signal(SUBSTRATE_SIGNAL_IDLE);
+        coast_deg[dir] = (head - at_stop) * trim[dir] * 180.0f / M_PI_F;
+
+        float enc_deg  = head * 180.0f / M_PI_F;
+        float trim_deg = enc_deg * trim[dir];
+        runs[dir]++;
+        DEMO_EVT(INF, "turn cal %s run %d: trim %.4f, expect %+.1f deg "
+                 "(raw %.1f, %.1f s)", dir == 0 ? "CCW" : "CW", runs[dir],
+                 (double)trim[dir], (double)(trim_deg - 360.0f * turns),
+                 (double)enc_deg, (double)(spin_ms * 0.001f));
+        DEMO_EVT(INF, "  scale = (%d + offset_deg) / %.1f", 360 * turns,
+                 (double)enc_deg);
+
+        /* Wait for release so one press is one run. */
+        while (gpio_pin_get_dt(&btn_a) > 0 || gpio_pin_get_dt(&btn_b) > 0) {
+            k_msleep(20);
+        }
+        prompt_ms = k_uptime_get_32();
+    }
 #else /* !CONFIG_DEMO_MODE_STRAIGHT_LINE / !CONFIG_DEMO_MODE_DISCOVERY_BENCH /
        * !CONFIG_DEMO_MODE_CONVERGE_TEST / !CONFIG_DEMO_MODE_WHEEL_CHARACTERIZE /
        * !CONFIG_DEMO_MODE_LINE_SENSOR_BENCH / !CONFIG_DEMO_MODE_ENCODER_BENCH /
-       * !CONFIG_DEMO_MODE_CIRCLE_BENCH —
+       * !CONFIG_DEMO_MODE_CIRCLE_BENCH / !CONFIG_DEMO_MODE_TURN_CALIBRATE —
        * the normal swarm demo */
 
     if (transport_init() != 0) {
@@ -1325,6 +1509,20 @@ int main(void)
 
     /* Fast background line sampling — replaces the main loop's own
      * once-per-tick gray reads; see cutebot_pro_line_watch_start(). */
+    uint32_t hw_id = demo_hw_id();
+    const demo_turn_cal_t *cal = demo_turn_cal_lookup(hw_id);
+    bool  turn_cal     = cal != NULL;
+    float turn_cal_ccw = cal ? cal->ccw : 1.0f;
+    float turn_cal_cw  = cal ? cal->cw  : 1.0f;
+    if (turn_cal) {
+        DEMO_EVT(INF, "id=%u turn cal hw 0x%08x: ccw %.4f cw %.4f",
+                 (unsigned)element_id, (unsigned)hw_id,
+                 (double)turn_cal_ccw, (double)turn_cal_cw);
+    } else {
+        DEMO_EVT(WRN, "id=%u no turn cal for hw 0x%08x — run "
+                 "DEMO_MODE_TURN_CALIBRATE", (unsigned)element_id,
+                 (unsigned)hw_id);
+    }
     if (cutebot_pro_line_watch_start(CUTEBOT_PRO_TARGET_DARK_THRESHOLD,
                                      CUTEBOT_PRO_LINE_WATCH_PERIOD_MS) != 0) {
         LOG_ERR("line watch failed to start — no line sensing this run");
@@ -1391,9 +1589,33 @@ int main(void)
             prev_right_dist = enc.right_distance;
             enc_prev_valid  = true;
         } else if (enc_ret == 0) {
-            pro_wheel_deltas_cm(&enc, &prev_left_dist, &prev_right_dist,
-                                last_left_cmd, last_right_cmd,
-                                &left_delta_cm, &right_delta_cm);
+            /* The delta spans everything since the last accepted read —
+             * several ticks after failed reads — so judge it against
+             * that interval, not this tick's dt_ms. */
+            static pro_enc_guard_t enc_guard;
+            static uint32_t enc_good_ms;
+            uint32_t now_ms_enc = k_uptime_get_32();
+            uint32_t span_ms = enc_good_ms ? now_ms_enc - enc_good_ms : dt_ms;
+            pro_enc_result_t eg = pro_wheel_deltas_cm(
+                &enc, &prev_left_dist, &prev_right_dist,
+                last_left_cmd, last_right_cmd, span_ms, &enc_guard,
+                &left_delta_cm, &right_delta_cm);
+            if (eg != PRO_ENC_REJECTED) {
+                enc_good_ms = now_ms_enc;
+            }
+            /* First one, every 20th, and every re-baseline: a chassis
+             * that keeps producing them is failing (browning out, loose
+             * cable) and should be visible in the observer at once. */
+            if (eg != PRO_ENC_OK &&
+                (enc_guard.total == 1u || enc_guard.total % 20u == 0u ||
+                 eg == PRO_ENC_REBASED)) {
+                DEMO_EVT(WRN, "id=%u encoder read implausible (dL %d dR %d "
+                         "counts in %u ms) — %s, %u so far",
+                         (unsigned)element_id, (int)enc_guard.last_raw_l,
+                         (int)enc_guard.last_raw_r, (unsigned)span_ms,
+                         eg == PRO_ENC_REBASED ? "re-baselined" : "ignored",
+                         (unsigned)enc_guard.total);
+            }
         } else {
             static uint32_t enc_fail_count;
             if ((enc_fail_count++ % 50u) == 0u) {
@@ -1423,10 +1645,11 @@ int main(void)
         float v_center_units_s = DEMO_MM((left_meas_cms + right_meas_cms) * 5.0f);
         float omega_rad_s = DEMO_MM((right_meas_cms - left_meas_cms) * 10.0f) / CUTEBOT_PRO_WHEEL_TRACK;
 
-        float measured_speed_norm = v_center_units_s / DEMO_MAX_SPEED;
-        float measured_rate_norm  = omega_rad_s / DEMO_MAX_OMEGA;
+        /* This robot's bench-measured turn scale (turn_calibration.h). */
+        omega_rad_s *= (omega_rad_s >= 0.0f) ? turn_cal_ccw : turn_cal_cw;
 
-        demo_odometry_update(&odo, measured_speed_norm, measured_rate_norm, dt_ms);
+        demo_odometry_update(&odo, v_center_units_s / DEMO_MAX_SPEED,
+                             omega_rad_s / DEMO_MAX_OMEGA, dt_ms);
 
         /* Junction-based drift correction — a crossroads/T-junction pins
          * both axes at once; see formation.h's demo_junction_correct().
