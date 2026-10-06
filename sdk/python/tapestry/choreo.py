@@ -204,6 +204,7 @@ class Goal:
     anchor_id:       int = 0     # anchor==ID only
     motion:          BSEMotion = BSEMotion.STATIC   # FORM only (bse.py §6)
     spin_rate_radps: float = 0.0                    # motion==SPIN only
+    rotation_rad:       float = 0.0                    # FORM: orientation in its frame, rad CCW
     id:              int = 0     # caller-assigned goal identity; 0 = anonymous.
                                  # Opaque to Tapestry — never generated or
                                  # interpreted here. Mirrors choreo_goal_t::id.
@@ -1065,6 +1066,7 @@ class Choreo:
             anchor_id = goal.anchor_id,
             motion          = goal.motion,
             spin_rate_radps = goal.spin_rate_radps,
+            rotation_rad       = goal.rotation_rad,
             slot_shift      = goal.slot_shift,
             direct_path     = goal.direct_path,
             achieve_eps     = goal.achieve_eps,

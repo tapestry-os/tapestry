@@ -275,6 +275,7 @@ static tapestry_bse_intent_t goal_to_intent(const choreo_goal_t *goal)
     intent.anchor_id       = goal->anchor_id;
     intent.motion          = goal->motion;
     intent.spin_rate_radps = goal->spin_rate_radps;
+    intent.rotation_rad       = goal->rotation_rad;
     intent.slot_shift      = goal->slot_shift;
     intent.direct_path     = goal->direct_path;
     intent.achieve_eps     = goal->achieve_eps;

@@ -107,7 +107,7 @@ hold = { duration = "8s", requires = ["locomotion"] }
 |---|---|---|
 | `hold` | the element's own current station (coordinate-free) | — |
 | `exchange` | participants' own stations, rotated (coordinate-free) | `shift` (ring rotation, default 1), `path` |
-| `form` | a point + shape (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y, z]` (or `frame`/`anchor`), `radius` (required — radius 0 would send every element to the same vertex), `shape`, `spin` (see [Motion](#motion)) |
+| `form` | a point + shape (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y, z]` (or `frame`/`anchor`), `radius` (required — radius 0 would send every element to the same vertex), `shape`, `spin`, `rotation` (see [Motion](#motion)) |
 | `move` | an absolute point | `target = [x, y, z]` |
 | `converge` | a point (see [Frames and anchors](#frames-and-anchors)) | `target = [x, y, z]` (or `frame`/`anchor`) |
 | `disperse` | current positions, spread apart | `radius` (required — minimum spacing) |
@@ -247,6 +247,29 @@ target   = [0.5, 0.5]
 radius   = "1m"
 spin     = "0.15rad/s"
 duration = "60s"
+```
+
+`rotation` is the static counterpart: the shape's orientation in its
+frame, a rotation about the frame origin, positive CCW, as `"30deg"`,
+`"0.52rad"` or a bare radian number. A circle's first vertex then sits at
+`rotation` instead of along +x. With `target` (position) and `radius`
+(size) it completes the shape's placement. Stepping `rotation` (and
+`radius`) from one `form` step to the next walks every element along its
+own arc — that is how a search spiral is written, since `spin` restarts
+from zero at each new step and cannot carry a rotation across steps.
+`rotation` and `spin` add when both are set. (A frame that turns with its
+anchor — following the anchor's heading — would be the natural extension;
+it does not exist yet.)
+
+```toml
+[[steps]]
+[steps.form]
+shape    = "circle"
+target   = [50.0, 50.0, 0.0]
+radius   = 24.0
+rotation = "65deg"
+until    = "achieved"
+timeout  = "30s"
 ```
 
 `spin` only applies to `form` — `converge`'s target *is* the frame

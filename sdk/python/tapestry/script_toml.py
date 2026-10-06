@@ -155,6 +155,7 @@ Consumers:
           choreo.submit_tracks(wm_entries, load_tracks("spill-response.choreo.toml"))
 """
 
+import math
 import tomllib
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -228,7 +229,7 @@ _KNOWN_PARAMS = {
                  "scope", "shift", "path", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "form":     {"duration", "timeout", "until", "eps", "settle", "requires",
                  "scope", "target", "radius", "shape", "frame", "anchor",
-                 "spin", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
+                 "spin", "rotation", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "move":     {"duration", "timeout", "until", "eps", "settle", "requires",
                  "scope", "target", "on"} | _EFFECT_PARAMS | _DEPARTURE_PARAMS,
     "converge": {"duration", "timeout", "until", "eps", "settle", "requires",
@@ -356,6 +357,7 @@ class NormalizedStep:
     anchor_id:           Optional[int] = None       # anchor_select == "id" only
     motion:              str = "static"             # form only (§6)
     spin_rate_radps:     Optional[float] = None      # motion == "spin" only
+    rotation_rad:        Optional[float] = None      # form only: orientation in its frame
     name:                Optional[str] = None       # §8.3 goto target name
     on:                  List[NormalizedTransition] = field(default_factory=list)
     indicator:           Optional[str] = None       # §12 Stage 5 effect
@@ -478,6 +480,26 @@ def parse_length_m(value, where: str) -> float:
     if m <= 0:
         raise ScriptError(f"{where}: length must be positive, got {value!r}")
     return m
+
+
+def parse_angle_rad(value, where: str) -> float:
+    """"45deg", "0.785rad", or a bare number (already radians) -> radians.
+    Signed — positive is CCW."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        try:
+            if v.endswith("deg"):
+                return math.radians(float(v[:-3]))
+            if v.endswith("rad"):
+                return float(v[:-3])
+            return float(v)
+        except ValueError as e:
+            raise ScriptError(f"{where}: cannot parse angle {value!r} "
+                              f"(use e.g. \"45deg\", \"0.785rad\", or a "
+                              f"bare radian number)") from e
+    raise ScriptError(f"{where}: cannot parse angle {value!r}")
 
 
 def parse_angular_rate_radps(value, where: str) -> float:
@@ -803,6 +825,10 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
             # offset" would be a no-op (see bse.h's CONVERGE comment).
             step.motion = "spin"
             step.spin_rate_radps = parse_angular_rate_radps(params["spin"], where)
+        if "rotation" in params:
+            # form only, like spin: the shape's orientation in its frame
+            # (bse.h's rotation_rad).
+            step.rotation_rad = parse_angle_rad(params["rotation"], where)
 
     return step
 
@@ -1179,6 +1205,8 @@ def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]
         goal.motion = _MOTION_ENUM[s.motion]
         if s.spin_rate_radps is not None:
             goal.spin_rate_radps = s.spin_rate_radps
+        if s.rotation_rad is not None:
+            goal.rotation_rad = s.rotation_rad
         if s.achieve_eps is not None:
             goal.achieve_eps = s.achieve_eps
         if s.achieve_hold_ms is not None:

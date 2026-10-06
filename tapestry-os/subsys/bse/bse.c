@@ -961,11 +961,15 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
         /* Motion (bse.h §6): SPIN rotates the offset about the frame
          * origin at spin_rate_radps.  Achievement generalizes unchanged —
          * s_goal_pt is tick-scoped and simply tracks the rotating vertex. */
+        float theta = s_intent.rotation_rad;   /* orientation (bse.h) */
         if (s_intent.motion == TAPESTRY_BSE_MOTION_SPIN) {
             s_act.spin_theta += s_intent.spin_rate_radps
                                * ((float)WM_CYCLE_MS * 0.001f);
-            float c = cosf(s_act.spin_theta);
-            float s = sinf(s_act.spin_theta);
+            theta += s_act.spin_theta;
+        }
+        if (theta != 0.0f) {
+            float c = cosf(theta);
+            float s = sinf(theta);
             float rox = ox * c - oy * s;
             float roy = ox * s + oy * c;
             ox = rox;

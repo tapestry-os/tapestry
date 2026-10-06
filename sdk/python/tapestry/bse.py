@@ -150,6 +150,7 @@ class BSEIntent:
     anchor_id: int = 0                                       # anchor==ID only
     motion:          BSEMotion = BSEMotion.STATIC  # FORM only (bse.h §6)
     spin_rate_radps: float = 0.0                   # motion==SPIN only
+    rotation_rad:       float = 0.0                   # FORM: orientation in its frame, rad CCW
 
 
 @dataclass
@@ -805,9 +806,12 @@ class BSE:
         # Motion (bse.h §6): SPIN rotates the offset about the frame
         # origin at spin_rate_radps.  Achievement generalizes unchanged —
         # _goal_pt is tick-scoped and simply tracks the rotating vertex.
+        theta = intent.rotation_rad   # orientation (bse.h's rotation_rad)
         if intent.motion == BSEMotion.SPIN:
             self._spin_theta += intent.spin_rate_radps * (WM_CYCLE_MS * 0.001)
-            c, s = math.cos(self._spin_theta), math.sin(self._spin_theta)
+            theta += self._spin_theta
+        if theta != 0.0:
+            c, s = math.cos(theta), math.sin(theta)
             ox, oy = ox * c - oy * s, ox * s + oy * c
 
         # Shapes stay planar — z is the frame origin's, unmodified (see
