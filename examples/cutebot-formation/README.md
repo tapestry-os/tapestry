@@ -1,6 +1,6 @@
 # Demo — Cutebot Collective Formation
 
-BBC micro:bit V2 + Cutebot Mini robots self-organize using the Tapestry
+BBC micro:bit V2 + Cutebot robots (Mini or Pro) self-organize using the Tapestry
 world model and BLE gossip. No central controller. This is the L1-L7
 Choreo reference example on a differential-drive ground rover — a
 different substrate class from `cf21bl-formation`'s lighthouse-tracked
@@ -20,10 +20,6 @@ handful of single-robot diagnostic modes documented there
   FORM/HOLD-debounce and sync-barrier fixes) both reached and held their
   target formation cleanly. Read "Known limitations" below for what that
   establishes and does not.
-
-  The original L4-only emergent spring field (`DEMO_MODE_SHOWCASE`, no
-  SCR/L6/L7) was removed 2026-09-13 once choreo-1 matched and then
-  surpassed its hardware behavior — there is no fallback mode anymore.
 
 ## How it works
 
@@ -76,9 +72,9 @@ discovery demos below.
 
 ### Discovery demos: `king.choreo.toml`, `spill.choreo.toml`, `leak.choreo.toml`
 
-A hidden **IR-dark target** is printed on the board (ink or IR tape — the
-fabric chessboard itself does not read dark).  A **120 mm printed disc** is
-what king was validated with.  Each robot patrols the board, and when a
+A hidden **IR-dark target** is printed on the board (ink or IR tape).  
+A **120 mm printed disc** is what leak was validated with.  
+Each robot patrols the board, and when a
 ground IR sensor confirms a dark hit it latches `discovered` — a wire v6 field — and
 **stops where it stands**.
 
@@ -89,29 +85,35 @@ ground IR sensor confirms a dark hit it latches `discovered` — a wire v6 field
 - **spill** — no ring, no tracks: each robot that crosses the (larger, odd)
   target stops on its own edge, green; robots that never touch it hold
   orange.  The finished picture is the target's cordon.
-- **leak** — king's disc and patrol, but the finder rejoins: everyone
+- **leak** — disc symbolizes a leak, all search and the finder rejoins: everyone
   parks for 4 s (`found`) while the finder's position spreads, then ALL
   robots, finder included, form a radius-20 circle around the spot where it
   was found (`anchor = discovery-point`).  Switch one robot OFF (lifting it
   is not removal: it keeps gossiping) and after ~6 s the rest re-form around
   the same spot — four robots make a square, three an equilateral
-  triangle.  Same placement rules as king.
+  triangle.  Leak searches with a symmetric outward spiral (FORM circles
+  about the centre, stepping `rotation` 20° and the radius 22 → 37 per leg,
+  on a shared clock), so place the marker **2 to 3½ squares from the
+  centre, in any direction**: (30,30), (70,30), (70,70) and (30,70) are all
+  found on the first leg out.
 
 Build and flash (from the workspace root; the committed ring header is
 untouched if you write the header to a scratch copy, or regenerate it
 back afterwards):
 
 ```sh
-python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cutebot-formation/king.choreo.toml \
+python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cutebot-formation/leak.choreo.toml \
     -o tapestry/examples/cutebot-formation/src/choreo_script.h
 west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation -p always \
-    -- -DCONFIG_DEMO_GRID_CORRECTION=n
+    -- -DCONFIG_CUTEBOT_VARIANT_PRO=y -DEXTRA_CONF_FILE=ble_debug.conf
 ```
 
-**Turn grid correction off for these demos** (`DEMO_GRID_CORRECTION` defaults to `y`): it
-snaps the position estimate to the nearest gridline on ANY dark hit, so the
-marker itself would shift the finder's estimate by up to ~5 units — and the
-ring anchors on that estimate.  The host simulation assumed it off.
+(Drop `-DCONFIG_CUTEBOT_VARIANT_PRO=y` for the Mini, and `ble_debug.conf`
+for demo firmware without wireless telemetry.) Grid correction
+(`DEMO_GRID_CORRECTION`) defaults to `n`: on the Mini it would snap the
+estimate to the nearest gridline on ANY dark hit, so the marker itself
+would shift the finder's estimate by up to ~5 units, and on this printed
+board neither robot's sensors see the squares reliably anyway.
 
 **Detection rules** (`demo_discovery_detect()` and its gates in `main.c`):
 - Only a robot driving **forward** can discover; a robot that is stationary,
@@ -120,14 +122,13 @@ ring anchors on that estimate.  The host simulation assumed it off.
 - **king** (filled disc): two consecutive dark polls, and once any peer's
   discovered bit is visible the robot ignores its own dark hits (one finder).
 - **spill** (boundary outline of any width): a single sensor entry edge is
-  enough — the line sensors are interrupt-driven, so even a ~20 ms crossing
-  between two polls counts — and every robot that crosses stops.
+  enough, and every robot that crosses stops. The Mini's line sensors are
+  interrupt-driven, so even a ~20 ms crossing between two polls counts; the
+  Pro polls its four sensors from a background thread
+  (`cutebot_pro_line_watch_*()`, ~20 samples/s measured) for the same
+  effect.
 - Armed only for scripts that react to the bit (`CHOREO_USES_DISCOVERY`, emitted
   by `choreoc`); the ring is untouched.
-
-**Wire v6:** the gossip frame grew (49 bytes, `discovered`, 16-bit
-`health_flags`, reserved bytes), so every robot must be reflashed from the
-same build — v5 and v6 firmware ignore each other.
 
 **Bring-up:** `-- -DCONFIG_DEMO_MODE_DISCOVERY_BENCH=y` drives one robot
 straight and logs every dark hit; lift the robot and the sensors see "no
@@ -135,8 +136,9 @@ surface", which reads dark too, so detection is gated to the trusted playing
 area `[10, 90]` (`demo_discovery_in_safe_zone()`).  The blue lift LEDs are
 deliberately not used.
 
-**Placement constraints** (from host simulation of 4 robots with wheel
-mismatch and 20% gossip loss — dead reckoning only, grid correction off):
+**Placement constraints** (king and spill, from host simulation of 4
+robots with wheel mismatch and 20% gossip loss — dead reckoning only, grid
+correction off; leak's spiral has its own rule, above):
 - Robots start on a cross about the centre (ids 0/1/2/3 at E/N/W/S, ±10).  A
   target within ~15 units of the centre is "found" at t = 0.
 - The patrol is 9 circle legs of radius 20 (a translated copy of the boot
@@ -147,8 +149,11 @@ mismatch and 20% gossip loss — dead reckoning only, grid correction off):
   edge, else ring slots sit on the fence and drifted robots leave the board
   (worst in simulation: target at (25,25) — off-board robots in 5/8 seeds;
   a target near (30,70) — 0/8).
-- Two robots may cross the target before the first one's ring forms; the
-  lowest-id discoverer then anchors the ring.
+- Two robots may cross the target before the first one's ring forms. In
+  king the lowest-id discoverer then anchors the ring. In leak each robot
+  latches the first discovered bit it hears, so two near-simultaneous finds
+  can leave the robots ringing two different centres (seen on hardware,
+  2026-10-05).
 - Accumulated drift over the ~2 min lap is uncorrected: expect final
   positions off by several units.
 
@@ -167,28 +172,63 @@ mismatch and 20% gossip loss — dead reckoning only, grid correction off):
   this example was built and hardware-validated against. Open-loop drive
   (`cutebot.c`, raw I2C percentage commands), 2 interrupt-driven GPIO line
   sensors (`cutebot_line.c`).
-- **`CUTEBOT_VARIANT_PRO`** — ELECFREAKS Cutebot Pro (V2.1.0), replacing the
-  Mini fleet. Closed-loop encoder motors (real measured wheel speed/distance
-  feedback, driven via the controller's own firmware PID) and a 4-way I2C
-  line sensor that can distinguish crossroads and T-junctions directly,
-  instead of Mini's 2-sensor line-crossing-only setup. **Untested on real
-  hardware** — added and compile-verified before the physical units arrived;
-  see `Kconfig`'s `CUTEBOT_VARIANT_PRO` help text for the full protocol
-  writeup (verified against ELECFREAKS' own `pxt-Cutebot-Pro` firmware
-  source, not guessed) and exactly which calibration constants
-  (`CUTEBOT_PRO_MAX_SPEED_CMS`, `DEMO_WHEEL_TRACK`) are unverified
-  placeholders pending bench measurement. Run `DEMO_MODE_ENCODER_BENCH` and
-  the Pro branch of `DEMO_MODE_LINE_SENSOR_BENCH` first, on real hardware,
-  before trusting anything built on top of them — `DEMO_MODE_STRAIGHT_LINE`
-  and `DEMO_MODE_CONVERGE_TEST` are Mini-only for now (built around Mini's
-  line-crossing-timing signal, which Pro's I2C-polled sensor doesn't
-  provide the same way).
+- **`CUTEBOT_VARIANT_PRO`** — ELECFREAKS Cutebot Pro (V2.1.0), which has
+  replaced the Mini fleet and runs ring and leak on hardware. Closed-loop
+  encoder motors (measured wheel distance, driven via the controller's own
+  firmware PID) and a 4-way I2C line sensor read as raw gray levels. Its
+  constants are bench-measured (`CUTEBOT_PRO_WHEEL_TRACK_MM` 92 mm,
+  `CUTEBOT_PRO_DIST_COUNTS_PER_CM` 22.56, `formation.h`), and each robot
+  has its own turn trim (below). `DEMO_MODE_ENCODER_BENCH`,
+  `DEMO_MODE_CIRCLE_BENCH` and the Pro branch of
+  `DEMO_MODE_LINE_SENSOR_BENCH` remain for checking a unit;
+  `DEMO_MODE_STRAIGHT_LINE` and `DEMO_MODE_CONVERGE_TEST` are Mini-only
+  (built around the Mini's line-crossing timing). See `Kconfig`'s
+  `CUTEBOT_VARIANT_PRO` help text for the protocol, verified against
+  ELECFREAKS' own `pxt-Cutebot-Pro` source.
 
   Build with:
   ```sh
   west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation \
     -- -DCONFIG_CUTEBOT_VARIANT_PRO=y
   ```
+
+#### Cutebot Pro: turn calibration
+
+Heading error is what makes the Pro's dead-reckoning estimate drift, and
+each robot's encoders mis-measure rotation by a few percent, CCW and CW
+differently. Each robot's two scales live in `src/turn_calibration.h`,
+keyed by its micro:bit's hardware id, and are applied to every turn the
+odometry measures; a robot without an entry logs `no turn cal for hw 0x…`
+at boot and uses 1.0. Compiled in, because flashing a micro:bit erases its
+whole flash; re-measure if a micro:bit moves to another chassis.
+
+To measure a robot:
+```sh
+west build -p always -b bbc_microbit_v2 -d build-cal tapestry/examples/cutebot-formation \
+  -- -DCONFIG_CUTEBOT_VARIANT_PRO=y -DCONFIG_DEMO_MODE_TURN_CALIBRATE=y \
+     -DEXTRA_CONF_FILE=ble_debug.conf
+```
+Flash it and switch on; with the observer logging, it announces itself
+every 15 s:
+```
+turn cal hw 0xdd4e88f3: A = CCW, B = CW, 5 turns (table 1.0000/1.0000)
+```
+Line the robot up with a reference, then press **A** (CCW) three times in
+a row **without re-aligning**, stepping back each time: each press spins
+five turns by the encoder (counted with the robot's current trim) and logs
+```
+turn cal CCW run 1: trim 1.0000, expect +2.6 deg (raw 1802.6, 7.3 s)
+```
+Read how far the robot ended past (+) or short of (−) its starting heading
+after all three presses, then do the same with **B** (CW). For each
+direction:
+
+    scale = (5400 + offset_deg) / (sum of the three "raw" values)
+
+Measuring 15 turns at once makes a 10° reading error only 0.2%, where
+re-aligning each run proved unreliable. With the trims in place, `expect`
+should match what you see to within a few degrees.
+
 
 ## Build
 
@@ -285,11 +325,25 @@ frame can't fire it), the settled hold's `element_lost` transition fires
 and the survivors re-run FORM to redistribute into a smaller ring.
 
 **Rejoin (optional)**
-Place the powered-off robot anywhere in the arena and power it on. During its
-8 s boot window it reads claimed IDs from the running robots' gossip and
-takes the lowest unclaimed slot. Once its arrival has been fresh for
-`CHOREO_MEMBERSHIP_HOLD_MS`, the settled hold's `element_joined` transition
-fires on the other robots and the ring re-forms to include it.
+A robot that is powered back on remembers neither its id nor its position.
+It negotiates an id during its 8 s boot window (the rank-th id no running
+robot claims — see Auto-ID), then seeds its dead-reckoning position from the
+boot slot for that id, so **where you place it decides where it thinks it
+is**. Placing it "anywhere" does not work.
+
+- **One robot at a time, all the others still running** (the simple way):
+  the only free id is the one it had, and it counts the same number of
+  robots as at the start, so its boot slot is its original one. Put it back
+  on its starting square, facing outward, and power it on.
+- **Otherwise** (several robots off, or switched on together): the id can
+  change, and so can the slot, which sits at angle 360° × id / n, one square
+  from center, where n is the robot itself plus those it hears. Count its
+  blinks (id + 1 flashes, repeated 4 times) and place it on that slot facing
+  outward before the blinking ends.
+
+Once its arrival has been fresh for `CHOREO_MEMBERSHIP_HOLD_MS`, the settled
+hold's `element_joined` transition fires on the other robots and the ring
+re-forms to include it.
 
 ## Wireless debug telemetry (untethered runs)
 
@@ -307,7 +361,8 @@ hear it:
 Every packet carries a sequence number, and each text chunk is sent twice,
 so a receiver can drop duplicates and mark gaps.  Robots ignore these
 packets (too short to be gossip).  See `src/ble_debug.h` for the packet
-format.  A receiver is not part of this example yet.
+format.  To receive and log them, use `examples/ble-observer` (an nRF5340
+DK plus `tools/observer_log.py`).
 
 Debug builds also log, over serial every 5 s, how many debug packets the
 robot queued and how many of each peer's it heard (`dbg tx: ... | heard
@@ -425,34 +480,32 @@ time `native_sim` is available, before trusting it as a regression gate.
 
 ## Known limitations
 
-Dead-reckoning drifts. World-model positions are computed entirely from motor
-commands, not physical sensing, unless corrected — which now happens two
-ways, both driven by the ground-facing IR line sensors (`cutebot_line.c`,
-edge-connector GPIO, not the I2C motor/LED bus): `demo_grid_correct()`
-snaps the position estimate to the nearest chessboard gridline on a
-detected crossing, and `demo_grid_heading_correct()` (added after this
-session's second real-hardware ring run reproduced curving/asymmetric
-turning) infers a heading-error correction from the TIME DELTA between the
-left and right sensors crossing the same line — a crossing at an angle
-reaches one sensor measurably before the other, unlike a single sensor's
-edge count, which carries no heading information at all. Both require the
-robot to actually be traveling roughly axis-aligned to fire (see
-`DEMO_GRID_AXIS_COS_MIN`), and heading correction's magnitude scales
-directly with `DEMO_LINE_SENSOR_SEPARATION_MM` (measured 15 mm on the
-physical Cutebot Mini — see `formation.h`) — **the correction's SIGN is
-still unverified on the bench**, so treat corrected headings as
-unverified until that's been checked (drag/rotate a robot a known
-direction across a line and confirm the logged correction goes the same
-way — see `formation.h`'s doc for the exact prediction). Neither corrects
-for a robot picked up and
-repositioned by hand while stationary — that only resolves once it
-crosses a line under its own power again. `demo_arena_fence()`
-(`formation.c`) is a separate, complementary backstop: it only bounds how
-far a robot can be COMMANDED to travel relative to its own estimate, it
-does not correct the estimate itself. Expect some residual drift on any
-run longer than a couple of minutes even with both corrections active;
-`ring.choreo.toml`'s FORM step is deliberately kept short (90s) for this
-reason.
+Dead-reckoning drifts. Positions come from wheel motion alone (motor
+commands on the Mini, encoders on the Pro); nothing re-anchors them to the
+board. Grid correction exists (`demo_grid_correct()` /
+`demo_grid_heading_correct()` on the Mini, `demo_junction_correct()` on the
+Pro) but is off by default: this printed board's ink is nearly
+transparent to the robots' IR sensors (Pro: black and white squares 4-14
+counts apart per channel out of 255), and the Pro's junction snap fires on
+black squares. Heading error dominates, so the Pro applies a measured
+per-robot turn trim (`turn_calibration.h`); even so, a robot was ~10-15
+units off after ~20 s on 2026-10-05, so keep runs short and finds early.
+`demo_arena_fence()` (`formation.c`) only bounds how far a robot can be
+COMMANDED to travel relative to its own estimate; it does not correct the
+estimate.
+
+**Operating conditions that break detection.**
+- **Sunlight** (and likely halogen or incandescent spotlights) saturates
+  the IR line sensors to 255, which reads as "marker": a run in a sunny
+  room produced a false find and then every robot reading 255 wherever it
+  stood. Shade the board.
+- **A failing battery or chassis.** The Pro's I2C replies carry no
+  checksum; a chassis dropping off the bus returned nonsense encoder
+  counters that teleported the estimate 50-66 units. Such reads are now
+  rejected and logged as `encoder read implausible` (BLE text and serial):
+  a robot logging that needs its battery or connections checked. The four
+  battery LEDs on the chassis are its own and cannot be read; they can show
+  full on a battery that sags under motor load.
 
 **FORM's `abs_position` capability claim is weaker than its usual meaning.**
 `SCR_CAP_ABS_POSITION` (declared in `main.c`'s `scr_init()` call, and

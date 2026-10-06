@@ -289,7 +289,38 @@ config DEMO_MODE_CIRCLE_BENCH
 	  calibrated from a real number instead of a guess. NOT run through
 	  the arena fence — long clear floor, not the chessboard.
 
+config DEMO_MODE_TURN_CALIBRATE
+	bool "Turn-scale calibration (Cutebot Pro only): measured spins"
+	depends on CUTEBOT_VARIANT_PRO
+	help
+	  Measures this robot's CCW and CW turn-scale error, by hand. Line
+	  the robot up with a reference (a board line along the chassis
+	  edge, a tape mark on the floor) and press button A for CCW or B
+	  for CW: after a short pause it spins DEMO_TURN_CAL_TURNS full
+	  turns by its encoders, at the speed the demo turns, and reports
+	  the encoder's total rotation, coast included. Measure how far the
+	  robot ended past (+) or short of (-) its starting heading; then
+
+	    scale = (360 x turns + offset) / encoder total
+
+	  for that direction. Repeat as often as needed; each press is an
+	  independent run from wherever the robot is re-aligned.
+
+	  Results go over serial and, in a ble_debug.conf build, over BLE
+	  to the observer, keyed by this micro:bit's hardware id. The scales
+	  go into src/turn_calibration.h (compiled in, because flashing a
+	  micro:bit erases its whole flash) and are applied to every turn
+	  the demo's odometry measures.
+
 endchoice
+
+config DEMO_TURN_CAL_TURNS
+	int "Turns per calibration spin"
+	depends on DEMO_MODE_TURN_CALIBRATE
+	default 5
+	help
+	  More turns spread the same reading error over more rotation: at
+	  5 turns a 5-degree misread is a 0.3% scale error.
 
 choice CUTEBOT_VARIANT
 	prompt "Cutebot hardware variant"
@@ -347,7 +378,7 @@ endchoice
 
 config DEMO_GRID_CORRECTION
 	bool "Enable grid-based position/heading drift correction"
-	default y
+	default n
 	help
 	  Gates demo_grid_correct()/demo_grid_heading_correct() (formation.c)
 	  in every mode with real odometry (STRAIGHT_LINE, CONVERGE_TEST, the
@@ -369,6 +400,14 @@ config DEMO_GRID_CORRECTION
 	  for a no-correction run:
 	    west build ... -- -DCONFIG_DEMO_GRID_CORRECTION=n
 
+	  On Cutebot Pro this gates demo_junction_correct() instead.
+
+	  Default n since 2026-10-05: this printed board does not read as a
+	  usable grid to either robot's line sensors (Pro: black and white
+	  squares only 4-14 counts apart per channel out of 255), and the
+	  Pro's junction snap fires on black squares. Enable only on a board
+	  with IR-dark lines.
+
 config TAPESTRY_QUORUM_MIN
 	int "Minimum fresh peers for DEGRADED state"
 	depends on DEMO_MODE_CHOREO
@@ -387,7 +426,7 @@ config TAPESTRY_QUORUM_TARGET
 
 config DEMO_BLE_DEBUG
 	bool "Broadcast debug telemetry over BLE (legacy advertising)"
-	depends on DEMO_MODE_CHOREO && BT
+	depends on (DEMO_MODE_CHOREO || DEMO_MODE_TURN_CALIBRATE) && BT
 	help
 	  Adds a second, legacy-format BLE advertising set carrying a status
 	  packet (~2 Hz: step, quorum, estimate, target, latched discovery
