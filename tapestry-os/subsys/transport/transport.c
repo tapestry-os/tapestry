@@ -21,6 +21,7 @@
 #include <tapestry/transport.h>
 #include <tapestry/csm.h>
 #include "gossip.h"
+#include "auto_id_nonce.h"
 
 #ifdef CONFIG_HWINFO
 #include <zephyr/drivers/hwinfo.h>
@@ -145,11 +146,10 @@ bool transport_poll_directive(element_id_t own_id,
 static uint32_t hw_nonce(void)
 {
 #ifdef CONFIG_HWINFO
-    uint8_t buf[4] = {0};
-    if (hwinfo_get_device_id(buf, sizeof(buf)) >= (ssize_t)sizeof(buf)) {
-        uint32_t n = 0;
-        memcpy(&n, buf, 4);
-        return n ? n : 1u;   /* 0 would sort first — shift to 1 */
+    uint8_t buf[16] = {0};
+    ssize_t len = hwinfo_get_device_id(buf, sizeof(buf));
+    if (len >= 4) {
+        return auto_id_nonce_from_id(buf, (size_t)len);
     }
 #endif
     /* hwinfo unavailable — salt with uptime to avoid all-zero ties */

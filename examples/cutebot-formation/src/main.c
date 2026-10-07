@@ -199,8 +199,9 @@ static __maybe_unused pro_enc_result_t pro_wheel_deltas_cm(const cutebot_pro_enc
 }
 
 /* This micro:bit's key in turn_calibration.h: the first four bytes of its
- * device id, computed as transport.c's auto-ID nonce is (so a robot's key
- * is also visible in the observer's beacon events). */
+ * device id.  (Until 2026-10-07 this equalled the auto-ID nonce shown in
+ * the observer's beacon events; the nonce now hashes the whole id, so read
+ * the key from this robot's own log.) */
 static __maybe_unused uint32_t demo_hw_id(void)
 {
     uint8_t buf[4] = {0};
