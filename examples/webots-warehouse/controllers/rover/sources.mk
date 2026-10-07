@@ -74,3 +74,9 @@ CFLAGS += -DDEMO_MAX_SPEED_MPS=0.7f \
           -DDEMO_MIN_SEP_M=0.8f \
           -DDEMO_ARENA_LIMIT_M=13.0f \
           -DDEMO_TARGET_LEASH_M=1.5f
+
+# csm.h's stale threshold, kept at 1500 ms here (library default 3000 ms,
+# chosen for lossy real radios).  The scenes are tuned to it: at 3000 ms
+# scene 2's occluded links never went stale, so the islands never formed
+# (no slot=N/3 or N/5, no CP freeze).  CLOUD_COORD_TIMEOUT_MS matches it.
+CFLAGS += -DWM_STALE_THRESHOLD_MS=1500

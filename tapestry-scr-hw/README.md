@@ -110,7 +110,7 @@ bridge WiFi and Ethernet ports correctly; mesh systems vary).
 
 The firmware automatically disables WiFi power save after connecting.
 Without this, some APs buffer broadcast frames until the DTIM beacon
-interval (potentially 10–20 s), which exceeds the 1500 ms world-model
+interval (potentially 10–20 s), which exceeds the 3000 ms world-model
 stale threshold and causes spurious LOST/HEALTHY oscillation.
 
 ### Build — WiFi element (element 0)
@@ -168,7 +168,7 @@ python collect.py --out hw_run.csv
 1. Both boards running: `fresh_ratio = 1.0`, `quorum_state = HEALTHY`,
    leader = element 0 (lowest ID).
 2. **Reset the WiFi element** to simulate a partition:
-   - Ethernet element ages the WiFi entry: fresh → stale → inactive (~1500 ms)
+   - Ethernet element ages the WiFi entry: fresh → stale (3 s) → inactive (5 s)
    - `quorum_state` drops HEALTHY → DEGRADED → LOST
    - Ethernet element assigns NONE role, `election_count` increments
 3. **WiFi element reconnects** (after association + DHCP, ~5–10 s):
@@ -250,7 +250,7 @@ python collect_serial.py --ports /dev/ttyACM0 /dev/ttyACM1 --out mb_run.csv
    green + blue (HEALTHY) within ~2 s of first BLE advertisement.
    The element assigned the lowest ID at boot is elected leader.
 2. **Carry element 0 out of BLE range** (into another room):
-   - Element 1 ages the peer entry: fresh → stale → inactive (~1500 ms)
+   - Element 1 ages the peer entry: fresh → stale (3 s) → inactive (5 s)
    - `quorum_state` drops HEALTHY → DEGRADED → LOST
    - Element 1 LED turns red, motors stop
 3. **Bring element 0 back into range**:

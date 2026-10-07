@@ -15,7 +15,7 @@
  *     fresh peer with the lowest element_id is elected leader.  Every
  *     element computes this independently from its current world model
  *     snapshot; no additional messaging is required.  Convergence time
- *     is bounded by WM_STALE_THRESHOLD_MS (1500 ms).
+ *     is bounded by WM_STALE_THRESHOLD_MS (3000 ms).
  *
  *   Extended roles — non-leaders self-assign a functional role from
  *     their capability flags (relay, sensor, actuator).  All peers

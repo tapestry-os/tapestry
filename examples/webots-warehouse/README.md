@@ -272,13 +272,15 @@ id=4 t=52.0  slot=3/7  goal=(-8.60,  1.74)    <- reallocated, matches the
                                                   computed 7-point ring exactly
 ```
 
-**The latency is `WM_STALE_THRESHOLD_MS` = 1500 ms, and it is worth being
-precise about which threshold that is.** Both `scr.c`'s candidate scan and
-`bse.c`'s `collect_participants()` filter on `!is_stale`, so a silent element
-leaves `swarm_size`, `task_slot` and the FORM participant set 1.5 s after its
-last frame. `WM_EXPIRE_THRESHOLD_MS` (5 s) is a *later, separate* transition
-that clears `is_active`; it governs when the corpse stops voting in
-`choreo_collective_achieved()`, not when its work is redistributed.
+**The latency is `WM_STALE_THRESHOLD_MS` = 1500 ms (this example's own
+setting, in `controllers/rover/sources.mk`; the library default is
+3000 ms), and it is worth being precise about which threshold that is.**
+Both `scr.c`'s candidate scan and `bse.c`'s `collect_participants()` filter
+on `!is_stale`, so a silent element leaves `swarm_size`, `task_slot` and the
+FORM participant set 1.5 s after its last frame. `WM_EXPIRE_THRESHOLD_MS`
+(5 s) is a *later, separate* transition that clears `is_active`; it governs
+when the corpse stops voting in `choreo_collective_achieved()`, not when its
+work is redistributed.
 
 **The corpse is a physical obstacle the collective can no longer see** (the
 tracker's repulsion acts on fresh peers only, and a dead element goes stale

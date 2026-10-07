@@ -33,6 +33,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   robot switched off and on rings the agreed point instead of a peer's slot.
 - `element_state_t::discovered` is local only; the `discovery` event still
   reads it.
+- `WM_STALE_THRESHOLD_MS` defaults to 3000 ms (was 1500), so a lossy link
+  keeps quorum; a silent peer is noticed 1.5 s later. `cutebot-formation`
+  no longer overrides it; `webots-warehouse` keeps 1500 ms, which its scenes
+  are tuned to (at 3000 ms scene 2's partition never forms).
 
 ### Fixed
 - The `webots-warehouse` compile check (`ci-check`) builds on Linux: the

@@ -23,17 +23,6 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_TRANSPORT}/gossip.c
 )
 
-# #ifndef-guarded in core csm.h — overridden here (app-scoped, every other
-# consumer keeps the 1500ms default) because a real 4-robot BLE mesh on
-# this hardware showed continuous fresh/stale flicker (active peer count
-# bouncing 1-2 for 60+s straight, never reaching 3) at the default's only
-# 3 gossip-cycle grace window: passive BLE advertising has no acks/
-# retries, and collision/loss with 4 simultaneous broadcasters is real.
-# 3000ms gives 6 cycles of tolerance instead of 3 — a lab/demo tradeoff
-# (slower to detect a GENUINE peer loss) not appropriate to apply to
-# cf21bl-formation's flight-tested default without its own validation.
-target_compile_definitions(app PRIVATE WM_STALE_THRESHOLD_MS=3000)
-
 # L5 SCR + L6 BSE + L7 Choreographer — the choreo demo mode's target source.
 if(CONFIG_DEMO_MODE_CHOREO)
     target_sources(app PRIVATE

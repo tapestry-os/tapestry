@@ -14,7 +14,8 @@
 # stops gossiping and exits, with NO departure flag — a hard failure is
 # silence, not a goodbye). Its peers notice on their own.
 #
-# The reallocation latency is WM_STALE_THRESHOLD_MS = 1500 ms (csm.h), and
+# The reallocation latency is WM_STALE_THRESHOLD_MS = 1500 ms (set for this
+# example in controllers/rover/sources.mk; csm.h defaults to 3000), and
 # it is worth being precise about why that number and not the other one:
 # both scr.c's candidate scan and bse.c's collect_participants() filter on
 # !is_stale, so a silent element leaves swarm_size / task_slot / the FORM
