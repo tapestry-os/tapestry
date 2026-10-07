@@ -291,16 +291,14 @@ static inline void position_clamp(position_t *p)
 /* ── Timing constants ────────────────────────────────────────────────────── */
 
 #define GOSSIP_INTERVAL_MS        500   /* How often each element gossips      */
-/* Entry flagged stale after this. #ifndef-guarded (added 2026-09-12,
- * previously a plain #define) so a lossier transport/fleet size can
- * override it without changing this shared default for every other
- * consumer — see examples/cutebot-formation/CMakeLists.txt for why a
- * 4-robot BLE mesh needs more grace here than the 1500ms default gives
- * (only 3 gossip cycles of tolerance at GOSSIP_INTERVAL_MS=500, too tight
- * against real passive-BLE-advertising collision/loss with 4 simultaneous
- * broadcasters and no acks/retries). */
+/* Entry flagged stale after this. #ifndef-guarded so an app can override
+ * it. 3000 ms since 2026-10-07 (was 1500): at 1500 ms a 4-robot BLE mesh
+ * (no acks/retries) flickered fresh/stale for minutes, and a 2-drone
+ * syslink P2P link at ~15-25% delivery held quorum only ~35% of the time,
+ * so the cf21bl swap timed out half-way. The cost is noticing a genuinely
+ * silent peer 1.5 s later. */
 #ifndef WM_STALE_THRESHOLD_MS
-#define WM_STALE_THRESHOLD_MS    1500
+#define WM_STALE_THRESHOLD_MS    3000
 #endif
 #define WM_EXPIRE_THRESHOLD_MS   5000   /* Entry marked inactive after this    */
 #define WM_CYCLE_MS               100   /* World model update tick rate        */

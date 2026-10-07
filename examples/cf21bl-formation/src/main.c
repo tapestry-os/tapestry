@@ -502,10 +502,12 @@ int main(void)
         SCR_CAP_ACTUATOR | SCR_CAP_ABS_POSITION);
     /* Requiring >= QUORUM_UP_MS of SUSTAINED recovery before scr_tick()
      * reports quorum up — a single lucky gossip frame keeps a peer
-     * "fresh" for WM_STALE_THRESHOLD_MS (1500 ms), so gating on
-     * instantaneous freshness let lone packets flicker the Choreo awake
-     * for a second at a time in flight (2026-07-19 flight 2). This used
-     * to be a filter applied to a local COPY of scr here in main.c
+     * "fresh" for WM_STALE_THRESHOLD_MS, so gating on instantaneous
+     * freshness let lone packets flicker the Choreo awake for a second at
+     * a time in flight (2026-07-19 flight 2, at 1500 ms).  With the 3000 ms
+     * threshold one frame outlasts this hold; kept anyway, since a single
+     * frame now wakes the Choreo rarely and only briefly (flights 62/63).
+     * This used to be a filter applied to a local COPY of scr here in main.c
      * (never written back), duplicated identically in webots-formation's
      * main.c; scr_set_quorum_hold_ms() moved it into L5 itself, where
      * every consumer of `scr` (not just choreo_tick() below) sees the

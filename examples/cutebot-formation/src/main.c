@@ -246,8 +246,9 @@ static __maybe_unused uint32_t demo_hw_id(void)
  * applied to the mirror-image case (a peer newly arriving). Any drop
  * back below n_total-1 resets the debounce timer.
  *
- * VALUE IS TIGHTLY BOUNDED BY WM_STALE_THRESHOLD_MS (csm.h, 1500 ms) and
- * GOSSIP_INTERVAL_MS (500 ms) — first attempt used 3000 ms (matching
+ * VALUE IS TIGHTLY BOUNDED BY WM_STALE_THRESHOLD_MS (csm.h; 1500 ms when
+ * this was tuned, 3000 ms now) and GOSSIP_INTERVAL_MS (500 ms) — first
+ * attempt used 3000 ms (matching
  * CHOREO_MEMBERSHIP_HOLD_MS) and real hardware never satisfied it at
  * all: that's asking all 3 peer-links to each independently avoid a
  * >1500ms gap TWICE in a row, simultaneously, with zero misses across
@@ -255,9 +256,9 @@ static __maybe_unused uint32_t demo_hw_id(void)
  * reception. Symptom was every robot's LED flickering yellow/green
  * (1/2 fresh) forever, never all four together — the barrier was
  * correctly refusing to release, just against a bar nothing could clear.
- * 800 ms is a little over half of one WM_STALE_THRESHOLD_MS renewal
- * window — enough to rule out a single-instant fluke without demanding
- * near-perfect multi-second reception across three links at once.
+ * 800 ms was a little over half of one 1500 ms renewal window — enough
+ * to rule out a single-instant fluke without demanding near-perfect
+ * multi-second reception across three links at once.
  */
 #define DEMO_SYNC_LOG_INTERVAL_MS 2000u
 #define DEMO_SYNC_SETTLE_MS       800u

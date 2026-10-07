@@ -157,12 +157,12 @@ void demo_setpoint_init(demo_setpoint_t *sp, float x, float y);
  *
  * Both drive functions below measure their minimum peer distance over every
  * ACTIVE peer, stale entries included.  is_stale only means "no gossip for
- * WM_STALE_THRESHOLD_MS (1500 ms)" — it does NOT mean "no data": the entry
+ * WM_STALE_THRESHOLD_MS (3000 ms)" — it does NOT mean "no data": the entry
  * keeps its last-known position until WM_EXPIRE_THRESHOLD_MS (5000 ms)
- * retires it.  Throwing that 1.5–5 s band away left the DEMO_MIN_SEP_M
- * check completely inert for ~57% of flight 25's status samples (27/45 and
- * 24/45), and a 2 s-old position is a far better answer to "are we about to
- * collide" than no answer at all.
+ * retires it.  Throwing that 3–5 s band away (1.5–5 s when flight 25
+ * flew) left the DEMO_MIN_SEP_M check completely inert for ~57% of flight
+ * 25's status samples (27/45 and 24/45), and a 2 s-old position is a far
+ * better answer to "are we about to collide" than no answer at all.
  *
  * The FORCES still act on fresh peers only — a stale position is fine to
  * warn about, not fine to steer by — so a returned distance can no longer
