@@ -29,6 +29,10 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier);
 
 /* Drain all pending received frames from all registered transceivers into wm.
  * Skips frames whose id matches own_id.
+ * Also runs the element's shared-fact duties for the cycle (wire v7): seeds
+ * wm's fact epoch on first use, merges received fact frames, and paces and
+ * sends fact frames on a Trickle timer using real elapsed time — so calling
+ * this once per cycle is ALL an element's loop does for shared facts.
  * When CONFIG_TAPESTRY_MESH_RELAY is enabled, eligible received frames are
  * queued for relay re-transmission; call gossip_relay_flush() afterwards.
  * Returns total frames processed. */

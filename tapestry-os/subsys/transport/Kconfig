@@ -2,6 +2,9 @@
 #
 # Source this from your application Kconfig with:
 #   rsource "../tapestry-os/subsys/transport/Kconfig"
+# It also pulls in the L4 shared-fact options (subsys/csm/Kconfig).
+
+rsource "../csm/Kconfig"
 
 config TAPESTRY_WIRE_AUTH_ENABLED
 	bool "Enable HMAC-SHA256 gossip frame authentication"

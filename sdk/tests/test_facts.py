@@ -35,6 +35,17 @@ def test_publish_needs_a_synced_table():
     assert f.stamp == 1 and f.flags == HIGH and f.live
 
 
+def test_publish_needs_an_epoch():
+    """Nothing has seeded the epoch (the C side does it in the first
+    gossip_drain()) and none was set: publishing must fail loudly, not
+    silently reuse epoch 0."""
+    t = FactTable(0)
+    t.heard_digest(0)
+    assert t.publish(TARGET, (10, 10, 0))[0] == F.WM_FACT_ERR_NOEPOCH
+    t.set_epoch(0x1234)
+    assert t.publish(TARGET, (10, 10, 0))[0] == F.WM_FACT_CREATED
+
+
 def test_sync_timeout_allows_a_solo_element_to_publish():
     t = FactTable(0, 1)
     t.tick(F.FACT_SYNC_TIMEOUT_MS - 100)
@@ -216,7 +227,7 @@ def test_trickle_suppresses_after_k_consistent_digests():
 
 
 def test_trickle_restarts_at_imin_on_an_inconsistent_digest_or_new_fact():
-    t = FactTable(0)
+    t = FactTable(0, 1)
     _send_ticks(t, 200)
     assert t.trickle_i_ms == F.FACT_IMAX_MS
     t.heard_digest(0xABCD)

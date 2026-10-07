@@ -1,0 +1,68 @@
+# Kconfig — Tapestry L4 shared facts (csm.h, facts.c)
+#
+# Pulled in by subsys/transport/Kconfig, which every application that links
+# gossip already sources — an application Kconfig needs no extra line.
+# Builds without Kconfig (host simulations, Webots) get the defaults baked
+# into csm.h.
+
+config TAPESTRY_WM_MAX_FACTS
+	int "Shared-fact table capacity (records)"
+	default 16
+	range 1 64
+	help
+	  Number of facts one element's table holds (about 40 bytes of RAM each).
+	  When the table is full a new fact is still admitted and the lowest-
+	  ranked entry is evicted — tombstones first, then lowest priority, then
+	  oldest.  Size it for the facts a mission can have live at once: targets
+	  and hazards are rare, so 16 is generous for the demos.  Elements may
+	  differ; a smaller table just evicts sooner.
+
+config TAPESTRY_FACT_MAX_PER_ORIGIN
+	int "Live facts one origin may hold before replacing its own oldest"
+	default TAPESTRY_WM_MAX_FACTS
+	range 1 64
+	help
+	  Counted per (origin id, boot epoch).  Defaults to the table size,
+	  because eviction already keeps any element from locking the others
+	  out; lower it to give each element a tighter share.
+
+config TAPESTRY_FACT_TOMBSTONE_TTL_MS
+	int "Retracted-fact tombstone lifetime (ms)"
+	default 60000
+	help
+	  How long a retraction is kept so stale gossip cannot revive the fact.
+	  Must outlast the slowest late joiner.
+
+config TAPESTRY_FACT_IMIN_MS
+	int "Fact Trickle minimum interval (ms)"
+	default 250
+	help
+	  Shortest gap between fact frames while the neighbourhood disagrees
+	  (a new fact, a retraction, or a digest that differs).
+
+config TAPESTRY_FACT_IMAX_MS
+	int "Fact Trickle maximum interval (ms)"
+	default 8000
+	help
+	  Longest gap once every digest heard matches.  A late joiner learns the
+	  table within about this long even if every earlier frame was lost.
+
+config TAPESTRY_FACT_K
+	int "Fact Trickle redundancy constant"
+	default 2
+	range 1 8
+	help
+	  An element skips its own fact frame once it has heard this many
+	  matching digests in the current interval.
+
+# gossip.c seeds each boot's fact epoch (and Trickle's send-point jitter) from
+# the board's entropy device when its devicetree names one, so only then does
+# it pull in Zephyr's random subsystem.  Boards without one (crazyflie21bl)
+# use a cycle-counter mix in gossip.c instead; selecting Zephyr's clock-based
+# TEST_RANDOM_GENERATOR there would only add its "not truly random" build
+# warning to a flight build, for no better epoch.
+config TAPESTRY_FACTS_ENTROPY
+	bool
+	default y
+	depends on ENTROPY_NODE_ENABLED
+	select ENTROPY_GENERATOR

@@ -203,7 +203,8 @@ void wm_facts_init(world_model_t *wm)
 
 void wm_fact_set_epoch(world_model_t *wm, uint16_t epoch)
 {
-    wm->facts.epoch = epoch;
+    wm->facts.epoch     = epoch;
+    wm->facts.epoch_set = true;
 }
 
 float wm_fact_merge_radius(uint8_t type)
@@ -218,6 +219,9 @@ int wm_fact_publish(world_model_t *wm, uint8_t type, const position_t *pos,
 
     if (type == FACT_TYPE_NONE || pos == NULL || wm->owner_id >= MAX_ELEMENTS) {
         return WM_FACT_ERR_INVALID;
+    }
+    if (!t->epoch_set) {
+        return WM_FACT_ERR_NOEPOCH;
     }
     if (!t->synced) {
         return WM_FACT_ERR_UNSYNCED;

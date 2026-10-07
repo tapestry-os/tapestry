@@ -509,6 +509,8 @@ typedef struct {
 typedef struct {
     wm_fact_slot_t slots[WM_MAX_FACTS];
     uint16_t epoch;            /* own per-boot epoch (wm_fact_set_epoch)   */
+    bool     epoch_set;        /* wm_fact_set_epoch() has been called —    */
+                               /* gossip_drain() does it on first use      */
     uint8_t  next_seq;         /* own next seq                             */
     uint32_t clock;            /* Lamport clock over facts                 */
     bool     synced;           /* may publish — see FACT_SYNC_TIMEOUT_MS   */
@@ -605,8 +607,10 @@ uint8_t wm_snapshot(const world_model_t *wm,
  * application never needs to. */
 void wm_facts_init(world_model_t *wm);
 
-/* Set this boot's random epoch.  Call once after wm_init(), before the
- * first publish, with a value from the platform's entropy source. */
+/* Set this boot's random epoch.  gossip_drain() (L3) does this on its
+ * first call from the platform's entropy source, so an application that
+ * drains every cycle never needs to; wm_fact_publish() refuses until an
+ * epoch exists.  Call it yourself only to pin the value (tests, replays). */
 void wm_fact_set_epoch(world_model_t *wm, uint16_t epoch);
 
 /* wm_fact_publish() results */
@@ -616,9 +620,14 @@ void wm_fact_set_epoch(world_model_t *wm, uint16_t epoch);
 #define WM_FACT_ERR_INVALID  (-1) /* type 0, or no valid owner id         */
 #define WM_FACT_ERR_UNSYNCED (-2) /* table not yet heard from a peer      */
 #define WM_FACT_ERR_FULL     (-3) /* would be evicted on arrival          */
+#define WM_FACT_ERR_NOEPOCH  (-4) /* no epoch yet: nothing has drained    */
+                                  /* gossip and none was set explicitly   */
 
 /* Create a fact originated by this element (or reuse a live one of the
- * same type within the merge radius).  flags may carry FACT_IMMUTABLE and
+ * same type within the merge radius).  Needs an epoch (set explicitly, or
+ * seeded by the first gossip_drain()) and a synced table — a transient
+ * WM_FACT_ERR_UNSYNCED is retried on the next cycle, WM_FACT_ERR_NOEPOCH
+ * means the application publishes before it has ever drained gossip.  flags may carry FACT_IMMUTABLE and
  * FACT_PRIO(); FACT_RETRACTED is ignored.  Restarts Trickle on a new key.
  * out may be NULL. */
 int wm_fact_publish(world_model_t *wm, uint8_t type, const position_t *pos,
