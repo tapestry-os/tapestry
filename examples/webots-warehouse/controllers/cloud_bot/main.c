@@ -35,6 +35,11 @@
  */
 
 #include <math.h>
+/* M_PI is POSIX, not C99: glibc hides it under strict _POSIX_C_SOURCE (the
+ * ci-check's flags) while macOS exposes it via _DARWIN_C_SOURCE. */
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
