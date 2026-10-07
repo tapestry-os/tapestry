@@ -1007,6 +1007,69 @@ ZTEST(choreo_script, test_suspended_non_hold_goal_also_times_out_while_isolated)
                  "step 1's own isolated timeout must also fire");
 }
 
+ZTEST(choreo_script, test_suspended_timer_waits_while_a_peer_is_active)
+{
+    /* Flapping, not isolated: quorum LOST while the partner is still
+     * active (stale).  The step's own time must not run — counting it
+     * ran the swap's EXCHANGE out of time half-way (flight 64 run 2).
+     * Once the partner expires, the element is isolated and it does. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 1000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer(1, 1.0f, 0.0f, /* stale = */ true);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_min   = 1;
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    for (int i = 0; i < 50; i++) {   /* 5 s, five times the bound */
+        choreo_tick(&wm, &scr);
+    }
+    zassert_false(choreo_script_complete(),
+                  "a live partner must not let a flap spend the step");
+    zassert_equal(choreo_goal_status(), CHOREO_STATE_SUSPENDED,
+                  "still suspended");
+
+    wm_expire_peer(1);
+    for (int i = 0; i < 11; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "with the partner expired the step must time out");
+}
+
+ZTEST(choreo_script, test_suspended_timer_runs_when_the_peer_departed)
+{
+    /* A landed partner still gossips but has left the script: that is
+     * isolation for this purpose, so the step's time runs. */
+    static const choreo_step_t script[] = {
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 1000 },
+    };
+
+    choreo_init(0);
+    zassert_equal(choreo_submit_script(script, 1), 0, "submit failed");
+
+    wm_reset();
+    wm_set_self(0, 0, 0.0f, 0.0f);
+    wm_set_peer_departed(1, 1.0f, 0.0f, ELEMENT_DEPARTED_COMPLETE);
+
+    scr_state_t scr = { 0 };
+    scr.quorum_min   = 1;
+    scr.quorum_state = SCR_QUORUM_LOST;
+
+    for (int i = 0; i < 11; i++) {
+        choreo_tick(&wm, &scr);
+    }
+    zassert_true(choreo_script_complete(),
+                 "a departed partner must not hold the step open");
+}
+
 ZTEST(choreo_script, test_suspended_hold_advances_to_next_step_while_isolated)
 {
     /* Two HOLD steps back to back: the first's timeout must fire while

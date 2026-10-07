@@ -1044,9 +1044,25 @@ static void script_advance(const world_model_t *wm, const scr_state_t *scr)
  * exposure just got wider with the change above, not narrower, so this is
  * worth chasing rather than leaving as a one-off.
  */
-static void suspended_step_timeout(void)
+static void suspended_step_timeout(const world_model_t *wm,
+                                   const scr_state_t *scr)
 {
     if (!s_script_active) {
+        return;
+    }
+    /* Only isolation spends the step's time: fewer participating peers
+     * than quorum_min (at least 1) are active.  A flapping link with a
+     * live partner is not isolation — counting it ran the cf21bl swap's
+     * EXCHANGE out of time half-way (flights 54/55/60, flight 64 run 2). */
+    uint8_t need = scr->quorum_min > 0u ? scr->quorum_min : 1u;
+    uint8_t live = 0;
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (!e->is_self && element_is_participating(e)) {
+            live++;
+        }
+    }
+    if (live >= need) {
         return;
     }
     const choreo_step_t *st = &s_steps[s_step_idx];
@@ -1282,7 +1298,7 @@ void choreo_tick(const world_model_t *wm, const scr_state_t *scr)
         if (s_goal.type == CHOREO_GOAL_HOLD) {
             bse_tick(wm, scr);
         }
-        suspended_step_timeout();
+        suspended_step_timeout(wm, scr);
         /* suspended_step_timeout() may have terminated -> IDLE, or
          * advanced to a new step (still SUSPENDED — advance_to() doesn't
          * touch s_state); the quorum-recovery check below only applies if

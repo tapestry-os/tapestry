@@ -77,8 +77,11 @@
  *
  *               Every step's OWN max_duration_ms is the one exception to
  *               "step timers are frozen", for every goal type, not only
- *               HOLD: it keeps counting down while suspended too (choreo.c's
- *               suspended_step_timeout()), so a script can give up on
+ *               HOLD: it keeps counting down while suspended AND isolated
+ *               — fewer participating peers than quorum_min (at least 1)
+ *               still active (choreo.c's suspended_step_timeout()).  A
+ *               flapping link with a live partner does not spend it.  So
+ *               a script can give up on
  *               permanent isolation instead of freezing wherever it struck
  *               forever with no peer ever left to revive it — a MOVE or
  *               FORM step gets this exit too, even though (unlike HOLD) it
