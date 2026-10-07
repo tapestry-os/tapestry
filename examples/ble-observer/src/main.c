@@ -14,9 +14,11 @@
  *         gossip and debug sets of one robot have different ones)
  *   adv   L legacy, E extended; a trailing ! marks an incomplete report
  *   kind  G gossip, B ID-negotiation beacon (gossip frame, id 0xFF),
- *         S debug status, T debug text, U any other Tapestry AD
- *   id    element id (255 while negotiating)
- *   seq   G: update_seq; B: the nonce; S/T: the debug packet seq; U: 0
+ *         F shared-fact frame (wire v7), S debug status, T debug text,
+ *         U any other Tapestry AD
+ *   id    element id (255 while negotiating); F: the sender's id
+ *   seq   G: update_seq; B: the nonce; F: the table digest;
+ *         S/T: the debug packet seq; U: 0
  *   hex   the manufacturer data after the company id, starting with the
  *         type/kind byte — decoded on the host (tools/observer_log.py)
  *
@@ -154,6 +156,13 @@ static void scan_recv(const struct bt_le_scan_recv_info *info,
 		id = f[offsetof(tapestry_gossip_frame_t, id)];
 		seq = sys_get_le32(&f[offsetof(tapestry_gossip_frame_t, update_seq)]);
 		kind = (id == ELEMENT_ID_INVALID) ? 'B' : 'G';
+	} else if (p[0] == TAPESTRY_MSG_FACT &&
+		   ctx.len >= 1u + TAPESTRY_FACT_FRAME_SIZE) {
+		const uint8_t *f = p + 1;
+
+		id = f[offsetof(tapestry_fact_frame_t, sender_id)];
+		seq = sys_get_le16(&f[offsetof(tapestry_fact_frame_t, digest)]);
+		kind = 'F';
 	} else if ((p[0] == DEBUG_KIND_STATUS || p[0] == DEBUG_KIND_TEXT) &&
 		   ctx.len == DEBUG_PAYLOAD_LEN) {
 		id = p[1];

@@ -24,18 +24,20 @@ COLLECTOR_PORT = 5100
 # decode() rejects a header whose version does not match —
 # see wire.h's "Wire schema version" section for why.
 
-WIRE_VERSION = 6
+WIRE_VERSION = 7
 
 MSG_GOSSIP     = 1
 MSG_METRIC     = 2
 MSG_SCR_METRIC = 4
 MSG_DIRECTIVE  = 5
+MSG_FACT       = 6
 
 HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
-GOSSIP_FMT     = struct.Struct('<BfffffffIIBHBBBBBBBBB')  # 49 bytes: id,x,y,z,qw,qx,qy,qz,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,discovered,current_track,reserved0,reserved1,reserved2,reserved3,version
+GOSSIP_FMT     = struct.Struct('<BfffffffIIBHBBBBBBBB')  # 48 bytes: id,x,y,z,qw,qx,qy,qz,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,current_track,reserved0,reserved1,reserved2,reserved3,version
 METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
 SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
 DIRECTIVE_FMT  = struct.Struct('<BBBfffffHIB')  # 30 bytes: src_id,target_id,type,x,y,z,spring_k,spacing,goal_id,seq,version
+FACT_FMT       = struct.Struct('<BBHBBHBBIfffHBBHBBIfffHB')  # 53 bytes: sender_id,count,digest,r0_type,r0_origin,r0_epoch,r0_seq,r0_flags,r0_stamp,r0_x,r0_y,r0_z,r0_attr,r1_type,r1_origin,r1_epoch,r1_seq,r1_flags,r1_stamp,r1_x,r1_y,r1_z,r1_attr,version
 # === END GENERATED WIRE PROTOCOL ===
 
 ELEMENT_ID_INVALID = 0xFF

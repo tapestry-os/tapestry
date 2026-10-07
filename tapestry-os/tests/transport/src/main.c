@@ -143,6 +143,48 @@ static uint8_t *dir_last(void)
     return dir_buf[dir_tail - 1];
 }
 
+/* Fact frames (wire v7) — a third FIFO, same contract. */
+#define FACT_MAX_LEN (TAPESTRY_FACT_WIRE_SIZE + 8u)
+static uint8_t  fact_buf[LOOP_DEPTH][FACT_MAX_LEN];
+static uint16_t fact_len[LOOP_DEPTH];
+static int      fact_head;
+static int      fact_tail;
+
+static int loop_tx_fact(const uint8_t *data, uint16_t len)
+{
+    if (fact_tail >= LOOP_DEPTH) {
+        return -ENOSPC;
+    }
+    if (len > FACT_MAX_LEN) {
+        len = FACT_MAX_LEN;
+    }
+    memcpy(fact_buf[fact_tail], data, len);
+    fact_len[fact_tail] = len;
+    fact_tail++;
+    return 0;
+}
+
+static int loop_rx_fact(uint8_t *buf, uint16_t max_len)
+{
+    if (fact_head >= fact_tail) {
+        return 0;
+    }
+    uint16_t len = fact_len[fact_head];
+
+    if (len > max_len) {
+        len = max_len;
+    }
+    memcpy(buf, fact_buf[fact_head], len);
+    fact_head++;
+    return (int)len;
+}
+
+static uint8_t *fact_last(void)
+{
+    zassert_true(fact_tail > 0, "no fact frame has been transmitted");
+    return fact_buf[fact_tail - 1];
+}
+
 static const tapestry_transceiver_t loop_transceiver = {
     .type         = TRANSCEIVER_TYPE_UDP,
     .init         = loop_init,
@@ -151,6 +193,8 @@ static const tapestry_transceiver_t loop_transceiver = {
     .set_power    = loop_set_power,
     .tx_directive = loop_tx_directive,
     .rx_directive = loop_rx_directive,
+    .tx_fact      = loop_tx_fact,
+    .rx_fact      = loop_rx_fact,
 };
 
 static const tapestry_transceiver_t *const loop_set[] = { &loop_transceiver };
@@ -166,6 +210,10 @@ static void loop_reset(void)
     dir_tail = 0;
     memset(dir_buf, 0, sizeof(dir_buf));
     memset(dir_len, 0, sizeof(dir_len));
+    fact_head = 0;
+    fact_tail = 0;
+    memset(fact_buf, 0, sizeof(fact_buf));
+    memset(fact_len, 0, sizeof(fact_len));
 }
 
 /* Number of frames queued but not yet drained. */
@@ -256,15 +304,15 @@ ZTEST_SUITE(gossip_wire, NULL, NULL, suite_before, NULL, NULL);
  */
 ZTEST(gossip_wire, test_frame_sizes_match_the_documented_wire_contract)
 {
-    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 49u,
-                  "gossip frame must stay 49 bytes (wire.h v6 documents "
-                  "'<BfffffffIIBHBBBBBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
+    zassert_equal(TAPESTRY_GOSSIP_FRAME_SIZE, 48u,
+                  "gossip frame must stay 48 bytes (wire.h v7 documents "
+                  "'<BfffffffIIBHBBBBBBBB'); got %u", TAPESTRY_GOSSIP_FRAME_SIZE);
     /* Pinned together on purpose: a layout change that forgets the version
      * bump leaves older peers parsing the new frame as the old one, and a
      * version bump that forgets the Python mirrors leaves the orchestrators
      * decoding garbage.  Change the frame, change both, and run
      * tapestry-os/tools/gen_wire_protocol.py. */
-    zassert_equal(TAPESTRY_WIRE_VERSION, 6u,
+    zassert_equal(TAPESTRY_WIRE_VERSION, 7u,
                   "wire version must be bumped with the frame layout; got %u",
                   TAPESTRY_WIRE_VERSION);
     zassert_equal(TAPESTRY_MSG_HEADER_SIZE, 5u,
@@ -395,16 +443,14 @@ ZTEST(gossip_wire, test_the_achieved_bit_occupies_its_own_wire_byte)
 }
 
 /*
- * The discovered bit (v6) — same shape and same reason to test
- * both polarities as achieved above: a hop that hardcodes false is
- * indistinguishable from a working one until somebody actually discovers.
- * TAPESTRY_BSE_ANCHOR_DISCOVERER and CHOREO_EVENT_DISCOVERY both read
- * this bit from peers' wm entries, purely from gossiped state.
+ * The discovered bit is LOCAL since v7: it left the gossip frame, and what
+ * a finder found travels as a shared fact instead (the fact-frame tests
+ * below).  A sender with the bit set must not make a peer look discovered.
  */
-ZTEST(gossip_wire, test_the_discovered_bit_round_trips_true)
+ZTEST(gossip_wire, test_the_discovered_bit_stays_local)
 {
     world_model_t wm;
-    element_state_t own = sender_state(3, false);
+    element_state_t own = sender_state(3, true);
     own.discovered = true;
 
     receiver_init(&wm, 0);
@@ -414,55 +460,12 @@ ZTEST(gossip_wire, test_the_discovered_bit_round_trips_true)
     const wm_entry_t *e = wm_get_entry(&wm, 3);
 
     zassert_not_null(e, "sender entry");
-    zassert_true(e->state.discovered,
-                 "a discovering peer must arrive discovered — the anchor "
-                 "selector and CHOREO_EVENT_DISCOVERY both advance on "
-                 "exactly this bit");
-}
-
-ZTEST(gossip_wire, test_the_discovered_bit_round_trips_false)
-{
-    world_model_t wm;
-    element_state_t own = sender_state(3, false);
-    /* own.discovered left false (zero-init in sender_state()). */
-
-    receiver_init(&wm, 0);
-    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
-    zassert_equal(gossip_drain(&wm, 0), 1, "frame should be accepted");
-
-    const wm_entry_t *e = wm_get_entry(&wm, 3);
-
-    zassert_not_null(e, "sender entry");
     zassert_false(e->state.discovered,
-                  "an undiscovered peer must not arrive discovered — a "
-                  "stuck-true bit would resolve an anchor to the wrong "
-                  "element or fire CHOREO_EVENT_DISCOVERY early");
-}
-
-/*
- * The discovered bit is carried in its own byte and must not be confused
- * with the neighbouring achieved / current_track bytes, or with
- * health_flags' now-16-bit width.
- */
-ZTEST(gossip_wire, test_the_discovered_bit_occupies_its_own_wire_byte)
-{
-    element_state_t own = sender_state(3, true);
-    own.discovered    = true;
-    own.current_track = 5u;
-
-    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
-
-    const tapestry_gossip_frame_t *f =
-        (const tapestry_gossip_frame_t *)loop_last();
-
-    zassert_equal(f->discovered, 1u, "discovered must be encoded as 0/1");
-    zassert_equal(f->achieved, 1u,
-                  "discovered must not clobber the neighbouring achieved bit");
-    zassert_equal(f->current_track, 5u,
-                  "discovered must not clobber the neighbouring current_track byte");
-    zassert_equal(f->health_flags,
-                  ELEMENT_HEALTH_LOW_BATTERY | ELEMENT_HEALTH_DEGRADED,
-                  "widening health_flags to u16 must not disturb discovered");
+                  "discovered is not on the wire since v7");
+    zassert_true(e->state.goal_achieved,
+                 "the neighbouring achieved bit still round-trips");
+    zassert_equal(e->state.current_track, 5u,
+                  "the neighbouring current_track byte still round-trips");
 }
 
 /*
@@ -1149,3 +1152,134 @@ ZTEST(gossip_wire, test_auth_rejects_an_untagged_directive)
 }
 
 #endif /* CONFIG_TAPESTRY_WIRE_AUTH_ENABLED */
+
+/* ── Fact frames (wire v7) ───────────────────────────────────────────────── */
+
+#define FACT_HIGH ((uint8_t)(FACT_IMMUTABLE | FACT_PRIO(3)))
+
+/* A synced sender world model holding one target fact. */
+static void fact_sender(world_model_t *wm, element_id_t id, fact_key_t *key)
+{
+    position_t p = { 69.0f, 68.4f, 0.0f };
+
+    receiver_init(wm, id);
+    wm_fact_set_epoch(wm, 0xBEEFu);
+    wm_fact_heard_digest(wm, 0);
+    zassert_equal(wm_fact_publish(wm, FACT_TYPE_TARGET, &p, 0x1234u,
+                                  FACT_HIGH, key), WM_FACT_CREATED);
+}
+
+ZTEST(gossip_wire, test_fact_sizes_match_the_documented_wire_contract)
+{
+    zassert_equal(TAPESTRY_FACT_FRAME_SIZE, 53u,
+                  "fact frame must stay 53 bytes (wire.h v7 documents "
+                  "'<BBHBBHBBIfffHBBHBBIfffHB'); got %u",
+                  TAPESTRY_FACT_FRAME_SIZE);
+    zassert_equal(TAPESTRY_MSG_FACT, 6, "fact message type");
+    zassert_true(TAPESTRY_FACT_WIRE_SIZE + 5u <= 64u,
+                 "fact AD record must fit the cutebot's 64-byte adv buffer");
+
+    tapestry_fact_frame_t f = {0};
+    const uint8_t *raw = (const uint8_t *)&f;
+
+    f.sender_id = 0xABu;
+    zassert_equal(raw[0], 0xABu, "sender id must be the first byte");
+    f.version = 0xCDu;
+    zassert_equal(raw[TAPESTRY_FACT_FRAME_SIZE - 1u], 0xCDu,
+                  "version must be the last byte");
+}
+
+ZTEST(gossip_wire, test_a_fact_round_trips_every_field)
+{
+    world_model_t a, b;
+    fact_key_t    key;
+    fact_t        got;
+
+    fact_sender(&a, 1, &key);
+    receiver_init(&b, 2);
+
+    gossip_send_facts(&a, 1);
+    zassert_equal(gossip_drain_facts(&b, 2), 1, "fact frame should apply");
+    zassert_true(wm_fact_get(&b, &key, &got), "fact must arrive");
+    zassert_equal(got.key.type, FACT_TYPE_TARGET);
+    zassert_equal(got.key.origin, 1);
+    zassert_equal(got.key.epoch, 0xBEEFu);
+    zassert_equal(got.key.seq, 0);
+    zassert_equal(got.flags, FACT_HIGH);
+    zassert_equal(got.stamp, 1u);
+    zassert_equal(got.pos.x, 69.0f);
+    zassert_equal(got.pos.y, 68.4f);
+    zassert_equal(got.pos.z, 0.0f);
+    zassert_equal(got.attr, 0x1234u);
+    zassert_equal(wm_fact_digest(&b), wm_fact_digest(&a),
+                  "receiver must now hold the same table");
+    zassert_true(b.facts.synced, "hearing a fact frame syncs the table");
+    zassert_equal(b.facts.trickle_c, 1u,
+                  "a matching digest after the merge counts as consistent");
+}
+
+ZTEST(gossip_wire, test_an_empty_table_sends_a_digest_only_beacon)
+{
+    world_model_t a, b;
+
+    receiver_init(&a, 1);
+    receiver_init(&b, 2);
+    gossip_send_facts(&a, 1);
+
+    const tapestry_fact_frame_t *f = (const tapestry_fact_frame_t *)fact_last();
+    zassert_equal(f->count, 0u);
+    zassert_equal(f->digest, 0u);
+    zassert_false(b.facts.synced);
+    zassert_equal(gossip_drain_facts(&b, 2), 1);
+    zassert_true(b.facts.synced,
+                 "a rebooted peer's empty beacon still syncs a fresh element");
+}
+
+ZTEST(gossip_wire, test_own_and_wrong_version_fact_frames_are_dropped)
+{
+    world_model_t a, b;
+    fact_key_t    key;
+
+    fact_sender(&a, 1, &key);
+    receiver_init(&b, 1);           /* same id as the sender: an echo */
+    gossip_send_facts(&a, 1);
+    zassert_equal(gossip_drain_facts(&b, 1), 0, "own id must not apply");
+    zassert_equal(wm_fact_count(&b, FACT_TYPE_NONE), 0);
+
+    receiver_init(&b, 2);
+    gossip_send_facts(&a, 1);
+    ((tapestry_fact_frame_t *)fact_last())->version = TAPESTRY_WIRE_VERSION - 1u;
+    zassert_equal(gossip_drain_facts(&b, 2), 0, "wrong version must drop");
+    zassert_equal(wm_fact_count(&b, FACT_TYPE_NONE), 0);
+}
+
+#ifndef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+ZTEST(gossip_wire, test_a_fact_frame_claiming_three_records_is_dropped)
+{
+    world_model_t a, b;
+    fact_key_t    key;
+
+    fact_sender(&a, 1, &key);
+    receiver_init(&b, 2);
+    gossip_send_facts(&a, 1);
+    ((tapestry_fact_frame_t *)fact_last())->count = 3u;
+    zassert_equal(gossip_drain_facts(&b, 2), 0);
+    zassert_equal(wm_fact_count(&b, FACT_TYPE_NONE), 0);
+}
+#endif
+
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+ZTEST(gossip_wire, test_auth_rejects_a_tampered_fact)
+{
+    world_model_t a, b;
+    fact_key_t    key;
+
+    fact_sender(&a, 1, &key);
+    receiver_init(&b, 2);
+    gossip_send_facts(&a, 1);
+    ((tapestry_fact_frame_t *)fact_last())->r0_x = 1.0f;   /* move the leak */
+    zassert_equal(gossip_drain_facts(&b, 2), 0,
+                  "a record changed after signing must not verify");
+    zassert_equal(wm_fact_count(&b, FACT_TYPE_NONE), 0);
+}
+#endif

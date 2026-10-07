@@ -80,6 +80,12 @@ extern struct k_mutex cf21bl_syslink_tx_mutex;
 
 #define SYSLINK_MTU                 64u
 #define TAPESTRY_P2P_PORT           0x00u   /* custom Tapestry gossip port */
+/* Shared-fact frames (wire.h v7) on their own P2P port: syslink has no
+ * message-type byte, and the nRF51 passes the port's low 4 bits through
+ * (crazyflie2-nrf-firmware main.c: data[0] = port).  A fact frame + auth
+ * tag is 57 bytes; with the nRF51's port and RSSI bytes 59, inside its
+ * 63-byte ESB packet. */
+#define TAPESTRY_P2P_PORT_FACT      0x01u
 
 #ifndef CONFIG_TAPESTRY_P2P_CHANNEL
 #define CONFIG_TAPESTRY_P2P_CHANNEL 80
@@ -94,6 +100,7 @@ static const struct device *uart6;
 #define RX_QUEUE_DEPTH 8
 
 K_MSGQ_DEFINE(rx_msgq, TAPESTRY_GOSSIP_WIRE_SIZE, RX_QUEUE_DEPTH, 4);
+K_MSGQ_DEFINE(fact_rx_msgq, TAPESTRY_FACT_WIRE_SIZE, 4, 4);
 
 /* Diagnostic counters — read via syslink_p2p_stats() */
 static uint32_t g_rx_bytes;    /* raw bytes received from nRF51 on USART6 */
@@ -346,7 +353,14 @@ static void syslink_rx_byte(uint8_t c)
         if (g_cka == g_ca && c == g_cb) {
             /* Valid frame.  If it is a P2P broadcast with a payload large
              * enough to contain a gossip frame, queue it. */
-            if (g_type == SYSLINK_RADIO_P2P_BROADCAST) {
+            if (g_type == SYSLINK_RADIO_P2P_BROADCAST &&
+                g_buf[0] == TAPESTRY_P2P_PORT_FACT) {
+                if (g_len >= 2u + TAPESTRY_FACT_WIRE_SIZE) {
+                    (void)k_msgq_put(&fact_rx_msgq, g_buf + 2u, K_NO_WAIT);
+                } else {
+                    g_p2p_short++;
+                }
+            } else if (g_type == SYSLINK_RADIO_P2P_BROADCAST) {
                 if (g_len >= 2u + TAPESTRY_GOSSIP_WIRE_SIZE) {
                     /* nRF51 firmware (main.c:286) format:
                      *   g_buf[0] = P2P port  (skip)
@@ -510,6 +524,29 @@ static int syslink_rx(uint8_t *buf, uint16_t max_len)
     return 0;
 }
 
+static int syslink_tx_fact(const uint8_t *data, uint16_t len)
+{
+    if ((uint32_t)len + 1u > SYSLINK_MTU) {
+        return -EMSGSIZE;
+    }
+    uint8_t payload[SYSLINK_MTU];
+    payload[0] = TAPESTRY_P2P_PORT_FACT;
+    memcpy(payload + 1u, data, len);
+    syslink_send(SYSLINK_RADIO_P2P_BROADCAST, payload, (uint8_t)(len + 1u));
+    return 0;
+}
+
+static int syslink_rx_fact(uint8_t *buf, uint16_t max_len)
+{
+    if (max_len < TAPESTRY_FACT_WIRE_SIZE) {
+        return -ENOMEM;
+    }
+    if (k_msgq_get(&fact_rx_msgq, buf, K_NO_WAIT) == 0) {
+        return TAPESTRY_FACT_WIRE_SIZE;
+    }
+    return 0;
+}
+
 static void syslink_set_power(float level)
 {
     /* SYSLINK_RADIO_POWER (0x07): nRF51 accepts 0..7 mapped to TX power.
@@ -523,4 +560,6 @@ const tapestry_transceiver_t transceiver_syslink_p2p = {
     .tx        = syslink_tx,
     .rx        = syslink_rx,
     .set_power = syslink_set_power,
+    .tx_fact   = syslink_tx_fact,
+    .rx_fact   = syslink_rx_fact,
 };

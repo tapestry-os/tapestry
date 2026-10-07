@@ -263,7 +263,6 @@ void gossip_send(const element_state_t *own_state, uint8_t qos_tier)
         .health_flags  = own_state->health_flags,
         .relay_qos     = TAPESTRY_PACK_RELAY_QOS(hop, qos_tier),
         .achieved      = own_state->goal_achieved ? 1u : 0u,
-        .discovered    = own_state->discovered ? 1u : 0u,
         .current_track = own_state->current_track,
         .version       = TAPESTRY_WIRE_VERSION,
     };
@@ -351,7 +350,6 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
             received.energy_level    = g->energy_level;
             received.health_flags    = g->health_flags;
             received.goal_achieved   = (g->achieved != 0);
-            received.discovered      = (g->discovered != 0);
             received.current_track   = g->current_track;
 
             wm_receive_gossip(wm, &received);
@@ -495,6 +493,149 @@ bool gossip_poll_directive(tapestry_directive_frame_t *out,
     }
 
     return accepted;
+}
+
+/* ── Fact frames (wire.h v7) ─────────────────────────────────────────────── */
+/*
+ * Receive-side gates, in order: length, HMAC (when enabled), version, own
+ * id (a BLE self-echo, or on other media a duplicate id — counted like
+ * gossip's).  Each surviving frame's records are merged (wm_fact_receive())
+ * BEFORE its digest is compared, so a frame that brings us up to date
+ * counts as consistent.
+ */
+
+static void record_out(tapestry_fact_frame_t *f, int i, const fact_t *r)
+{
+    if (i == 0) {
+        f->r0_type  = r->key.type;  f->r0_origin = r->key.origin;
+        f->r0_epoch = r->key.epoch; f->r0_seq    = r->key.seq;
+        f->r0_flags = r->flags;     f->r0_stamp  = r->stamp;
+        f->r0_x = r->pos.x; f->r0_y = r->pos.y; f->r0_z = r->pos.z;
+        f->r0_attr  = r->attr;
+    } else {
+        f->r1_type  = r->key.type;  f->r1_origin = r->key.origin;
+        f->r1_epoch = r->key.epoch; f->r1_seq    = r->key.seq;
+        f->r1_flags = r->flags;     f->r1_stamp  = r->stamp;
+        f->r1_x = r->pos.x; f->r1_y = r->pos.y; f->r1_z = r->pos.z;
+        f->r1_attr  = r->attr;
+    }
+}
+
+static void record_in(const tapestry_fact_frame_t *f, int i, fact_t *r)
+{
+    if (i == 0) {
+        r->key.type  = f->r0_type;  r->key.origin = f->r0_origin;
+        r->key.epoch = f->r0_epoch; r->key.seq    = f->r0_seq;
+        r->flags = f->r0_flags;     r->stamp = f->r0_stamp;
+        r->pos.x = f->r0_x; r->pos.y = f->r0_y; r->pos.z = f->r0_z;
+        r->attr  = f->r0_attr;
+    } else {
+        r->key.type  = f->r1_type;  r->key.origin = f->r1_origin;
+        r->key.epoch = f->r1_epoch; r->key.seq    = f->r1_seq;
+        r->flags = f->r1_flags;     r->stamp = f->r1_stamp;
+        r->pos.x = f->r1_x; r->pos.y = f->r1_y; r->pos.z = f->r1_z;
+        r->attr  = f->r1_attr;
+    }
+}
+
+void gossip_fact_frame_build(world_model_t *wm, element_id_t own_id,
+                             tapestry_fact_frame_t *out)
+{
+    fact_t  recs[TAPESTRY_FACT_RECORDS_MAX];
+    uint8_t n = wm_fact_pack(wm, recs);
+
+    memset(out, 0, sizeof(*out));
+    out->sender_id = own_id;
+    out->count     = n;
+    out->digest    = wm_fact_digest(wm);
+    for (uint8_t i = 0; i < n; i++) {
+        record_out(out, i, &recs[i]);
+    }
+    out->version = TAPESTRY_WIRE_VERSION;
+}
+
+void gossip_send_facts(world_model_t *wm, element_id_t own_id)
+{
+    tapestry_fact_frame_t f;
+    gossip_fact_frame_build(wm, own_id, &f);
+
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+    uint8_t wire[TAPESTRY_FACT_WIRE_SIZE];
+    memcpy(wire, &f, sizeof(f));
+    if (!hmac4_sign(wire, sizeof(f), wire + sizeof(f))) {
+        LOG_ERR("fact frame not sent — HMAC tag could not be computed");
+        return;
+    }
+    const uint8_t *out     = wire;
+    uint16_t       out_len = TAPESTRY_FACT_WIRE_SIZE;
+#else
+    const uint8_t *out     = (const uint8_t *)&f;
+    uint16_t       out_len = (uint16_t)sizeof(f);
+#endif
+
+    for (int i = 0; i < g_n; i++) {
+        if (g_transceivers[i]->tx_fact != NULL) {
+            g_transceivers[i]->tx_fact(out, out_len);
+        }
+    }
+}
+
+int gossip_fact_frame_apply(world_model_t *wm, element_id_t own_id,
+                            const tapestry_fact_frame_t *f)
+{
+    if (f->version != TAPESTRY_WIRE_VERSION) {
+        static uint32_t mismatch_count;
+        if ((++mismatch_count % 20u) == 1u) {
+            LOG_WRN("fact frame version mismatch: id=%u wire=%u (%u frames)",
+                    f->sender_id, f->version, mismatch_count);
+        }
+        return 0;
+    }
+    if (f->sender_id == own_id || f->sender_id >= MAX_ELEMENTS ||
+        f->count > TAPESTRY_FACT_RECORDS_MAX) {
+        return 0;
+    }
+    for (int i = 0; i < f->count; i++) {
+        fact_t r;
+        record_in(f, i, &r);
+        wm_fact_receive(wm, &r);
+    }
+    wm_fact_heard_digest(wm, f->digest);
+    return 1;
+}
+
+int gossip_drain_facts(world_model_t *wm, element_id_t own_id)
+{
+    uint8_t buf[TAPESTRY_FACT_WIRE_SIZE];
+    int     total = 0;
+
+    for (int i = 0; i < g_n; i++) {
+        if (g_transceivers[i]->rx_fact == NULL) {
+            continue;
+        }
+        int len;
+        while ((len = g_transceivers[i]->rx_fact(buf, sizeof(buf))) > 0) {
+            if (len < (int)sizeof(tapestry_fact_frame_t)) {
+                continue;
+            }
+#ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
+            if (len < (int)TAPESTRY_FACT_WIRE_SIZE) {
+                LOG_WRN("short fact frame (len=%d) — auth tag missing, dropped",
+                        len);
+                continue;
+            }
+            if (!hmac4_verify(buf, sizeof(tapestry_fact_frame_t),
+                              buf + sizeof(tapestry_fact_frame_t))) {
+                LOG_WRN("fact frame HMAC mismatch — dropped");
+                continue;
+            }
+#endif
+            tapestry_fact_frame_t f;
+            memcpy(&f, buf, sizeof(f));
+            total += gossip_fact_frame_apply(wm, own_id, &f);
+        }
+    }
+    return total;
 }
 
 /* ── Auto-ID discovery primitives ────────────────────────────────────────── */

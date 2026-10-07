@@ -225,15 +225,15 @@ typedef struct {
                                     /* gossiped so peers can aggregate a      */
                                     /* collective ("scope=all") predicate     */
                                     /* (see choreo_collective_achieved()).    */
-    bool          discovered;       /* L6/L7 own-detected target bit (wire    */
-                                    /* v6) — set by the application once a    */
-                                    /* local sensor reflex confirms a target  */
-                                    /* hit, before gossip; sticky (never      */
-                                    /* cleared once true — an element does    */
-                                    /* not un-discover). Gossiped so peers    */
-                                    /* can resolve TAPESTRY_BSE_ANCHOR_       */
-                                    /* DISCOVERER and CHOREO_EVENT_DISCOVERY  */
-                                    /* purely from wm state. See choreo.h.    */
+    bool          discovered;       /* Own-detected target bit — set by the   */
+                                    /* application once a local sensor reflex */
+                                    /* confirms a target hit; sticky. LOCAL   */
+                                    /* ONLY since wire v7 (like               */
+                                    /* partition_island, never gossiped):     */
+                                    /* CHOREO_EVENT_DISCOVERY reads it from   */
+                                    /* the self entry. What peers learn is a  */
+                                    /* shared fact (wm_fact_publish()), not   */
+                                    /* this bit.                              */
     uint8_t       current_track;    /* L7 active track index (wire v4) — see  */
                                     /* choreo_current_track() and choreo.h §7 */
 } element_state_t;
