@@ -209,32 +209,27 @@ def test_discovery_event_emits_the_matching_c_enum():
     assert "CHOREO_EVENT_DISCOVERY_ANY" not in c
 
 
-def test_discovery_any_event_emits_the_matching_c_enum():
+def test_landmark_events_emit_the_matching_c_enum_and_fact_type():
     c = choreoc.emit_step(NormalizedStep(
         goal="hold", max_duration_ms=1000,
-        on=[NormalizedTransition(event="discovery_any", goto_step_idx=1)]))
-    assert "CHOREO_EVENT_DISCOVERY_ANY" in c
+        on=[NormalizedTransition(event="landmark_added", goto_step_idx=1,
+                                 fact_type=1),
+            NormalizedTransition(event="landmark_retracted", goto_step_idx=0,
+                                 fact_type=0x81)]))
+    assert "CHOREO_EVENT_LANDMARK_ADDED" in c
+    assert ".fact_type = FACT_TYPE_TARGET" in c
+    assert "CHOREO_EVENT_LANDMARK_RETRACTED" in c
+    assert ".fact_type = 0x81u" in c
 
-
-def test_discoverer_anchor_is_emitted_as_the_matching_c_enum():
+def test_landmark_anchor_is_emitted_with_its_type_and_rank():
     c = choreoc.emit_step(NormalizedStep(
         goal="form", max_duration_ms=1000, target=(0.0, 0.0, 0.0),
-        radius=5.0, frame="element", anchor_select="discoverer"))
+        radius=5.0, frame="element", anchor_select="landmark",
+        landmark_type=1, landmark_rank=2))
     assert ".frame = TAPESTRY_BSE_FRAME_ELEMENT" in c
-    assert ".anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER" in c
-
-
-def test_discovery_point_anchor_is_emitted_as_the_matching_c_enum():
-    c = choreoc.emit_step(NormalizedStep(
-        goal="form", max_duration_ms=1000, target=(0.0, 0.0, 0.0),
-        radius=5.0, frame="element", anchor_select="discovery-point"))
-    assert ".anchor = TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT" in c
-
-
-def test_requires_discovered_filter_is_emitted():
-    c = choreoc.emit_track_filter(NormalizedTrack(requires_discovered=True))
-    assert ".requires_discovered = true" in c
-
+    assert ".anchor = TAPESTRY_BSE_ANCHOR_LANDMARK" in c
+    assert ".landmark_type = FACT_TYPE_TARGET" in c
+    assert ".landmark_rank = 2u" in c
 
 def test_requires_discovered_false_is_left_implicit():
     c = choreoc.emit_track_filter(NormalizedTrack())
@@ -532,11 +527,14 @@ def test_uses_discovery_is_emitted_for_a_discovery_transition(tmp_path):
     assert _uses_discovery(tmp_path, body)
 
 
-def test_uses_discovery_is_emitted_for_discovery_any(tmp_path):
+def test_uses_discovery_and_landmarks_are_emitted_for_landmark_added(tmp_path):
     body = ('choreo = "x"\n' + _HOLD.format(
-        extra='on = [ { event = "discovery_any", goto = "b" } ]'))
+        extra='on = [ { event = "landmark_added", type = "target", goto = "b" } ]'))
     assert _uses_discovery(tmp_path, body)
-
+    p = tmp_path / "s.choreo.toml"
+    p.write_text(body)
+    assert "#define CHOREO_USES_LANDMARKS" in \
+        choreoc.render(p, tmp_path / "choreo_script.h")[1]
 
 def test_rotation_is_emitted_only_when_set():
     plain = choreoc.emit_step(NormalizedStep(goal="form", max_duration_ms=1000,

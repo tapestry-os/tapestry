@@ -18,8 +18,8 @@
  *   text   [4]:     tseq, u8, +1 per text chunk (the receiver's gap check)
  *          [5..26]: 22 bytes of a '\n'-separated log stream, 0-padded
  *
- * Robots ignore it for free: transceiver_ble.c drops any Tapestry AD
- * shorter than a full gossip frame (52 bytes) on its first length check.
+ * Robots ignore it for free: transceiver_ble.c hands any Tapestry AD that
+ * is neither a gossip nor a fact frame to its weak hook, a no-op on robots.
  *
  * Packets go out from a system-workqueue item every 120 ms, independent
  * of main() — so a robot stuck in ID negotiation is still visible (as
@@ -37,12 +37,12 @@ typedef struct {
     uint8_t quorum;        /* scr_quorum_state_t (0 LOST .. 2 HEALTHY)     */
     uint8_t fresh_peers;
     bool    suspended;     /* Choreo frozen by quorum loss                 */
-    bool    discovered;    /* own discovered bit                           */
-    bool    point_valid;   /* discovery point latched (bse)                */
+    bool    discovered;    /* own (local) discovered bit                   */
+    bool    point_valid;   /* a TARGET shared fact is held (rank 0)        */
     bool    target_valid;  /* directive is MOVE_TO_POINT                   */
     float   x, y, heading; /* own estimate, world units / radians          */
     float   tx, ty;        /* directive target                             */
-    float   px, py;        /* latched discovery point                      */
+    float   px, py;        /* that target landmark's position              */
     uint8_t gray_max;      /* darkest line-sensor reading this tick        */
 } ble_debug_status_t;
 

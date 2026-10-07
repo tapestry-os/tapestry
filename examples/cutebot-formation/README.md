@@ -70,28 +70,27 @@ Other scripts in this directory compile the same way (swap the `.toml` name;
 `form-grid.choreo.toml` (the earlier near-square grid), and the two
 discovery demos below.
 
-### Discovery demos: `king.choreo.toml`, `spill.choreo.toml`, `leak.choreo.toml`
+### Discovery demos: `spill.choreo.toml`, `leak.choreo.toml`
 
 A hidden **IR-dark target** is printed on the board (ink or IR tape).  
 A **120 mm printed disc** is what leak was validated with.  
 Each robot patrols the board, and when a
-ground IR sensor confirms a dark hit it latches `discovered` — a wire v6 field — and
-**stops where it stands**.
+ground IR sensor confirms a dark hit it latches its own (local) `discovered`
+state and **stops where it stands**.
 
-- **king** — the finder freezes (indicator green, own track); everybody else,
-  on any peer's discovery, forms a circle of radius 20 around the finder
-  (`anchor = discoverer`), ring split evenly among the searchers, then holds.
-  Robots that finish the lap without hearing of a discovery hold orange.
 - **spill** — no ring, no tracks: each robot that crosses the (larger, odd)
   target stops on its own edge, green; robots that never touch it hold
   orange.  The finished picture is the target's cordon.
-- **leak** — disc symbolizes a leak, all search and the finder rejoins: everyone
-  parks for 4 s (`found`) while the finder's position spreads, then ALL
-  robots, finder included, form a radius-20 circle around the spot where it
-  was found (`anchor = discovery-point`).  Switch one robot OFF (lifting it
-  is not removal: it keeps gossiping) and after ~6 s the rest re-form around
-  the same spot — four robots make a square, three an equilateral
-  triangle.  Leak searches with a symmetric outward spiral (FORM circles
+- **leak** — disc symbolizes a leak, all search and the finder rejoins: the
+  finder publishes where it found it as a **shared fact** (L4, wire v7) that
+  every robot holds and re-sends; everyone parks for 4 s (`found`), then ALL
+  robots, finder included, form a radius-20 circle around that point
+  (`anchor = { select = "landmark", type = "target" }`).  Switch one robot
+  OFF (lifting it is not removal: it keeps gossiping) and after ~6 s the rest
+  re-form around the same spot — four robots make a square, three an
+  equilateral triangle.  Switch it back ON and it relearns the fact from
+  whichever peer it hears first, so it rings the same point (before wire v7
+  it took a peer's ring slot for the leak).  Leak searches with a symmetric outward spiral (FORM circles
   about the centre, stepping `rotation` 20° and the radius 22 → 37 per leg,
   on a shared clock), so place the marker **2 to 3½ squares from the
   centre, in any direction**: (30,30), (70,30), (70,70) and (30,70) are all
@@ -119,16 +118,19 @@ board neither robot's sensors see the squares reliably anyway.
 - Only a robot driving **forward** can discover; a robot that is stationary,
   lifted by hand, or within **0.5 s of a backup** (the front rocks up and reads
   dark) cannot.
-- **king** (filled disc): two consecutive dark polls, and once any peer's
-  discovered bit is visible the robot ignores its own dark hits (one finder).
+- **leak** (filled disc): two consecutive dark polls, and once a target fact
+  is held the robot ignores its own dark hits (one finder).  A find within 15
+  units of a known target reuses it rather than publishing a second one.
 - **spill** (boundary outline of any width): a single sensor entry edge is
   enough, and every robot that crosses stops. The Mini's line sensors are
   interrupt-driven, so even a ~20 ms crossing between two polls counts; the
   Pro polls its four sensors from a background thread
   (`cutebot_pro_line_watch_*()`, ~20 samples/s measured) for the same
   effect.
-- Armed only for scripts that react to the bit (`CHOREO_USES_DISCOVERY`, emitted
-  by `choreoc`); the ring is untouched.
+- Armed only for scripts that react to a find (`CHOREO_USES_DISCOVERY`, emitted
+  by `choreoc`); the ring is untouched.  Scripts that read landmarks
+  (`CHOREO_USES_LANDMARKS`) also publish the find as a target fact; a
+  rebooted robot publishes only after it has heard its peers' fact table.
 
 **Bring-up:** `-- -DCONFIG_DEMO_MODE_DISCOVERY_BENCH=y` drives one robot
 straight and logs every dark hit; lift the robot and the sensors see "no
@@ -136,7 +138,7 @@ surface", which reads dark too, so detection is gated to the trusted playing
 area `[10, 90]` (`demo_discovery_in_safe_zone()`).  The blue lift LEDs are
 deliberately not used.
 
-**Placement constraints** (king and spill, from host simulation of 4
+**Placement constraints** (spill, from host simulation of 4
 robots with wheel mismatch and 20% gossip loss — dead reckoning only, grid
 correction off; leak's spiral has its own rule, above):
 - Robots start on a cross about the centre (ids 0/1/2/3 at E/N/W/S, ±10).  A
@@ -145,15 +147,10 @@ correction off; leak's spiral has its own rule, above):
   formation), ideal coverage ~71% of marker positions; the outer band and
   the inner corners between lines can be missed.  A marker is only found if
   some robot's path crosses it.
-- king's ring needs room: keep the target at least ~27 units from every
-  edge, else ring slots sit on the fence and drifted robots leave the board
-  (worst in simulation: target at (25,25) — off-board robots in 5/8 seeds;
-  a target near (30,70) — 0/8).
-- Two robots may cross the target before the first one's ring forms. In
-  king the lowest-id discoverer then anchors the ring. In leak each robot
-  latches the first discovered bit it hears, so two near-simultaneous finds
-  can leave the robots ringing two different centres (seen on hardware,
-  2026-10-05).
+- Two robots may cross the target before either hears the other. In leak
+  their two target facts merge (within 15 units) into the earlier-stamped
+  one on every robot, so all ring one centre; before wire v7 they could ring
+  two (seen on hardware, 2026-10-05).
 - Accumulated drift over the ~2 min lap is uncorrected: expect final
   positions off by several units.
 

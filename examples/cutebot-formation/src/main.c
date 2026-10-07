@@ -48,7 +48,7 @@
  *     materials/angles, decoupled from any driving dynamics.
  *     See Kconfig's help text.
  *
- *   DEMO_MODE_DISCOVERY_BENCH — choreo-2/3 (king/spill) bench diagnostic:
+ *   DEMO_MODE_DISCOVERY_BENCH — leak/spill discovery bench diagnostic:
  *     single robot, demo_drive_straight() (same as STRAIGHT_LINE) across
  *     the real printed target marker, running demo_discovery_detect()
  *     against the raw line-sensor reading every poll (no grid correction
@@ -72,6 +72,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
 #include <math.h>
 #include <string.h>
 #include <tapestry/csm.h>
@@ -80,7 +81,7 @@
 #ifdef CONFIG_DEMO_MODE_CHOREO
 #include <tapestry/scr.h>      /* real L5 quorum */
 #include <tapestry/choreo.h>
-/* The show itself. GENERATED from one of ../{ring,king,spill}.choreo.toml
+/* The show itself. GENERATED from one of ../{ring,leak,spill}.choreo.toml
  * (the file to edit) by sdk/tools/choreoc.py — see the regeneration command in its
  * banner. */
 #include "choreo_script.h"
@@ -275,41 +276,22 @@ static __maybe_unused uint32_t demo_hw_id(void)
 #define QUORUM_UP_MS 2000
 
 /*
- * ONE finder or MANY?  A script with tracks (king.choreo.toml) elects a
- * single finder: everyone else's job is to ring it, so once any peer's
- * discovered bit is visible a robot IGNORES its own dark hits.  Without
- * this, a robot that pops up while braking or backing away (a lifted
- * reflectance sensor sees no surface, which reads as IR-dark — see
- * demo_discovery_in_safe_zone()) would latch, stop dead, migrate to the
- * finder track (leaving the ring one robot short) and — if its id is lower
- * than the king's — win the DISCOVERER anchor's lowest-id tiebreak and drag
- * the whole ring off the real marker.  A single-track script
- * (spill.choreo.toml) wants the opposite: EVERY robot that crosses the
- * target stops on its own edge, so nothing is suppressed there.
- *
- * Residual: two robots that latch within one gossip latency (~1 s) of each
- * other both stay latched (lowest id anchors).  Robots only hear the king
- * once its bit arrives.
+ * ONE finder or MANY?  A script that reads finds as shared facts
+ * (leak.choreo.toml — choreoc emits CHOREO_USES_LANDMARKS) wants one marker
+ * and one ring: once a TARGET fact is held a robot IGNORES its own dark hits.
+ * Without this, a robot that pops up while braking or backing away (a
+ * lifted reflectance sensor sees no surface, which reads as IR-dark — see
+ * demo_discovery_in_safe_zone()) would latch and stop dead mid-ring.  A
+ * second find within FACT_MERGE_RADIUS_TARGET of the first is merged into
+ * it by L4 anyway (wm_fact_publish() reuses it); this gate keeps the robot
+ * from stopping for it.  A per-robot script (spill.choreo.toml) wants the
+ * opposite: EVERY robot that crosses the target stops on its own edge, so
+ * nothing is suppressed there.
  */
-#if defined(CHOREO_USES_DISCOVERY) && \
-    (defined(CHOREO_N_TRACKS) || defined(CHOREO_USES_DISCOVERY_POINT))
-/* leak.choreo.toml has no tracks but rings a single discovery point, so it
- * wants one finder exactly as king does. */
+#if defined(CHOREO_USES_DISCOVERY) && defined(CHOREO_USES_LANDMARKS)
 #define DEMO_DISCOVERY_SINGLE_FINDER 1
 #endif
-
-/* Lowest-id peer whose gossiped discovered bit is set, or -1. */
-static int __maybe_unused demo_peer_finder(const world_model_t *wm)
-{
-    for (int i = 0; i < MAX_ELEMENTS; i++) {
-        const wm_entry_t *e = &wm->entries[i];
-        if (e->is_active && !e->is_self && e->state.discovered) {
-            return (int)e->state.id;
-        }
-    }
-    return -1;
-}
-#endif
+#endif /* CONFIG_DEMO_MODE_CHOREO */
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -487,7 +469,7 @@ int main(void)
     }
 #elif defined(CONFIG_DEMO_MODE_DISCOVERY_BENCH)
     /*
-     * choreo-2/3 (king/spill) discovery-detection bench — see Kconfig's
+     * leak/spill discovery-detection bench — see Kconfig's
      * help text. Same isolated single-robot shape as STRAIGHT_LINE
      * (no transport/auto-ID/SCR/Choreo), but no grid correction at all:
      * demo_discovery_detect() needs none of it (see that function's own
@@ -1332,13 +1314,17 @@ int main(void)
 
     world_model_t wm;
     wm_init(&wm, element_id, &own_state, 0.0f);   /* pure AP — never freeze */
+    /* Shared-fact keys carry a per-boot random epoch, so a robot that
+     * reboots and gets an old id back cannot collide with its
+     * predecessor's facts (csm.h). */
+    wm_fact_set_epoch(&wm, (uint16_t)sys_rand32_get());
 
     demo_odometry_t odo;
     demo_odometry_init(&odo, sx, sy);
     odo.heading = shead;
 
 #ifdef CONFIG_I2C
-    /* choreo-2/3 (king/spill) discovery detection — see formation.h.
+    /* Discovery detection (leak/spill) — see formation.h.
      * Declared unconditionally on CONFIG_I2C (not gated on
      * CONFIG_DEMO_GRID_CORRECTION, which only concerns drift correction):
      * discovery has no dependency on grid correction at all. */
@@ -1349,11 +1335,16 @@ int main(void)
      * one entry edge is enough, no multi-poll confirmation. */
     discovery.confirm_polls = 1u;
 #endif
-#ifdef CHOREO_USES_DISCOVERY_POINT
+#ifdef CHOREO_USES_LANDMARKS
     /* The script step this robot discovered on, and ticks since the script
      * left it — see the stop-on-discovery block in the loop. */
     int      discovery_step           = -1;
     uint32_t discovery_released_ticks = 0u;
+    /* A find not yet in the fact table: wm_fact_publish() refuses until
+     * the table has synced with a peer (FACT_SYNC_TIMEOUT_MS), so it is
+     * retried every tick until it lands. */
+    bool       target_pending = false;
+    position_t target_at      = {0};
 #endif
 #endif
 
@@ -1382,7 +1373,7 @@ int main(void)
      * whether the source .toml has [[steps]] (k_choreo_script/
      * CHOREO_SCRIPT_LEN — ring.choreo.toml, form-grid.choreo.toml,
      * spill.choreo.toml) or [[tracks]] (k_choreo_tracks/CHOREO_N_TRACKS
-     * — king.choreo.toml, §7) — see choreoc.py's _emit_steps_header()
+     * — no cutebot script today, §7) — see choreoc.py's _emit_steps_header()
      * vs _emit_tracks_header(). CHOREO_N_TRACKS only exists in the
      * tracks case, so it's the compile-time discriminator between the
      * two choreo_script.h shapes; whichever script is currently
@@ -1419,10 +1410,10 @@ int main(void)
 #endif
     /* own_state.current_track is otherwise still 0 (zero-init) until the
      * main loop's first choreo_publish_state(): the sync barrier below
-     * gossips own_state, so on a [[tracks]] script (king) every peer would
-     * read this robot as being on track 0 — which is the finder's
-     * "anchor" track — and bse.c's track-scoped rank/count would drop it
-     * from their FORM until the first loop gossip arrives. */
+     * gossips own_state, so on a [[tracks]] script every peer would read
+     * this robot as being on track 0 — possibly another track than its
+     * own — and bse.c's track-scoped rank/count would drop it from their
+     * FORM until the first loop gossip arrives. */
     choreo_publish_state(&own_state);
 
     float    speed_cmd    = 0.0f;
@@ -1442,6 +1433,9 @@ int main(void)
     for (uint32_t waited_ms = 0; ; waited_ms += WM_CYCLE_MS) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
+        /* Facts sync during the barrier too, so a robot that (re)joins a
+         * running show already holds the table when its script starts. */
+        transport_facts_tick(&wm, element_id, WM_CYCLE_MS);
         demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
 
         int fresh = 0;
@@ -1680,7 +1674,7 @@ int main(void)
             junction = demo_junction_correct(&odo, line_state);
         }
 #endif
-        /* Target (king/spill) signals at CUTEBOT_PRO_TARGET_DARK_THRESHOLD
+        /* Target (leak/spill) signals at CUTEBOT_PRO_TARGET_DARK_THRESHOLD
          * — the board's own black squares stay below it. seen_mask covers
          * every background sample since the last tick, so a 2 cm outline
          * crossed between ticks still counts (Mini's entry flags' job). */
@@ -1731,7 +1725,7 @@ int main(void)
 #endif
 
 #ifdef CONFIG_I2C
-        /* Discovery (king/spill) — shared by both variants; each branch
+        /* Discovery (leak/spill) — shared by both variants; each branch
          * above supplies line_dark_level (dark right now) and
          * line_dark_seen (went dark at any point since the last tick).
          *
@@ -1744,26 +1738,34 @@ int main(void)
          * 2026-09-16 — see that function's doc). */
         bool was_discovered = discovery.discovered;
 
-        /* Detection is armed only in scripts that actually react to the
-         * discovered bit (choreoc emits CHOREO_USES_DISCOVERY) — the ring
-         * never looks at it, so a false latch there must not freeze a
-         * robot through the stop-on-discovery reflex below. */
+        /* Detection is armed only in scripts that actually react to a
+         * find (choreoc emits CHOREO_USES_DISCOVERY) — the ring never
+         * looks for one, so a false latch there must not freeze a robot
+         * through the stop-on-discovery reflex below. */
         bool discovery_armed = false;
 #ifdef CHOREO_USES_DISCOVERY
         discovery_armed = true;
 #endif
 #ifdef DEMO_DISCOVERY_SINGLE_FINDER
-        int  peer_finder = demo_peer_finder(&wm);
-        if (peer_finder >= 0) {
+        fact_t known_target;
+        bool   target_known = wm_fact_find(&wm, FACT_TYPE_TARGET, 0,
+                                           &known_target);
+        if (target_known) {
             discovery_armed = false;
         }
         {
             static bool ignored_logged;
-            bool ignoring = peer_finder >= 0 && !discovery.discovered &&
+            bool ignoring = target_known && !discovery.discovered &&
                             line_dark_level;
             if (ignoring && !ignored_logged) {
-                DEMO_EVT(INF, "id=%u dark hit IGNORED — peer %d is already the "
-                        "finder", (unsigned)element_id, peer_finder);
+                DEMO_EVT(INF, "id=%u dark hit IGNORED — target %u/%04x/%u "
+                         "at (%.1f,%.1f) is already known",
+                         (unsigned)element_id,
+                         (unsigned)known_target.key.origin,
+                         (unsigned)known_target.key.epoch,
+                         (unsigned)known_target.key.seq,
+                         (double)known_target.pos.x,
+                         (double)known_target.pos.y);
             }
             ignored_logged = ignoring;
         }
@@ -1777,7 +1779,7 @@ int main(void)
          * demo_discovery_state_t::confirm_polls, set to 1 at init. */
         dark_now = dark_now || line_dark_seen;
 #else
-        /* king: its 120 mm disc is crossed over several ticks, so it uses
+        /* leak: its 120 mm disc is crossed over several ticks, so it uses
          * the steady level with confirm_polls consecutive hits instead. */
         ARG_UNUSED(line_dark_seen);
 #endif
@@ -1791,12 +1793,38 @@ int main(void)
                                demo_discovery_in_safe_zone(&odo));
         if (!was_discovered && discovery.discovered) {
             own_state.discovered = true;
-#ifdef CHOREO_USES_DISCOVERY_POINT
+#ifdef CHOREO_USES_LANDMARKS
             discovery_step = choreo_script_step();
+            target_pending = true;
+            target_at = (position_t){ odo.x, odo.y, 0.0f };
 #endif
             DEMO_EVT(INF, "id=%u DISCOVERED the target at est=(%.1f,%.1f)",
                     (unsigned)element_id, (double)odo.x, (double)odo.y);
         }
+#ifdef CHOREO_USES_LANDMARKS
+        /* Publish the find as a TARGET fact — where THIS robot was when
+         * its sensors confirmed it.  Immutable (the first report stands)
+         * and top priority (never evicted for a lesser fact). */
+        if (target_pending) {
+            fact_key_t key;
+            int rc = wm_fact_publish(&wm, FACT_TYPE_TARGET, &target_at, 0u,
+                                     FACT_IMMUTABLE | FACT_PRIO(3), &key);
+            if (rc != WM_FACT_ERR_UNSYNCED) {
+                target_pending = false;
+            }
+            if (rc == WM_FACT_CREATED || rc == WM_FACT_REUSED) {
+                DEMO_EVT(INF, "id=%u %s target %u/%04x/%u at (%.1f,%.1f)",
+                         (unsigned)element_id,
+                         rc == WM_FACT_CREATED ? "PUBLISHED" : "matched known",
+                         (unsigned)key.origin, (unsigned)key.epoch,
+                         (unsigned)key.seq,
+                         (double)target_at.x, (double)target_at.y);
+            } else if (rc != WM_FACT_ERR_UNSYNCED) {
+                DEMO_EVT(ERR, "id=%u target fact NOT published (%d)",
+                         (unsigned)element_id, rc);
+            }
+        }
+#endif
 #endif /* CONFIG_I2C — discovery */
 
         own_state.position.x = odo.x;
@@ -1848,38 +1876,52 @@ int main(void)
                         ? "(suspended)" : "");
         }
 
-        /* One-shot: the first tick this robot's world model shows a PEER's
-         * discovered bit.  Distinguishes "the finder's bit never arrived"
-         * (gossip) from "arrived but the script didn't react" (choreo). */
+        /* Spread the fact table (Trickle-paced, wire v7) — after the
+         * publish above, so a new find goes out on this tick's schedule. */
+        transport_facts_tick(&wm, element_id, dt_ms);
+
+        /* The target landmark every ring vertex is computed from (rank 0 of
+         * the TARGET facts — the same on every robot holding the table).
+         * One-shot log when it first appears or changes, so a rejoined
+         * robot's log shows where it learned it and from how many frames. */
+        fact_t target = {0};
+        bool   target_valid = wm_fact_find(&wm, FACT_TYPE_TARGET, 0, &target);
         {
-            static bool peer_logged[MAX_ELEMENTS];
-            for (int i = 0; i < MAX_ELEMENTS; i++) {
-                const wm_entry_t *e = &wm.entries[i];
-                if (e->is_active && !e->is_self && e->state.discovered &&
-                    !peer_logged[i]) {
-                    peer_logged[i] = true;
-                    DEMO_EVT(INF, "id=%u sees peer %u DISCOVERED (peer track %u, "
-                            "own track %u, stale=%d)",
-                            (unsigned)element_id, (unsigned)e->state.id,
-                            (unsigned)e->state.current_track,
-                            (unsigned)choreo_current_track(),
-                            (int)e->is_stale);
-                }
+            static bool       logged_valid;
+            static fact_key_t logged_key;
+            if (target_valid &&
+                (!logged_valid || !fact_key_equal(&logged_key, &target.key))) {
+                logged_valid = true;
+                logged_key   = target.key;
+                DEMO_EVT(INF, "id=%u target landmark %u/%04x/%u at (%.1f,%.1f) "
+                         "stamp %u, own est=(%.1f,%.1f), fact frames heard %u",
+                         (unsigned)element_id, (unsigned)target.key.origin,
+                         (unsigned)target.key.epoch, (unsigned)target.key.seq,
+                         (double)target.pos.x, (double)target.pos.y,
+                         (unsigned)target.stamp, (double)odo.x, (double)odo.y,
+                         (unsigned)wm.facts.frames_heard);
+            } else if (!target_valid && logged_valid) {
+                logged_valid = false;
+                DEMO_EVT(WRN, "id=%u target landmark GONE (%d tombstone(s))",
+                         (unsigned)element_id,
+                         wm_fact_tombstones(&wm, FACT_TYPE_TARGET));
             }
         }
-
-        /* One-shot: where this robot latched the leak (discovery-point
-         * anchor, bse.h) — the centre every ring vertex is computed from. */
-        position_t disc_point = {0};
-        bool disc_point_valid = bse_discovery_point(&disc_point);
         {
-            static bool point_logged;
-            if (disc_point_valid && !point_logged) {
-                point_logged = true;
-                DEMO_EVT(INF, "id=%u latched discovery point (%.1f,%.1f) "
-                         "own est=(%.1f,%.1f)", (unsigned)element_id,
-                         (double)disc_point.x, (double)disc_point.y,
-                         (double)odo.x, (double)odo.y);
+            static uint32_t logged_evictions;
+            if (wm.facts.evictions != logged_evictions) {
+                logged_evictions = wm.facts.evictions;
+                const fact_key_t *k = &wm.facts.last_evicted;
+                DEMO_EVT(WRN, "id=%u fact EVICTED (%s): type %u %u/%04x/%u "
+                         "prio %u age %u ms, %u eviction(s) so far",
+                         (unsigned)element_id,
+                         wm.facts.last_evict_reason == WM_FACT_EVICT_PER_ORIGIN
+                             ? "per-origin cap" : "capacity",
+                         (unsigned)k->type, (unsigned)k->origin,
+                         (unsigned)k->epoch, (unsigned)k->seq,
+                         (unsigned)FACT_PRIO_OF(wm.facts.last_evicted_flags),
+                         (unsigned)wm.facts.last_evicted_age_ms,
+                         (unsigned)wm.facts.evictions);
             }
         }
 
@@ -1924,26 +1966,19 @@ int main(void)
 
 #ifdef CONFIG_I2C
         /* A robot that has found the target STOPS, right where it stands
-         * — before (not after) its Choreo track/step catches up.  On king
-         * the finder only migrates to the "anchor" track after
-         * CHOREO_MEMBERSHIP_HOLD_MS (3 s), and in the meantime its own
-         * discovery_any event has already put it on the "ring" step,
-         * anchored on ITSELF: left to the script alone it drives off (host
-         * simulation: ~13 units from the marker, i.e. the anchor ends up
-         * nowhere near it).  On spill the discovery event has no debounce,
-         * but the new step's directive still lags one tick.  Once stopped
-         * here, the HOLD that finally captures its station captures THIS
-         * position.
+         * — before (not after) its Choreo step catches up: the event has
+         * no debounce, but the new step's directive still lags one tick.
+         * Once stopped here, the HOLD that finally captures its station
+         * captures THIS position.
          *
-         * leak (CHOREO_USES_DISCOVERY_POINT) instead wants the finder back
-         * in the ring, so the stop lasts only until the script has left the
-         * step it discovered on — plus one tick, since the tick the step
-         * changes still carries the old step's directive (the new goal's
-         * first bse_tick() is the next choreo_tick()). By then its "found"
-         * HOLD has captured this position, and its peers latch it as the
-         * discovery point while it holds there. */
+         * leak (CHOREO_USES_LANDMARKS) instead wants the finder back in the
+         * ring, so the stop lasts only until the script has left the step it
+         * discovered on — plus one tick, since the tick the step changes
+         * still carries the old step's directive (the new goal's first
+         * bse_tick() is the next choreo_tick()). The ring's centre is the
+         * published fact, not this robot, so it may then move freely. */
         bool discovery_stop = discovery.discovered;
-#ifdef CHOREO_USES_DISCOVERY_POINT
+#ifdef CHOREO_USES_LANDMARKS
         if (discovery_stop && choreo_script_step() != discovery_step) {
             discovery_stop = discovery_released_ticks < 1u;
             if (discovery_released_ticks < 1u) {
@@ -2050,11 +2085,11 @@ int main(void)
                 .fresh_peers  = (uint8_t)fresh_peers,
                 .suspended    = choreo_goal_status() == CHOREO_STATE_SUSPENDED,
                 .discovered   = own_state.discovered,
-                .point_valid  = disc_point_valid,
+                .point_valid  = target_valid,
                 .target_valid = dir->type == TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
                 .x = odo.x, .y = odo.y, .heading = odo.heading,
                 .tx = dir->target.x, .ty = dir->target.y,
-                .px = disc_point.x, .py = disc_point.y,
+                .px = target.pos.x, .py = target.pos.y,
             };
 #if defined(CONFIG_CUTEBOT_VARIANT_PRO)
             for (int i = 0; i < 4; i++) {

@@ -1,5 +1,5 @@
 # spill.choreo.toml — "Choreo 3": search the arena for a hidden IR-dark
-# target — larger and possibly irregularly shaped, unlike king's small disc.
+# target — larger and possibly irregularly shaped, unlike leak's small disc.
 # Rather than estimate a centroid for an irregular shape, each robot simply
 # stops wherever IT locally crosses the target's own edge — an odd target
 # produces an odd cordon.  This is the ONLY file to edit to change the
@@ -11,11 +11,11 @@
 #
 # Units are this app's abstract [0, WORLD_SIZE] world (WORLD_SIZE=100).
 #
-# Mechanism — deliberately almost nothing, once king's shared groundwork
-# exists: the same patrol as king; demo_discovery_detect() latches
-# own_state.discovered on a confirmed dark hit and main.c STOPS the robot
-# where it stands; the `discovery` event (this element's OWN bit only — no
-# peer's, no anchor, no ring, no track) then moves the script to "settled",
+# Mechanism — deliberately almost nothing: demo_discovery_detect() latches
+# own_state.discovered (local, never gossiped) on a confirmed dark hit and
+# main.c STOPS the robot where it stands; the `discovery` event (this
+# element's OWN bit only — no shared fact, no anchor, no ring, no track)
+# then moves the script to "settled",
 # a green hold.  Robots that never cross the target finish the lap and hold
 # at "searched" in orange, so the finished picture is green robots on the
 # target's edge and orange robots elsewhere.

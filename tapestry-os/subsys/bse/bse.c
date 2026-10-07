@@ -80,14 +80,6 @@ static tapestry_bse_directive_t s_directive;
  * counts peers actually helping the SAME track — see that function. */
 static uint8_t s_track_scope;
 
-/* TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT (bse.h): where the target was found.
- * Latched by note_discovery_point() on the first tick any candidate's
- * discovered bit is visible, whatever intent is active, and kept until
- * bse_init() — not part of bse_activation_t, since it outlives every goal
- * (and every preemption) by design. */
-static bool       s_discovery_point_valid;
-static position_t s_discovery_point;
-
 /* ── Per-activation state ─────────────────────────────────────────────────── */
 /*
  * bse_activation_t — everything an intent accumulates between the moment it
@@ -145,6 +137,13 @@ typedef struct {
     bool          anchor_candidate_valid;
     element_id_t  anchor_candidate_id;
     uint32_t      anchor_candidate_ms;
+
+    /* anchor == LANDMARK: the same lock/candidate debounce, keyed by fact. */
+    bool          landmark_locked;
+    fact_key_t    landmark_locked_key;
+    bool          landmark_candidate_valid;
+    fact_key_t    landmark_candidate_key;
+    uint32_t      landmark_candidate_ms;
 } bse_activation_t;
 
 static bse_activation_t s_act;
@@ -354,70 +353,64 @@ static bool resolve_anchor_selector(const world_model_t *wm,
         return true;
     }
 
-    case TAPESTRY_BSE_ANCHOR_DISCOVERER: {
-        /* Same shape as LOWEST_ENERGY above, scanning for a boolean
-         * (state.discovered, wire v6) instead of a scalar minimum:
-         * lowest-id tiebreak if more than one element's bit is set,
-         * found=false ("nobody has found it yet") until at least one
-         * is. */
-        bool         found  = false;
-        element_id_t min_id = 0;
-        for (int i = 0; i < MAX_ELEMENTS; i++) {
-            const wm_entry_t *e = &wm->entries[i];
-            bool candidate = e->is_self ||
-                             (e->is_active && !e->is_stale &&
-                              scr_peer_is_trusted(scr, e->state.id));
-            if (!candidate || !e->state.discovered) {
-                continue;
-            }
-            element_id_t id = e->is_self ? s_self_id : e->state.id;
-            if (!found || id < min_id) {
-                found  = true;
-                min_id = id;
-            }
-        }
-        if (!found) {
-            return false;
-        }
-        *out_id = min_id;
-        return true;
-    }
-
     default:
-        /* DISCOVERY_POINT is a point, not an element — resolve_effective_
-         * target() handles it before ever calling this. */
+        /* LANDMARK is a fact, not an element — resolve_effective_target()
+         * handles it (resolve_landmark()) before ever calling this. */
         return false;
     }
 }
 
-/* Latch TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT (bse.h): the first tick any
- * candidate's discovered bit is visible, record that element's position
- * (lowest id if several, same candidate set as DISCOVERER), then never
- * look again. Runs every bse_tick() regardless of the active intent. */
-static void note_discovery_point(const world_model_t *wm,
-                                 const scr_state_t *scr)
+/* TAPESTRY_BSE_ANCHOR_LANDMARK (bse.h): the live fact at the intent's
+ * (type, rank), with the anchor debounce keyed by fact.  Returns false
+ * while no such fact is held. */
+static bool resolve_landmark(const world_model_t *wm, position_t *out)
 {
-    if (s_discovery_point_valid) {
-        return;
+    fact_t raw;
+    fact_t held;
+
+    if (!wm_fact_find(wm, s_intent.landmark_type, s_intent.landmark_rank, &raw)) {
+        s_act.landmark_locked          = false;
+        s_act.landmark_candidate_valid = false;
+        return false;
     }
-    bool         found  = false;
-    element_id_t min_id = 0;
-    for (int i = 0; i < MAX_ELEMENTS; i++) {
-        const wm_entry_t *e = &wm->entries[i];
-        bool candidate = e->is_self ||
-                         (e->is_active && !e->is_stale &&
-                          scr_peer_is_trusted(scr, e->state.id));
-        if (!candidate || !e->state.discovered) {
-            continue;
-        }
-        element_id_t id = e->is_self ? s_self_id : e->state.id;
-        if (!found || id < min_id) {
-            found              = true;
-            min_id             = id;
-            s_discovery_point  = e->state.position;
-        }
+
+    bool locked_live = s_act.landmark_locked &&
+                       wm_fact_get(wm, &s_act.landmark_locked_key, &held) &&
+                       (held.flags & FACT_RETRACTED) == 0u;
+
+    if (locked_live && fact_key_equal(&raw.key, &s_act.landmark_locked_key)) {
+        s_act.landmark_candidate_valid = false;   /* stable */
+        *out = raw.pos;
+        return true;
     }
-    s_discovery_point_valid = found;
+    if (!locked_live) {
+        /* First resolution, or the locked fact is gone: nothing stable to
+         * protect, so take the rank's current holder at once. */
+        s_act.landmark_locked          = true;
+        s_act.landmark_locked_key      = raw.key;
+        s_act.landmark_candidate_valid = false;
+        *out = raw.pos;
+        return true;
+    }
+
+    /* A different live fact now holds the rank: adopt it only once it has
+     * held for the anchor hold time; until then keep the locked one. */
+    if (s_act.landmark_candidate_valid &&
+        fact_key_equal(&s_act.landmark_candidate_key, &raw.key)) {
+        s_act.landmark_candidate_ms += WM_CYCLE_MS;
+    } else {
+        s_act.landmark_candidate_key   = raw.key;
+        s_act.landmark_candidate_ms    = 0;
+        s_act.landmark_candidate_valid = true;
+    }
+    if (s_act.landmark_candidate_ms >= TAPESTRY_BSE_ANCHOR_HOLD_MS) {
+        s_act.landmark_locked_key      = raw.key;
+        s_act.landmark_candidate_valid = false;
+        *out = raw.pos;
+    } else {
+        *out = held.pos;
+    }
+    return true;
 }
 
 /*
@@ -475,12 +468,8 @@ static bool resolve_effective_target(const world_model_t *wm,
      * return. */
     bool resolved = false;
     element_id_t raw_id;
-    if (s_intent.anchor == TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT) {
-        /* A fixed latched point: nothing to debounce, nothing to look up. */
-        if (s_discovery_point_valid) {
-            *out     = s_discovery_point;
-            resolved = true;
-        }
+    if (s_intent.anchor == TAPESTRY_BSE_ANCHOR_LANDMARK) {
+        resolved = resolve_landmark(wm, out);
     } else if (!resolve_anchor_selector(wm, scr, &raw_id)) {
         s_act.anchor_locked          = false;
         s_act.anchor_candidate_valid = false;
@@ -646,6 +635,8 @@ static void reset_activation(void)
     s_act.move_captured    = false;
     s_act.anchor_locked           = false;
     s_act.anchor_candidate_valid  = false;
+    s_act.landmark_locked          = false;
+    s_act.landmark_candidate_valid = false;
     s_act.spin_theta              = 0.0f;
 }
 
@@ -684,7 +675,6 @@ void bse_init(element_id_t self_id)
     s_parked_depth   = 0;
     s_track_scope    = 0;
     s_prev_goal_valid = false;   /* no outgoing intent yet to inherit from */
-    s_discovery_point_valid = false;
 
     reset_activation();
 }
@@ -769,7 +759,6 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 {
     s_goal_pt_valid = false;
     s_anchor_lost   = false;
-    note_discovery_point(wm, scr);
 
     switch (s_intent.type) {
 
@@ -892,7 +881,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
          * rank/count themselves come from collect_participants(), NOT from
          * scr_get_task_slot()/scr_get_swarm_size() as they did through wire
          * v5: L5 knows nothing about tracks (§7), so a peer running a
-         * DIFFERENT track — e.g. a discoverer that has migrated to its own
+         * DIFFERENT track — e.g. one that has migrated to its own
          * track and is holding — still claimed a
          * vertex, leaving an empty slot in the shape (a 4-slot ring with
          * one robot missing, instead of an even 3-slot ring).
@@ -1156,14 +1145,6 @@ bool bse_goal_achieved(void)
 bool bse_anchor_lost(void)
 {
     return s_anchor_lost;
-}
-
-bool bse_discovery_point(position_t *out)
-{
-    if (s_discovery_point_valid && out != NULL) {
-        *out = s_discovery_point;
-    }
-    return s_discovery_point_valid;
 }
 
 void bse_set_track_scope(uint8_t track)

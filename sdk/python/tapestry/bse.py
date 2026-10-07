@@ -111,8 +111,7 @@ class BSEAnchorSelector(IntEnum):
     ID            = 1
     SELF          = 2
     LOWEST_ENERGY = 3
-    DISCOVERER    = 4   # wire v6 — see bse.h's doc
-    DISCOVERY_POINT = 5 # where it was found, latched — see bse.h's doc
+    LANDMARK      = 4   # an L4 shared fact (wire v7) — see bse.h's doc
 
 
 ANCHOR_HOLD_MS     = 2000   # mirrors TAPESTRY_BSE_ANCHOR_HOLD_MS (bse.h)
@@ -148,6 +147,8 @@ class BSEIntent:
     frame:     BSEFrame = BSEFrame.ABSOLUTE   # FORM/CONVERGE only (bse.h §5)
     anchor:    BSEAnchorSelector = BSEAnchorSelector.LEADER  # frame==ELEMENT only
     anchor_id: int = 0                                       # anchor==ID only
+    landmark_type: int = 0                                   # anchor==LANDMARK:
+    landmark_rank: int = 0                                   # FACT_TYPE_*, rank
     motion:          BSEMotion = BSEMotion.STATIC  # FORM only (bse.h §6)
     spin_rate_radps: float = 0.0                   # motion==SPIN only
     rotation_rad:       float = 0.0                   # FORM: orientation in its frame, rad CCW
@@ -189,8 +190,8 @@ class BSE:
         self._intent    = BSEIntent()
         self._directive = BSEDirective()
         self._track_scope: int = 0
-        # DISCOVERY_POINT (bse.h): latched once, outlives every goal.
-        self._discovery_point: Optional[Tuple[float, float, float]] = None
+        # The fact table passed to the current tick() (LANDMARK anchor).
+        self._facts = None
         self._reset_goal_state()
         # Preemption stack (mirrors bse.c's s_parked_intent/s_parked_act).
         self._parked_intent: List[BSEIntent] = []
@@ -215,6 +216,10 @@ class BSE:
         self._anchor_locked_id: Optional[int]    = None
         self._anchor_candidate_id: Optional[int] = None
         self._anchor_candidate_ms: int           = 0
+        # anchor == LANDMARK: the same debounce keyed by fact key.
+        self._landmark_locked_key = None
+        self._landmark_candidate_key = None
+        self._landmark_candidate_ms: int = 0
         # FORM motion == SPIN: accumulated rotation since activation. Pure
         # time integration, reset only on a new activation.
         self._spin_theta: float = 0.0
@@ -244,13 +249,15 @@ class BSE:
         return (self._achieved, self._achieve_accum, self._hold_station,
                 self._ex, self._move_offset, self._anchor_locked_id,
                 self._anchor_candidate_id, self._anchor_candidate_ms,
-                self._spin_theta)
+                self._landmark_locked_key, self._landmark_candidate_key,
+                self._landmark_candidate_ms, self._spin_theta)
 
     def _restore_activation(self, snapshot: tuple) -> None:
         (self._achieved, self._achieve_accum, self._hold_station,
          self._ex, self._move_offset, self._anchor_locked_id,
          self._anchor_candidate_id, self._anchor_candidate_ms,
-         self._spin_theta) = snapshot
+         self._landmark_locked_key, self._landmark_candidate_key,
+         self._landmark_candidate_ms, self._spin_theta) = snapshot
 
     def preempt_intent(self, intent: BSEIntent) -> int:
         """Like submit_intent(), but saves the displaced intent and its
@@ -292,21 +299,19 @@ class BSE:
         self._goal_pt = None
         return 0
 
-    def discovery_point(self) -> Optional[Tuple[float, float, float]]:
-        """The DISCOVERY_POINT latch, or None before anything has been
-        discovered.  Mirrors bse_discovery_point()."""
-        return self._discovery_point
-
     def has_parked_intent(self) -> bool:
         """True if preempt_intent() has saved an intent that
         resume_intent() would restore. Mirrors bse_has_parked_intent()."""
         return len(self._parked_intent) > 0
 
-    def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
+    def tick(self, wm_entries: List[dict], scr_state: dict,
+             facts=None) -> None:
+        """facts: this element's tapestry.facts.FactTable (L4 shared
+        facts, wire v7), read by the LANDMARK anchor; None = no facts held."""
         intent = self._intent
         self._goal_pt = None
         self._anchor_lost = False
-        self._note_discovery_point(wm_entries)
+        self._facts = facts
 
         if intent.type == BSEIntentType.IDLE:
             self._directive = BSEDirective(type=BSEDirectiveType.IDLE)
@@ -453,45 +458,41 @@ class BSE:
                         (energy == best_energy and eid < best_id):
                     best_id, best_energy = eid, energy
             return best_id
-        if sel == BSEAnchorSelector.DISCOVERER:
-            # Same shape as LOWEST_ENERGY above, scanning for a boolean
-            # ('discovered', wire v6) instead of a scalar minimum.
-            # Nothing in this synthetic simulator ever sets 'discovered'
-            # on its own (no sensor model) — it only reflects whatever a
-            # caller injects into wm_entries.
-            best_id: Optional[int] = None
-            for e in wm_entries:
-                is_self = e.get('is_self', False)
-                if not is_self and not (e.get('is_active') and not e.get('is_stale')):
-                    continue
-                if not e.get('discovered', False):
-                    continue
-                eid = self.element_id if is_self else e.get('id')
-                if best_id is None or eid < best_id:
-                    best_id = eid
-            return best_id
         return None
 
-    def _note_discovery_point(self, wm_entries: List[dict]) -> None:
-        """Latch DISCOVERY_POINT (mirrors bse.c's note_discovery_point()):
-        the first tick any candidate's 'discovered' bit is visible, record
-        that element's position (lowest id if several), then never look
-        again."""
-        if self._discovery_point is not None:
-            return
-        best_id: Optional[int] = None
-        for e in wm_entries:
-            is_self = e.get('is_self', False)
-            if not is_self and not (e.get('is_active') and not e.get('is_stale')):
-                continue
-            if not e.get('discovered', False):
-                continue
-            eid = self.element_id if is_self else e.get('id')
-            if best_id is None or eid < best_id:
-                best_id = eid
-                self._discovery_point = (float(e.get('x', 0.0)),
-                                         float(e.get('y', 0.0)),
-                                         float(e.get('z', 0.0)))
+    def _resolve_landmark(self, intent: BSEIntent
+                          ) -> Optional[Tuple[float, float, float]]:
+        """LANDMARK anchor (mirrors bse.c's resolve_landmark()): the live
+        fact at (landmark_type, landmark_rank), first lock immediate, a
+        rank change debounced by ANCHOR_HOLD_MS, a vanished locked fact
+        replaced at once."""
+        facts = self._facts
+        raw = facts.find(intent.landmark_type, intent.landmark_rank) \
+            if facts is not None else None
+        if raw is None:
+            self._landmark_locked_key = None
+            self._landmark_candidate_key = None
+            return None
+        held = facts.get(self._landmark_locked_key) \
+            if self._landmark_locked_key is not None else None
+        locked_live = held is not None and held.live
+        if locked_live and raw.key == self._landmark_locked_key:
+            self._landmark_candidate_key = None
+            return raw.pos
+        if not locked_live:
+            self._landmark_locked_key = raw.key
+            self._landmark_candidate_key = None
+            return raw.pos
+        if self._landmark_candidate_key == raw.key:
+            self._landmark_candidate_ms += WM_CYCLE_MS
+        else:
+            self._landmark_candidate_key = raw.key
+            self._landmark_candidate_ms = 0
+        if self._landmark_candidate_ms >= ANCHOR_HOLD_MS:
+            self._landmark_locked_key = raw.key
+            self._landmark_candidate_key = None
+            return raw.pos
+        return held.pos
 
     def _resolve_effective_target(self, wm_entries: List[dict], intent: BSEIntent,
                                   scr_state: dict) -> Optional[Tuple[float, float, float]]:
@@ -524,11 +525,10 @@ class BSE:
         # place to be set, instead of repeating it at every return.
         resolved = None
         raw_id = None
-        if intent.anchor != BSEAnchorSelector.DISCOVERY_POINT:
+        if intent.anchor != BSEAnchorSelector.LANDMARK:
             raw_id = self._resolve_anchor_selector(wm_entries, intent, scr_state)
-        if intent.anchor == BSEAnchorSelector.DISCOVERY_POINT:
-            # A fixed latched point: nothing to debounce, nothing to look up.
-            resolved = self._discovery_point
+        if intent.anchor == BSEAnchorSelector.LANDMARK:
+            resolved = self._resolve_landmark(intent)
         elif raw_id is None:
             self._anchor_locked_id    = None
             self._anchor_candidate_id = None

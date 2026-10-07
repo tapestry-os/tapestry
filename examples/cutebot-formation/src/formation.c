@@ -216,7 +216,7 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
     return heading_err;
 }
 
-/* ── Discovery detection (choreo-2 "king" / choreo-3 "spill") ────────────── */
+/* ── Discovery detection ("leak" / "spill") ────────────── */
 
 void demo_discovery_init(demo_discovery_state_t *st)
 {

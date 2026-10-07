@@ -335,6 +335,8 @@ typedef struct {
     tapestry_bse_frame_t           frame;
     tapestry_bse_anchor_selector_t anchor;     /* frame == ELEMENT only */
     element_id_t                   anchor_id;  /* anchor == ID only     */
+    uint8_t                        landmark_type;  /* anchor == LANDMARK: */
+    uint8_t                        landmark_rank;  /* FACT_TYPE_*, rank   */
 
     /* FORM only — §6's motion modifiers.  motion == 0 (STATIC) is the
      * default.  CONVERGE never reads this (see bse.c's CONVERGE case). */
@@ -476,33 +478,27 @@ typedef enum {
  * none — which is a pre-existing property of this state machine, not
  * something new QUORUM_LOST introduces.
  *
- * DISCOVERY / DISCOVERY_ANY (wire v6): fire from an element's
- * gossiped element_state_t::discovered bit — two SEPARATE events rather than
- * one event gated by choreo_step_t::scope, because scope also governs
- * CHOREO_EVENT_ACHIEVED / advance_on_achieved on the same step, and the
- * two want opposite things at once: a searching robot must advance its OWN
- * patrol leg on its OWN achievement (the collective predicate below is not
- * a barrier — an early advancer's achieved bit flips on its next step and
- * strands the rest until their timeouts) yet react to ANY peer's discovery:
- *   CHOREO_EVENT_DISCOVERY      — this element's OWN discovered bit only.
- *                                 Per-element scripts: every robot stops on
- *                                 its own local detection, no anchor, no
- *                                 collective knowledge needed.
- *   CHOREO_EVENT_DISCOVERY_ANY  — ANY element's discovered bit: this one's
- *                                 own, or any fresh, trusted peer's (the
- *                                 same candidate set as
- *                                 TAPESTRY_BSE_ANCHOR_DISCOVERER).
- *                                 Finder-anchored scripts: the group learns
- *                                 that SOMEONE found it.  Deliberately NOT
- *                                 track-filtered (unlike the collective
- *                                 achieved predicate): the finder has
- *                                 already migrated to a different track by
- *                                 the time a searcher needs to see it.
- * Neither has a debounce of its own (like QUORUM_LOST) — the bit itself is
- * sticky at the source (an element does not un-discover, see
- * element_state_t's doc), so a step transitioning on it is a one-way door
- * by construction, unlike ELEMENT_JOINED/LOST's genuinely two-way
- * membership changes.
+ * DISCOVERY: this element's OWN local discovered bit (element_state_t::
+ * discovered, set by the application's sensor reflex; local only since
+ * wire v7).  Per-element scripts: every robot stops on its own detection,
+ * no shared knowledge needed.
+ *
+ * LANDMARK_ADDED / LANDMARK_RETRACTED (wire v7): read the L4 shared-fact
+ * table (csm.h), optionally filtered by fact type (choreo_transition_t::
+ * fact_type, 0 = any type) — what the swarm agreed it found, held
+ * identically by every element including one that rebooted and relearned
+ * the table from a peer:
+ *   CHOREO_EVENT_LANDMARK_ADDED     — at least one live fact of the type is
+ *                                     held.  Finder-anchored scripts: the
+ *                                     group learns that SOMEONE found it.
+ *   CHOREO_EVENT_LANDMARK_RETRACTED — none is live any more but a
+ *                                     tombstone of the type is held (for
+ *                                     FACT_TOMBSTONE_TTL_MS): a false find
+ *                                     was withdrawn, so a script can walk
+ *                                     back to searching.
+ * All three are level conditions, not edges, with no debounce of their own
+ * (like QUORUM_LOST): DISCOVERY is sticky at the source, and a fact or its
+ * tombstone stays held until retracted, evicted or expired.
  */
 typedef enum {
     CHOREO_EVENT_ACHIEVED       = 0,
@@ -512,8 +508,9 @@ typedef enum {
     CHOREO_EVENT_COUNT_EQ       = 4,   /* threshold */
     CHOREO_EVENT_ANCHOR_LOST    = 5,
     CHOREO_EVENT_QUORUM_LOST    = 6,
-    CHOREO_EVENT_DISCOVERY      = 7,   /* own bit only, see above */
-    CHOREO_EVENT_DISCOVERY_ANY  = 8,   /* any element's bit       */
+    CHOREO_EVENT_DISCOVERY      = 7,   /* own local bit, see above */
+    CHOREO_EVENT_LANDMARK_ADDED     = 8,   /* fact_type; see above */
+    CHOREO_EVENT_LANDMARK_RETRACTED = 9,   /* fact_type; see above */
 } choreo_event_t;
 
 /* Bounded, no dynamic allocation — matches every other bounded-array
@@ -533,6 +530,7 @@ typedef struct {
     choreo_event_t event;
     uint8_t        threshold;      /* COUNT_GTE / COUNT_EQ only */
     uint8_t        goto_step_idx;
+    uint8_t        fact_type;      /* LANDMARK_* only: FACT_TYPE_*, 0 = any */
 } choreo_transition_t;
 
 typedef struct {
@@ -952,15 +950,6 @@ typedef struct {
     choreo_capabilities_t required_caps;       /* 0 = no capability requirement */
     bool                  requires_energy_low; /* §8.2 self-event: energy_low — */
                                                 /* ELEMENT_HEALTH_LOW_BATTERY    */
-    bool                  requires_discovered; /* wire v6 —                     */
-                                                /* this element's OWN gossiped   */
-                                                /* discovered bit — the track    */
-                                                /* the finder migrates onto,     */
-                                                /* excluded by construction from */
-                                                /* the OTHER track's own FORM    */
-                                                /* rank/count (bse.c's           */
-                                                /* collect_participants() filters*/
-                                                /* to same-track peers).         */
 } choreo_track_filter_t;
 
 typedef struct {

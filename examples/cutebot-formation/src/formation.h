@@ -484,11 +484,11 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
                                  bool left_entered, uint32_t left_entry_ms,
                                  bool right_entered, uint32_t right_entry_ms);
 
-/* ── Discovery detection (choreo-2 "king" / choreo-3 "spill") ────────────── */
+/* ── Discovery detection ("leak" / "spill") ────────────── */
 /*
  * Unlike demo_grid_correct()/demo_grid_heading_correct() above, this does
  * NOT need to tell a target hit apart from a chessboard gridline crossing
- * — grid tape is out of scope for king/spill (see ring.choreo.toml-era
+ * — grid tape is out of scope for leak/spill (see ring.choreo.toml-era
  * decision, 2026-09-16 session), and without it the fabric board itself
  * never reads IR-dark at all (confirmed on the bench). The only INTENDED
  * thing that can register on the line sensors is the printed target
@@ -499,7 +499,7 @@ float demo_grid_heading_correct(demo_odometry_t *odo, float speed_norm,
  * (confirmed on the bench 2026-09-16: lifting the robot clear of the
  * board reads exactly the same L=1 R=1 as the real marker). A robot that
  * drifts off the physical board edge during the search patrol — a real
- * risk here, since grid correction is deliberately not used for king/
+ * risk here, since grid correction is deliberately not used for leak/
  * spill — would otherwise falsely self-declare discovery. See
  * demo_discovery_in_safe_zone() below, which gates confirmation on the
  * position estimate being safely interior, for the mitigation; that
@@ -599,7 +599,7 @@ bool demo_discovery_detect(demo_discovery_state_t *st, bool dark_now);
  * constant only bounds how far a COMMANDED force can push the estimate
  * past the fence, which assumes the estimate is itself accurate; grid
  * correction (the thing that would keep it accurate) is deliberately
- * not used for king/spill (see the section doc above), so dead-
+ * not used for leak/spill (see the section doc above), so dead-
  * reckoning drift alone could put the TRUE position outside the fence
  * while the ESTIMATE still reads as comfortably inside it. Requiring the
  * estimate to additionally sit within the checkered play area
@@ -666,10 +666,10 @@ bool demo_discovery_in_safe_zone(const demo_odometry_t *odo);
 
 /*
  * CUTEBOT_PRO_TARGET_DARK_THRESHOLD — gray level (0-255) at or above which
- * a channel counts as over a king/spill TARGET, as opposed to the board's
+ * a channel counts as over a leak/spill TARGET, as opposed to the board's
  * own black squares. Deliberately far above CUTEBOT_PRO_LINE_DARK_THRESHOLD
  * (which is tuned to SEE the board's ink). Bench (2026-09-22/23): white
- * <= 48, board black ink 55-95, king marker and spill outline ~255 ("true
+ * <= 48, board black ink 55-95, leak marker and spill outline ~255 ("true
  * black"). 150 leaves ~55 margin over the ink and ~100 under the targets,
  * so a channel only partly over the 2 cm outline still registers. Open air
  * reads 153-255 too — same ambiguity Mini has, handled the same way by

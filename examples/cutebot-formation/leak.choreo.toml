@@ -1,5 +1,5 @@
 # leak.choreo.toml — "find the leak, cordon it": four robots search the
-# arena for the IR-dark marker (king's printed disc).  The finder stops and
+# arena for the IR-dark marker (a printed disc).  The finder stops and
 # holds while its peers hear where it is; then ALL FOUR, finder included,
 # form a circle around that spot.  Power one robot off and the other three
 # re-balance into an equilateral triangle around the same spot.
@@ -10,24 +10,28 @@
 #
 # Units are this app's abstract [0, WORLD_SIZE] world, same as the others.
 #
-# How it differs from king.choreo.toml:
-#   - No [[tracks]]: the finder does not move to an "anchor" track, so
-#     bse.c's collect_participants() counts it — four vertices, not three.
-#   - The ring anchors on { select = "discovery-point" }, not "discoverer":
-#     the POSITION the finder gossiped with its discovered bit, latched by
-#     every robot the first tick it sees that bit and never moved again.
-#     "discoverer" would follow the finder as it backs out to its own slot
-#     (the circle would chase its own member) and would lose its centre if
-#     the finder is the robot taken away.
-#   - "found" is a short HOLD everyone enters on discovery_any.  It keeps
-#     the finder parked on the marker until its peers have heard it — a
-#     peer that first hears the bit after the finder has moved would latch
-#     the wrong spot.  main.c releases the finder's stop-on-discovery once
-#     the script leaves the step it discovered on
-#     (CHOREO_USES_DISCOVERY_POINT, emitted by choreoc for this anchor).
-#   - One finder, as king: once any peer's bit is visible a robot ignores
-#     its own dark hits (DEMO_DISCOVERY_SINGLE_FINDER), so robots driving
-#     over the marker while forming the ring do not re-discover it.
+# How the find is shared (L4 shared facts, wire v7):
+#   - The finder publishes the spot as a TARGET fact (main.c, on a
+#     confirmed dark hit): its own position at that moment.  Every robot
+#     holds the same fact table and re-sends it on a Trickle schedule, so
+#     a robot that is switched off and back on relearns the fact from
+#     whichever peer it hears first — and rings the SAME spot.
+#   - "landmark_added" (type target) fires on every robot, finder
+#     included, once the fact is held; the ring anchors on
+#     { select = "landmark", type = "target", rank = 0 } — the fact's
+#     stored position, looked up every tick, never a robot's live one.
+#   - "found" is a short HOLD, now purely a show beat: the fact already
+#     carries the position, so peers no longer need to see the finder
+#     parked.  main.c releases the finder's stop-on-discovery once the
+#     script leaves the step it discovered on (CHOREO_USES_LANDMARKS,
+#     emitted by choreoc).
+#   - One marker, one fact: once a target fact is held a robot ignores
+#     its own dark hits (DEMO_DISCOVERY_SINGLE_FINDER), and two finds
+#     within 15 units merge into the earlier one everywhere (the fact
+#     merge radius), so robots driving over the marker while forming the
+#     ring do not re-discover it.
+#   - No [[tracks]]: the finder stays a participant, so bse.c's
+#     collect_participants() counts it — four vertices, not three.
 #
 # Removing a robot: switch it OFF.  Lifting it is not removal — it keeps
 # gossiping, and a lifted sensor reads dark.  The survivors notice after
@@ -36,7 +40,7 @@
 #
 # Geometry (DEMO_TRACK_MIN_SEP = 25.3 units): radius 20 puts four robots
 # 28.3 units apart and three 34.6 units apart, both clear of it.  The
-# latched point is where the finder's line sensors confirmed dark — the
+# published point is where the finder's line sensors confirmed dark — the
 # disc's near edge, not its centre — so the circle sits up to about half a
 # disc (~5 units) off the marker's middle.
 #
@@ -76,7 +80,7 @@ radius   = 22.00
 rotation = "45deg"
 duration = "3s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg2"
@@ -87,7 +91,7 @@ radius   = 22.83
 rotation = "65deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg3"
@@ -98,7 +102,7 @@ radius   = 23.67
 rotation = "85deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg4"
@@ -109,7 +113,7 @@ radius   = 24.50
 rotation = "105deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg5"
@@ -120,7 +124,7 @@ radius   = 25.33
 rotation = "125deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg6"
@@ -131,7 +135,7 @@ radius   = 26.17
 rotation = "145deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg7"
@@ -142,7 +146,7 @@ radius   = 27.00
 rotation = "165deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg8"
@@ -153,7 +157,7 @@ radius   = 27.83
 rotation = "185deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg9"
@@ -164,7 +168,7 @@ radius   = 28.67
 rotation = "205deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg10"
@@ -175,7 +179,7 @@ radius   = 29.50
 rotation = "225deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg11"
@@ -186,7 +190,7 @@ radius   = 30.33
 rotation = "245deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg12"
@@ -197,7 +201,7 @@ radius   = 31.17
 rotation = "265deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg13"
@@ -208,7 +212,7 @@ radius   = 32.00
 rotation = "285deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg14"
@@ -219,7 +223,7 @@ radius   = 32.83
 rotation = "305deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg15"
@@ -230,7 +234,7 @@ radius   = 33.67
 rotation = "325deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg16"
@@ -241,7 +245,7 @@ radius   = 34.50
 rotation = "345deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg17"
@@ -252,7 +256,7 @@ radius   = 35.33
 rotation = "365deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg18"
@@ -263,7 +267,7 @@ radius   = 36.17
 rotation = "385deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 name = "leg19"
@@ -274,7 +278,7 @@ radius   = 37.00
 rotation = "405deg"
 duration = "1.5s"
 requires = ["locomotion", "abs_position"]
-on       = [ { event = "discovery_any", goto = "found" } ]
+on       = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
 # Lap finished without finding anything — hold, orange.  Still listens: a
@@ -284,12 +288,11 @@ name = "searched"
 duration  = "10min"
 requires  = ["locomotion"]
 indicator = "degraded"
-on        = [ { event = "discovery_any", goto = "found" } ]
+on        = [ { event = "landmark_added", type = "target", goto = "found" } ]
 
 [[steps]]
-# Everyone parks — the finder on the marker, its peers wherever they
-# heard it.  Long enough for the discovered bit (and the finder's position
-# with it) to reach every peer before the finder moves off.
+# Everyone parks — the finder on the marker, its peers wherever the fact
+# reached them.  A show beat: the fact itself carries the position.
 name = "found"
 [steps.hold]
 duration  = "4s"
@@ -301,7 +304,7 @@ name = "ring"
 [steps.form]
 shape         = "circle"
 frame         = "element"
-anchor        = { select = "discovery-point" }
+anchor        = { select = "landmark", type = "target", rank = 0 }
 radius        = 20.0
 until         = "achieved"
 eps           = 3.0

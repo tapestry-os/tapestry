@@ -196,7 +196,7 @@ config DEMO_MODE_DISCOVERY_BENCH
 	bool "Discovery detection bench: drive straight over the real target marker"
 	depends on CUTEBOT_VARIANT_MINI
 	help
-	  Diagnostic for choreo-2 ("king")/choreo-3 ("spill") — bench-confirms
+	  Diagnostic for the leak/spill discovery demos — bench-confirms
 	  demo_discovery_detect() (formation.c) against the real printed
 	  target marker before trusting it in any multi-robot run. Modeled
 	  directly on DEMO_MODE_STRAIGHT_LINE: single robot, no transport/
@@ -226,7 +226,7 @@ config DEMO_MODE_DISCOVERY_BENCH
 	  CUTEBOT_VARIANT_MINI only — built on cutebot_line.h's GPIO sensor,
 	  same as DEMO_MODE_STRAIGHT_LINE; not ported to Cutebot Pro's I2C
 	  sensor (DEMO_MODE_ENCODER_BENCH covers Pro's own bring-up needs
-	  instead). king/spill discovery itself does run on Pro, via
+	  instead). leak/spill discovery itself does run on Pro, via
 	  cutebot_pro_line_watch_*() in the choreo loop — see main.c.
 
 config DEMO_MODE_ENCODER_BENCH
@@ -428,10 +428,10 @@ config DEMO_BLE_DEBUG
 	bool "Broadcast debug telemetry over BLE (legacy advertising)"
 	depends on (DEMO_MODE_CHOREO || DEMO_MODE_TURN_CALIBRATE) && BT
 	help
-	  Adds a second, legacy-format BLE advertising set carrying a status
-	  packet (~2 Hz: step, quorum, estimate, target, latched discovery
-	  point) and the demo's key log events as text, for untethered runs.
-	  Enable with
+	  Adds a third, legacy-format BLE advertising set (after state gossip
+	  and shared facts) carrying a status packet (~2 Hz: step, quorum,
+	  estimate, target, the target landmark) and the demo's key log events
+	  as text, for untethered runs.  Enable with
 	  -DEXTRA_CONF_FILE=ble_debug.conf, which also raises
-	  BT_EXT_ADV_MAX_ADV_SET to 2 — this app's Kconfig sources Zephyr's
+	  BT_EXT_ADV_MAX_ADV_SET to 3 — this app's Kconfig sources Zephyr's
 	  first, so it cannot raise that default itself.  See src/ble_debug.h.

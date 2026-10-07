@@ -2049,41 +2049,34 @@ ZTEST(choreo_script, test_frame_element_lowest_energy_anchor)
 }
 
 /*
- * Wire v6: DISCOVERER resolves to whichever element's
- * gossiped state.discovered bit is set — same shape as LOWEST_ENERGY
- * above but a boolean scan instead of a scalar minimum.
+ * Wire v7: LANDMARK resolves to an L4 shared fact's position — a point the
+ * swarm agreed on, not an element.  Helpers put a target fact straight into
+ * the fact table, the way gossip.c's wm_fact_receive() would.
  */
-ZTEST(choreo_script, test_frame_element_discoverer_anchor)
+static fact_key_t put_target(uint8_t origin, uint32_t stamp, float x, float y)
 {
-    choreo_init(0);
-    scr_state_t scr;
-    scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
-
-    wm_reset();
-    wm_set_self(0, 0, 0.0f, 0.0f);
-    wm_set_peer(1, 5.0f, 5.0f, false);
-    wm_set_peer(2, 9.0f, 9.0f, false);
-    wm.entries[2].state.discovered = true;
-    scr_tick(&scr, &wm);
-
-    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
-                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
-                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER };
-    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
-    for (int i = 0; i < 21; i++) {
-        scr_tick(&scr, &wm);
-        choreo_tick(&wm, &scr);
-    }
-    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
-                   "discoverer anchor picks the peer whose bit is set");
+    fact_t f = {
+        .key   = { .type = FACT_TYPE_TARGET, .origin = origin, .epoch = 7,
+                   .seq = 0 },
+        .flags = FACT_IMMUTABLE | FACT_PRIO(3),
+        .stamp = stamp,
+        .pos   = { x, y, 0.0f },
+    };
+    zassert_true(wm_fact_receive(&wm, &f), "fact must be admitted");
+    return f.key;
 }
 
-/* Nobody has discovered anything yet: DISCOVERER must never resolve (the
- * same "nobody qualifies" failure LEADER has before an election), no
- * matter how long it ticks — this is CHOREO_EVENT_ANCHOR_LOST's source
- * for this selector, and this is what a searcher's script relies on to
- * keep waiting. */
-ZTEST(choreo_script, test_frame_element_discoverer_anchor_holds_until_someone_discovers)
+static void submit_landmark_converge(void)
+{
+    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
+                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
+                        .anchor = TAPESTRY_BSE_ANCHOR_LANDMARK,
+                        .landmark_type = FACT_TYPE_TARGET,
+                        .landmark_rank = 0 };
+    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+}
+
+ZTEST(choreo_script, test_frame_element_landmark_anchor_resolves_the_fact)
 {
     choreo_init(0);
     scr_state_t scr;
@@ -2093,24 +2086,39 @@ ZTEST(choreo_script, test_frame_element_discoverer_anchor_holds_until_someone_di
     wm_set_self(0, 0, 0.0f, 0.0f);
     wm_set_peer(1, 5.0f, 5.0f, false);
     scr_tick(&scr, &wm);
+    submit_landmark_converge();
 
-    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
-                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
-                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER };
-    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
     for (int i = 0; i < 60; i++) {
         scr_tick(&scr, &wm);
         choreo_tick(&wm, &scr);
     }
     zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
-                  "never resolves while nobody has discovered anything");
+                  "never resolves while no target fact is held");
+
+    put_target(1, 3, 69.0f, 68.4f);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 69.0f, EPS,
+                   "first resolution is immediate");
+    zassert_within(choreo_get_directive()->target.y, 68.4f, EPS, "");
+
+    /* The finder (peer 1) moving, then going away, changes nothing: the
+     * anchor is the fact, not the element that published it. */
+    wm_set_peer(1, 90.5f, 68.7f, false);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 69.0f, EPS,
+                   "a landmark must not follow its finder");
+    wm_expire_peer(1);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 69.0f, EPS,
+                   "a landmark must outlive its finder");
 }
 
-/* Two elements discovering "simultaneously" must resolve deterministically
- * — lowest id wins, the same P4 tiebreak LOWEST_ENERGY uses (bse.c's
- * resolve_anchor_selector() comment), so every element derives the SAME
- * anchor from the same world-model snapshot. */
-ZTEST(choreo_script, test_frame_element_discoverer_anchor_lowest_id_tiebreak)
+/* A different fact taking rank 0 (an earlier-stamped find arriving after a
+ * partition) is adopted only after the anchor hold time. */
+ZTEST(choreo_script, test_frame_element_landmark_rank_change_is_debounced)
 {
     choreo_init(0);
     scr_state_t scr;
@@ -2118,28 +2126,30 @@ ZTEST(choreo_script, test_frame_element_discoverer_anchor_lowest_id_tiebreak)
 
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);
-    wm_set_peer(1, 5.0f, 5.0f, false);
-    wm.entries[1].state.discovered = true;
-    wm_set_peer(2, 9.0f, 9.0f, false);
-    wm.entries[2].state.discovered = true;   /* higher id — must lose the tie */
     scr_tick(&scr, &wm);
+    put_target(2, 5, 70.0f, 70.0f);
+    submit_landmark_converge();
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 70.0f, EPS, "");
 
-    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
-                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
-                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERER };
-    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
-    for (int i = 0; i < 21; i++) {
+    put_target(3, 2, 20.0f, 20.0f);       /* lower stamp, far away */
+    int hold_ticks = (int)(TAPESTRY_BSE_ANCHOR_HOLD_MS / WM_CYCLE_MS);
+    for (int i = 0; i < hold_ticks; i++) {
         scr_tick(&scr, &wm);
         choreo_tick(&wm, &scr);
+        zassert_within(choreo_get_directive()->target.x, 70.0f, EPS,
+                       "tick %d: switch must wait out the hold", i);
     }
-    zassert_within(choreo_get_directive()->target.x, 5.0f, EPS,
-                   "lowest id (1) wins the simultaneous-discovery tie");
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 20.0f, EPS,
+                   "the new rank-0 fact is adopted after the hold");
 }
 
-/* DISCOVERY_POINT latches WHERE the finder was the first tick its bit is
- * visible: the finder backing out, or going stale altogether, must not
- * move the anchor.  No debounce — the point never changes. */
-ZTEST(choreo_script, test_frame_element_discovery_point_stays_where_it_was_found)
+/* A retracted landmark is dropped at once: the anchor fails (or takes the
+ * next fact holding the rank) instead of steering at a withdrawn find. */
+ZTEST(choreo_script, test_frame_element_landmark_retraction_drops_the_anchor)
 {
     choreo_init(0);
     scr_state_t scr;
@@ -2147,41 +2157,18 @@ ZTEST(choreo_script, test_frame_element_discovery_point_stays_where_it_was_found
 
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);
-    wm_set_peer(1, 5.0f, 5.0f, false);
-    wm_set_peer(2, 9.0f, 9.0f, false);
     scr_tick(&scr, &wm);
+    fact_key_t k = put_target(2, 5, 70.0f, 70.0f);
+    submit_landmark_converge();
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    zassert_within(choreo_get_directive()->target.x, 70.0f, EPS, "");
 
-    choreo_goal_t g = { .type = CHOREO_GOAL_CONVERGE,
-                        .frame = TAPESTRY_BSE_FRAME_ELEMENT,
-                        .anchor = TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT };
-    zassert_equal(choreo_submit_goal(&g), 0, "submit failed");
+    zassert_equal(wm_fact_retract(&wm, &k), 0, "");
     scr_tick(&scr, &wm);
     choreo_tick(&wm, &scr);
     zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_HOLD,
-                  "nothing discovered yet");
-
-    wm.entries[2].state.discovered = true;
-    scr_tick(&scr, &wm);
-    choreo_tick(&wm, &scr);
-    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
-                   "latched on the first tick the bit is visible");
-
-    wm_set_peer(2, 1.0f, 8.0f, false);               /* finder backs out */
-    wm.entries[2].state.discovered = true;
-    scr_tick(&scr, &wm);
-    choreo_tick(&wm, &scr);
-    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
-                   "the point must not follow the finder");
-
-    wm_set_peer(2, 1.0f, 8.0f, true);                /* finder removed */
-    scr_tick(&scr, &wm);
-    choreo_tick(&wm, &scr);
-    zassert_within(choreo_get_directive()->target.x, 9.0f, EPS,
-                   "the point must outlive the finder");
-
-    position_t pt;
-    zassert_true(bse_discovery_point(&pt), "getter reports the latch");
-    zassert_within(pt.y, 9.0f, EPS, "getter returns the latched point");
+                  "a retracted landmark must not resolve");
 }
 
 /* ── Motion: spin (Choreo SDK Design doc §6, FORM only) ─────────────────── */
@@ -2383,8 +2370,8 @@ ZTEST(choreo_script, test_anchor_lost_transition)
 
 /*
  * Per-element scripts: CHOREO_EVENT_DISCOVERY fires on this element's OWN
- * discovered bit only, ignoring a peer's entirely. No anchor, no ring:
- * each robot stops on its own local edge-detection.
+ * (local, wire v7) discovered bit only, ignoring a peer's entry entirely.
+ * No anchor, no ring: each robot stops on its own local edge-detection.
  */
 ZTEST(choreo_script, test_discovery_event_fires_on_own_bit_only)
 {
@@ -2415,72 +2402,75 @@ ZTEST(choreo_script, test_discovery_event_fires_on_own_bit_only)
 }
 
 /*
- * Finder-anchored scripts: CHOREO_EVENT_DISCOVERY_ANY must see a peer's
- * discovered bit even though that peer has ALREADY migrated to a
- * different track (the 'anchor' track, requires_discovered=true) —
- * deliberately NOT track-filtered, unlike ACHIEVED's collective predicate
- * (test_track_scoped_collective_excludes_other_track_peer).
+ * Finder-anchored scripts: CHOREO_EVENT_LANDMARK_ADDED fires while a live
+ * fact of the transition's type is held, whoever published it — and only
+ * of that type (fact_type 0 = any).
  */
-ZTEST(choreo_script, test_discovery_any_event_fires_on_any_peer_even_off_track)
+ZTEST(choreo_script, test_landmark_added_fires_for_a_held_fact_of_its_type)
 {
     choreo_init(0);
     scr_state_t scr;
     scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);
-    wm_set_peer(1, 5.0f, 5.0f, false);
-    wm.entries[1].state.discovered    = true;
-    wm.entries[1].state.current_track = 1;   /* a DIFFERENT track than self's 0 */
     scr_tick(&scr, &wm);
 
     static const choreo_step_t script[] = {
         { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
           .max_duration_ms = 60000,
-          .on = { { .event = CHOREO_EVENT_DISCOVERY_ANY, .goto_step_idx = 1 } },
+          .on = { { .event = CHOREO_EVENT_LANDMARK_ADDED,
+                    .fact_type = FACT_TYPE_TARGET, .goto_step_idx = 1 } },
           .n_transitions = 1 },
         { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
     };
     zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
     choreo_tick(&wm, &scr);
-    zassert_equal(choreo_script_step(), 1,
-                  "DISCOVERY_ANY must fire for an off-track peer");
+    zassert_equal(choreo_script_step(), 0, "nothing held yet");
+
+    fact_t zone = { .key = { .type = FACT_TYPE_ZONE, .origin = 1, .epoch = 1 },
+                    .stamp = 1, .pos = { 10.0f, 10.0f, 0.0f } };
+    wm_fact_receive(&wm, &zone);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 0, "a zone must not fire a target filter");
+
+    put_target(1, 2, 69.0f, 68.4f);
+    choreo_tick(&wm, &scr);
+    zassert_equal(choreo_script_step(), 1, "a held target fires, no debounce");
 }
 
-/* DISCOVERY_ANY includes this element's OWN bit (the finder itself also
- * leaves its patrol step), and a STALE peer must not count. */
-ZTEST(choreo_script, test_discovery_any_includes_self_and_ignores_stale_peers)
+/* Walking back from a false find: LANDMARK_RETRACTED fires once no live
+ * fact of the type is left but its tombstone is still held. */
+ZTEST(choreo_script, test_landmark_retracted_fires_after_the_find_is_withdrawn)
 {
     choreo_init(0);
     scr_state_t scr;
     scr_init(&scr, 0, 0, 0, SCR_CAP_NONE);
     wm_reset();
     wm_set_self(0, 0, 0.0f, 0.0f);
-    wm_set_peer(1, 5.0f, 5.0f, true);          /* stale */
-    wm.entries[1].state.discovered = true;
     scr_tick(&scr, &wm);
+    fact_key_t k = put_target(1, 2, 69.0f, 68.4f);
 
     static const choreo_step_t script[] = {
-        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
-          .max_duration_ms = 60000,
-          .on = { { .event = CHOREO_EVENT_DISCOVERY_ANY, .goto_step_idx = 1 } },
+        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000,
+          .on = { { .event = CHOREO_EVENT_LANDMARK_RETRACTED,
+                    .fact_type = FACT_TYPE_TARGET, .goto_step_idx = 1 } },
           .n_transitions = 1 },
         { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
     };
     zassert_equal(choreo_submit_script(script, 2), 0, "submit failed");
     choreo_tick(&wm, &scr);
-    zassert_equal(choreo_script_step(), 0, "a stale peer's bit must not count");
+    zassert_equal(choreo_script_step(), 0, "a live find must not fire");
 
-    wm.entries[0].state.discovered = true;
+    zassert_equal(wm_fact_retract(&wm, &k), 0, "");
     choreo_tick(&wm, &scr);
-    zassert_equal(choreo_script_step(), 1, "own bit counts for DISCOVERY_ANY too");
+    zassert_equal(choreo_script_step(), 1, "the withdrawal fires");
 }
 
 /*
- * The reason the events are separate: scope governs ACHIEVED on the same
- * step, and a patrol leg must advance on THIS element's own achievement
- * while still reacting to any peer's discovery.
+ * scope governs ACHIEVED on the same step, and a patrol leg must advance on
+ * THIS element's own achievement while still reacting to a landmark.
  */
-ZTEST(choreo_script, test_discovery_any_does_not_make_achieved_collective)
+ZTEST(choreo_script, test_landmark_added_does_not_make_achieved_collective)
 {
     choreo_init(0);
     scr_state_t scr;
@@ -2494,7 +2484,8 @@ ZTEST(choreo_script, test_discovery_any_does_not_make_achieved_collective)
         { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f },
                     .achieve_eps = 1.0f, .achieve_hold_ms = 200 },
           .max_duration_ms = 60000, .advance_on_achieved = true,
-          .on = { { .event = CHOREO_EVENT_DISCOVERY_ANY, .goto_step_idx = 2 } },
+          .on = { { .event = CHOREO_EVENT_LANDMARK_ADDED,
+                    .fact_type = FACT_TYPE_TARGET, .goto_step_idx = 2 } },
           .n_transitions = 1 },
         { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
         { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
@@ -2651,52 +2642,6 @@ ZTEST(choreo_script, test_track_energy_low_migration_is_debounced)
                   "migrated to the low-battery track after the debounce hold");
     zassert_within(choreo_get_directive()->target.x, 0.0f, EPS,
                    "directive now driven by the low-battery track's goal");
-}
-
-/*
- * Finder-anchored scripts: the element whose own local sensor reflex sets its
- * discovered bit migrates onto the 'anchor' track once that bit has held
- * for a full debounce window — same shape as the energy-low migration
- * above. The 'anchor' filter is declared FIRST (narrower — only matches
- * once discovered) and the catch-all searcher LAST.
- */
-ZTEST(choreo_script, test_track_discovered_migration_is_debounced)
-{
-    choreo_init(0);
-    scr_state_t scr;
-    scr_init(&scr, 0, 0, 0, SCR_CAP_ABS_POSITION);
-    choreo_register_scr(&scr);
-    wm_reset();
-    wm_set_self(0, 0, 0.0f, 0.0f);
-    scr_tick(&scr, &wm);
-
-    static const choreo_step_t anchor_steps[] = {
-        { .goal = { .type = CHOREO_GOAL_HOLD }, .max_duration_ms = 60000 },
-    };
-    static const choreo_step_t searcher_steps[] = {
-        { .goal = { .type = CHOREO_GOAL_CONVERGE, .target = { 0.0f, 0.0f } },
-          .max_duration_ms = 60000 },
-    };
-    choreo_track_t tracks[2] = {
-        { .filter = { .requires_discovered = true },
-          .steps = anchor_steps, .n_steps = 1 },
-        { .filter = { 0 }, .steps = searcher_steps, .n_steps = 1 },
-    };
-    zassert_equal(choreo_submit_tracks(&wm, tracks, 2), 0, "submit failed");
-    zassert_equal(choreo_current_track(), 1, "starts on the catch-all searcher track");
-
-    wm.entries[0].state.discovered = true;
-    for (int i = 0; i < 19; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
-    zassert_equal(choreo_current_track(), 1, "still debouncing the discoverer switch");
-    for (int i = 0; i < 2; i++) { scr_tick(&scr, &wm); choreo_tick(&wm, &scr); }
-    zassert_equal(choreo_current_track(), 0,
-                  "migrated to the anchor track after the debounce hold");
-    /* A HOLD goal's steady-state directive is MOVE_TO_POINT to the
-     * captured station (bse.h) — directive-type HOLD itself is reserved
-     * for quorum-freeze/EXCHANGE-snapshot cases. self is at (0,0). */
-    zassert_equal(choreo_get_directive()->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
-                  "directive now driven by the newly activated anchor track's HOLD");
-    zassert_within(choreo_get_directive()->target.x, 0.0f, EPS, "captured self position");
 }
 
 ZTEST(choreo_script, test_track_scoped_collective_excludes_other_track_peer)

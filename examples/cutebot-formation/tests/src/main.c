@@ -345,7 +345,7 @@ ZTEST(formation_field, test_track_ignores_stale_peer_repulsion)
                  "a stale peer must not contribute repulsion");
 }
 
-/* ── Discovery detection (choreo-2 "king" / choreo-3 "spill") ────────────── */
+/* ── Discovery detection ("leak" / "spill") ────────────── */
 
 ZTEST(formation_field, test_discovery_ignores_a_single_poll_glitch)
 {

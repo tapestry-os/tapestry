@@ -83,9 +83,21 @@ ANCHOR_ENUM = {
     "id":            "TAPESTRY_BSE_ANCHOR_ID",
     "self":          "TAPESTRY_BSE_ANCHOR_SELF",
     "lowest-energy": "TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY",
-    "discoverer":    "TAPESTRY_BSE_ANCHOR_DISCOVERER",
-    "discovery-point": "TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT",
+    "landmark":      "TAPESTRY_BSE_ANCHOR_LANDMARK",
 }
+
+# csm.h FACT_TYPE_* by value; an application type (0x80..0xFF) is emitted
+# as a literal.
+FACT_TYPE_ENUM = {
+    1: "FACT_TYPE_TARGET",
+    2: "FACT_TYPE_ZONE",
+    3: "FACT_TYPE_HAZARD",
+    4: "FACT_TYPE_WAYPOINT",
+}
+
+
+def fact_type_expr(t: int) -> str:
+    return FACT_TYPE_ENUM.get(t, f"0x{t:02X}u")
 
 MOTION_ENUM = {
     "static": "TAPESTRY_BSE_MOTION_STATIC",
@@ -100,8 +112,9 @@ EVENT_ENUM = {
     "count_eq":       "CHOREO_EVENT_COUNT_EQ",
     "anchor_lost":    "CHOREO_EVENT_ANCHOR_LOST",
     "quorum_lost":    "CHOREO_EVENT_QUORUM_LOST",
-    "discovery":      "CHOREO_EVENT_DISCOVERY",
-    "discovery_any":  "CHOREO_EVENT_DISCOVERY_ANY",
+    "discovery":          "CHOREO_EVENT_DISCOVERY",
+    "landmark_added":     "CHOREO_EVENT_LANDMARK_ADDED",
+    "landmark_retracted": "CHOREO_EVENT_LANDMARK_RETRACTED",
 }
 
 INDICATOR_ENUM = {
@@ -169,45 +182,49 @@ def c_string(s: str) -> str:
     return f'"{escaped}"'
 
 
-def uses_discovery(script: ChoreoScript) -> bool:
-    """True if the script reacts to the wire-v6 `discovered` bit at all —
-    a `discovery`/`discovery_any` transition, a `discoverer` or
-    `discovery-point` anchor, or a `discovered` track filter.  The application uses this to keep its own
-    detection machinery (sensor latch, stop-on-discovery reflex) inert in
-    scripts that never look at the bit."""
+def _all_steps(script: ChoreoScript):
     tracks = script.tracks or []
-    steps  = list(script.steps) + [st for t in tracks for st in t.steps]
-    if any(t.requires_discovered for t in tracks):
-        return True
-    for st in steps:
-        if st.anchor_select in ("discoverer", "discovery-point"):
+    return list(script.steps) + [st for t in tracks for st in t.steps]
+
+
+def uses_landmarks(script: ChoreoScript) -> bool:
+    """True if any step anchors on a landmark or transitions on a
+    landmark_* event — the script reads L4 shared facts, so the
+    application must publish what its sensor finds as a fact."""
+    for st in _all_steps(script):
+        if st.anchor_select == "landmark":
             return True
-        if any(t.event in ("discovery", "discovery_any") for t in (st.on or [])):
+        if any(t.event.startswith("landmark_") for t in (st.on or [])):
             return True
     return False
 
 
+def uses_discovery(script: ChoreoScript) -> bool:
+    """True if the script reacts to a find at all — its own `discovery`
+    event, or landmarks.  The application uses this to keep its own
+    detection machinery (sensor latch, stop-on-discovery reflex) inert in
+    scripts that never look for anything."""
+    if uses_landmarks(script):
+        return True
+    return any(t.event == "discovery"
+               for st in _all_steps(script) for t in (st.on or []))
+
+
 def uses_discovery_define(script: ChoreoScript) -> str:
-    """The header line (with trailing newline) or empty — empty keeps every
-    pre-existing script's header byte-identical."""
+    """The header line(s) (with trailing newline) or empty — empty keeps
+    every pre-existing script's header byte-identical."""
     if not uses_discovery(script):
         return ""
     line = ("#define CHOREO_USES_DISCOVERY           1u   "
-            "/* reacts to the wire-v6 discovered bit */\n")
-    if uses_discovery_point(script):
-        # The finder rejoins the collective after discovery instead of
-        # staying put as the anchor, so the application must release its
-        # stop-on-discovery reflex once the script moves on.
-        line += ("#define CHOREO_USES_DISCOVERY_POINT     1u   "
-                 "/* anchors on where it was found */\n")
+            "/* arms the application's find detection */\n")
+    if uses_landmarks(script):
+        # The find becomes a shared fact (L4, wire v7) the script reads;
+        # the finder rejoins the collective afterwards instead of staying
+        # put, so the application releases its stop-on-discovery reflex
+        # once the script moves on.
+        line += ("#define CHOREO_USES_LANDMARKS           1u   "
+                 "/* reads finds as shared facts */\n")
     return line
-
-
-def uses_discovery_point(script: ChoreoScript) -> bool:
-    """True if any step anchors on a `discovery-point`."""
-    tracks = script.tracks or []
-    steps  = list(script.steps) + [st for t in tracks for st in t.steps]
-    return any(st.anchor_select == "discovery-point" for st in steps)
 
 
 def emit_step(s: NormalizedStep) -> str:
@@ -226,6 +243,9 @@ def emit_step(s: NormalizedStep) -> str:
         goal_fields.append(f".anchor = {ANCHOR_ENUM[s.anchor_select]}")
     if s.anchor_id is not None:
         goal_fields.append(f".anchor_id = {s.anchor_id}u")
+    if s.landmark_type is not None:
+        goal_fields.append(f".landmark_type = {fact_type_expr(s.landmark_type)}")
+        goal_fields.append(f".landmark_rank = {s.landmark_rank or 0}u")
     if s.motion != "static":
         goal_fields.append(f".motion = {MOTION_ENUM[s.motion]}")
     if s.spin_rate_radps is not None:
@@ -263,6 +283,8 @@ def emit_step(s: NormalizedStep) -> str:
                      f".goto_step_idx = {t.goto_step_idx}u"]
             if t.threshold:
                 fields.append(f".threshold = {t.threshold}u")
+            if t.fact_type:
+                fields.append(f".fact_type = {fact_type_expr(t.fact_type)}")
             entries.append("{ " + ", ".join(fields) + " }")
         step_fields.append(f".on = {{ {', '.join(entries)} }}")
         step_fields.append(f".n_transitions = {len(s.on)}u")
@@ -284,8 +306,6 @@ def emit_track_filter(t: NormalizedTrack) -> str:
         fields.append(f".required_caps = {caps_expr(t.required_caps)}")
     if t.requires_energy_low:
         fields.append(".requires_energy_low = true")
-    if t.requires_discovered:
-        fields.append(".requires_discovered = true")
     return "{ " + ", ".join(fields) + " }" if fields else "{ 0 }"
 
 
