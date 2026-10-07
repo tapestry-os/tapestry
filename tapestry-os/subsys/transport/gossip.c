@@ -33,9 +33,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(gossip, LOG_LEVEL_WRN);
 
-#ifdef CONFIG_TAPESTRY_MESH_RELAY
 #include <zephyr/random/random.h>
-#endif
 
 /* ── Optional HMAC-SHA256 authentication ─────────────────────────────────── */
 
@@ -149,7 +147,19 @@ void gossip_register_transceivers(const tapestry_transceiver_t * const *t,
 {
     g_transceivers = t;
     g_n = n;
+
+    /* A medium without fact hooks silently never carries shared facts (a
+     * fact frame has no type byte to ride a plain tx() under) — say so
+     * once, at registration, instead of leaving it to be found in flight. */
+    for (int i = 0; i < n; i++) {
+        if (t[i]->tx_fact == NULL || t[i]->rx_fact == NULL) {
+            LOG_WRN("transceiver type=%d carries no fact frames — shared "
+                    "facts will not cross this medium", (int)t[i]->type);
+        }
+    }
 }
+
+static void facts_cycle(world_model_t *wm, element_id_t own_id);
 
 /* ── Internal: transmit a single gossip frame via all transceivers ────────── */
 
@@ -368,6 +378,8 @@ int gossip_drain(world_model_t *wm, element_id_t own_id)
 #endif
         }
     }
+
+    facts_cycle(wm, own_id);
 
     return total;
 }
@@ -636,6 +648,95 @@ int gossip_drain_facts(world_model_t *wm, element_id_t own_id)
         }
     }
     return total;
+}
+
+/* ── Shared facts: the per-cycle duties of every gossip_drain() caller ────── */
+/*
+ * gossip_drain() is the one call every element's loop already makes each
+ * cycle (transport_drain() wraps it; the Webots controllers call it
+ * directly), so shared facts ride it instead of asking each application to
+ * remember a second call — the failure mode that left the cutebot barrier
+ * without wm_update_self() and kept choreo_publish_state() forgotten twice.
+ * Each cycle it:
+ *   - seeds this boot's fact epoch from the entropy source, once;
+ *   - merges any fact frames that arrived;
+ *   - advances the Trickle timer by the REAL time since the previous cycle
+ *     (a loop that overruns its nominal period must not slow the timer) and
+ *     sends one fact frame when it fires.
+ * Static state is per program, not per world model: one program has one
+ * element and one drain loop.
+ */
+
+static uint32_t g_facts_last_ms;
+static bool     g_facts_clock_started;
+static uint32_t g_facts_rng;
+
+/*
+ * Where the epoch and the jitter seed come from.  The board's entropy device
+ * when the build has one (CONFIG_TAPESTRY_FACTS_ENTROPY, subsys/csm/Kconfig)
+ * or on a host build (the Webots shim provides sys_rand32_get()); otherwise
+ * a mix of the cycle counter and uptime.  The epoch only has to differ
+ * between boots of the same element id, and a boot's first gossip_drain()
+ * lands at a time that varies by many milliseconds (auto-ID waits on peers),
+ * which is millions of cycles — so the low 16 bits are well spread even
+ * though this is not random in any cryptographic sense.
+ */
+#if defined(CONFIG_TAPESTRY_FACTS_ENTROPY) || !defined(__ZEPHYR__)
+static uint32_t facts_entropy(void)
+{
+    return sys_rand32_get();
+}
+#else
+static uint32_t facts_entropy(void)
+{
+    static uint32_t calls;
+    uint32_t x = k_cycle_get_32() ^ (k_uptime_get_32() * 2654435761u) ^
+                 (++calls * 0x9E3779B1u);
+
+    x ^= x >> 16;      /* lowbias32 finalizer */
+    x *= 0x7FEB352Du;
+    x ^= x >> 15;
+    x *= 0x846CA68Bu;
+    x ^= x >> 16;
+    return x;
+}
+#endif
+
+/* xorshift32 for Trickle's send-point jitter — only needs to differ between
+ * elements, so one entropy read at first use is enough. */
+static uint32_t facts_jitter(element_id_t own_id)
+{
+    if (g_facts_rng == 0u) {
+        g_facts_rng = facts_entropy() ^ ((uint32_t)own_id * 0x9E3779B1u);
+        if (g_facts_rng == 0u) {
+            g_facts_rng = 1u;
+        }
+    }
+    g_facts_rng ^= g_facts_rng << 13;
+    g_facts_rng ^= g_facts_rng >> 17;
+    g_facts_rng ^= g_facts_rng << 5;
+    return g_facts_rng;
+}
+
+static void facts_cycle(world_model_t *wm, element_id_t own_id)
+{
+    if (own_id >= MAX_ELEMENTS) {
+        return;   /* inert model — no identity to send facts under */
+    }
+
+    uint32_t now = k_uptime_get_32();
+    uint32_t dt  = g_facts_clock_started ? now - g_facts_last_ms : 0u;
+
+    g_facts_last_ms       = now;
+    g_facts_clock_started = true;
+
+    if (!wm->facts.epoch_set) {
+        wm_fact_set_epoch(wm, (uint16_t)facts_entropy());
+    }
+    gossip_drain_facts(wm, own_id);
+    if (wm_fact_trickle_tick(wm, dt, facts_jitter(own_id))) {
+        gossip_send_facts(wm, own_id);
+    }
 }
 
 /* ── Auto-ID discovery primitives ────────────────────────────────────────── */

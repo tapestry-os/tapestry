@@ -72,7 +72,6 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/random/random.h>
 #include <math.h>
 #include <string.h>
 #include <tapestry/csm.h>
@@ -1314,10 +1313,6 @@ int main(void)
 
     world_model_t wm;
     wm_init(&wm, element_id, &own_state, 0.0f);   /* pure AP — never freeze */
-    /* Shared-fact keys carry a per-boot random epoch, so a robot that
-     * reboots and gets an old id back cannot collide with its
-     * predecessor's facts (csm.h). */
-    wm_fact_set_epoch(&wm, (uint16_t)sys_rand32_get());
 
     demo_odometry_t odo;
     demo_odometry_init(&odo, sx, sy);
@@ -1433,9 +1428,6 @@ int main(void)
     for (uint32_t waited_ms = 0; ; waited_ms += WM_CYCLE_MS) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
-        /* Facts sync during the barrier too, so a robot that (re)joins a
-         * running show already holds the table when its script starts. */
-        transport_facts_tick(&wm, element_id, WM_CYCLE_MS);
         demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
 
         int fresh = 0;
@@ -1875,10 +1867,6 @@ int main(void)
                     choreo_goal_status() == CHOREO_STATE_SUSPENDED
                         ? "(suspended)" : "");
         }
-
-        /* Spread the fact table (Trickle-paced, wire v7) — after the
-         * publish above, so a new find goes out on this tick's schedule. */
-        transport_facts_tick(&wm, element_id, dt_ms);
 
         /* The target landmark every ring vertex is computed from (rank 0 of
          * the TARGET facts — the same on every robot holding the table).

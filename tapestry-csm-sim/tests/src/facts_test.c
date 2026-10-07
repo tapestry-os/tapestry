@@ -76,6 +76,22 @@ ZTEST(facts, test_publish_needs_a_synced_table)
     zassert_equal(f.flags, HIGH);
 }
 
+ZTEST(facts, test_publish_needs_an_epoch)
+{
+    element_state_t own = {0};
+    position_t p = { 10.0f, 10.0f, 0.0f };
+
+    /* wm_init() leaves the epoch unset; gossip_drain() seeds it in the real
+     * stack, so an app that publishes before ever draining must be told. */
+    wm_init(&wm, 0, &own, 0.0f);
+    wm_fact_heard_digest(&wm, 0);
+    zassert_equal(wm_fact_publish(&wm, FACT_TYPE_TARGET, &p, 0, 0, NULL),
+                  WM_FACT_ERR_NOEPOCH);
+    wm_fact_set_epoch(&wm, 0x1234);
+    zassert_equal(wm_fact_publish(&wm, FACT_TYPE_TARGET, &p, 0, 0, NULL),
+                  WM_FACT_CREATED);
+}
+
 ZTEST(facts, test_sync_timeout_allows_a_solo_element_to_publish)
 {
     position_t p = { 10.0f, 10.0f, 0.0f };

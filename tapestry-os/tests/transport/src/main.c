@@ -1283,3 +1283,72 @@ ZTEST(gossip_wire, test_auth_rejects_a_tampered_fact)
     zassert_equal(wm_fact_count(&b, FACT_TYPE_NONE), 0);
 }
 #endif
+
+/* ── Shared facts ride gossip_drain() ────────────────────────────────────── */
+/*
+ * Every element's loop already calls gossip_drain() (directly, or through
+ * transport_drain()) once per cycle, so that one call must be ALL an
+ * application does for shared facts: seed the epoch, merge received fact
+ * frames, and pace and send its own on the Trickle timer.  These tests call
+ * nothing else.
+ */
+
+ZTEST(gossip_wire, test_gossip_drain_seeds_the_fact_epoch_once)
+{
+    world_model_t wm;
+    position_t    p = { 10.0f, 10.0f, 0.0f };
+
+    receiver_init(&wm, 0);
+    wm_fact_heard_digest(&wm, 0);
+    zassert_false(wm.facts.epoch_set, "nothing has drained yet");
+    zassert_equal(wm_fact_publish(&wm, FACT_TYPE_TARGET, &p, 0, 0, NULL),
+                  WM_FACT_ERR_NOEPOCH, "publishing before any drain must fail");
+
+    gossip_drain(&wm, 0);
+    zassert_true(wm.facts.epoch_set, "the first drain seeds the epoch");
+
+    uint16_t epoch = wm.facts.epoch;
+
+    gossip_drain(&wm, 0);
+    zassert_equal(wm.facts.epoch, epoch, "later drains must not reseed it");
+    zassert_equal(wm_fact_publish(&wm, FACT_TYPE_TARGET, &p, 0, 0, NULL),
+                  WM_FACT_CREATED);
+}
+
+ZTEST(gossip_wire, test_gossip_drain_merges_received_fact_frames)
+{
+    world_model_t a, b;
+    fact_key_t    key;
+
+    fact_sender(&a, 1, &key);
+    receiver_init(&b, 2);
+    gossip_send_facts(&a, 1);
+
+    gossip_drain(&b, 2);                 /* no gossip_drain_facts() call */
+    zassert_true(wm_fact_get(&b, &key, NULL), "the fact must have arrived");
+    zassert_equal(wm_fact_digest(&b), wm_fact_digest(&a));
+}
+
+ZTEST(gossip_wire, test_gossip_drain_sends_facts_on_the_trickle_schedule)
+{
+    world_model_t wm;
+    fact_key_t    key;
+
+    fact_sender(&wm, 1, &key);
+    zassert_equal(fact_tail, 0, "nothing sent yet");
+
+    /* FACT_IMIN_MS puts the first send point inside 250 ms of the first
+     * cycle; poll for twice that on the real clock gossip_drain() reads. */
+    for (int i = 0; i < 12 && fact_tail == 0; i++) {
+        k_msleep(50);
+        gossip_drain(&wm, 1);
+    }
+    zassert_true(fact_tail > 0, "an element that only drains must still send");
+
+    const tapestry_fact_frame_t *f = (const tapestry_fact_frame_t *)fact_last();
+
+    zassert_equal(f->sender_id, 1u);
+    zassert_equal(f->count, 1u);
+    zassert_equal(f->digest, wm_fact_digest(&wm));
+    zassert_equal(f->r0_type, FACT_TYPE_TARGET);
+}

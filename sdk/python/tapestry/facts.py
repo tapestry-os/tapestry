@@ -46,6 +46,7 @@ WM_FACT_REUSED       = 1
 WM_FACT_ERR_INVALID  = -1
 WM_FACT_ERR_UNSYNCED = -2
 WM_FACT_ERR_FULL     = -3
+WM_FACT_ERR_NOEPOCH  = -4
 
 WM_FACT_EVICT_CAPACITY   = 1
 WM_FACT_EVICT_PER_ORIGIN = 2
@@ -139,10 +140,14 @@ class _Slot:
 class FactTable:
     """One element's fact table.  Mirrors wm_facts_t + the wm_fact_* API."""
 
-    def __init__(self, owner_id: int, epoch: int = 0):
+    def __init__(self, owner_id: int, epoch: Optional[int] = None):
+        """epoch=None mirrors a table whose epoch has not been set yet
+        (publish returns WM_FACT_ERR_NOEPOCH); the C side seeds it in the
+        first gossip_drain()."""
         self.owner_id = owner_id
         self.slots: List[_Slot] = [_Slot() for _ in range(WM_MAX_FACTS)]
-        self.epoch = epoch & 0xFFFF
+        self.epoch = (epoch or 0) & 0xFFFF
+        self.epoch_set = epoch is not None
         self.next_seq = 0
         self.clock = 0
         self.synced = False
@@ -237,11 +242,14 @@ class FactTable:
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch & 0xFFFF
+        self.epoch_set = True
 
     def publish(self, ftype: int, pos, attr: int = 0, flags: int = 0
                 ) -> Tuple[int, Optional[FactKey]]:
         if ftype == FACT_TYPE_NONE or self.owner_id >= MAX_ELEMENTS:
             return WM_FACT_ERR_INVALID, None
+        if not self.epoch_set:
+            return WM_FACT_ERR_NOEPOCH, None
         if not self.synced:
             return WM_FACT_ERR_UNSYNCED, None
         pos = tuple(float(v) for v in pos)

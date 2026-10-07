@@ -11,11 +11,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - **L4 shared facts** (wire v7, `TAPESTRY_MSG_FACT`): a replicated table of
   facts about the world (`wm_fact_publish()`/`_retract()`/`_find()` in
   `csm.h`, `facts.c`), keyed by (type, origin, per-boot epoch, seq), merged
-  deterministically, re-sent on a Trickle schedule (`transport_facts_tick()`)
-  so a rebooted element relearns them from any peer. Fact frames carry two
+  deterministically, and re-sent on a Trickle schedule from the
+  `gossip_drain()` call every element's loop already makes (which also seeds
+  the per-boot epoch), so a rebooted element relearns them from any peer and
+  no application needs a separate tick. `wm_fact_publish()` returns
+  `WM_FACT_ERR_NOEPOCH` until an epoch exists and `WM_FACT_ERR_UNSYNCED`
+  until the table has heard a peer. Fact frames carry two
   records and a table digest; BLE sends them as 3-event bursts on their own
   advertising set, syslink on P2P port 1, UDP as message type 6. Python
-  mirror `tapestry.facts`, parity-tested against the C engine.
+  mirror `tapestry.facts`, parity-tested against the C engine. Table size,
+  per-origin cap, tombstone lifetime and Trickle timing are Kconfig options
+  (`CONFIG_TAPESTRY_WM_MAX_FACTS`, `CONFIG_TAPESTRY_FACT_*`).
 - **Landmarks in Choreo**: `anchor = { select = "landmark", type, rank }`
   (`TAPESTRY_BSE_ANCHOR_LANDMARK`) and events `landmark_added` /
   `landmark_retracted` with an optional `type`. `choreoc` emits

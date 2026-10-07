@@ -217,10 +217,13 @@ Choreos that shouldn't care where the collective happens to be:
 Landmarks are published by the application, not by the script: when its
 own sensor confirms a find it calls
 `wm_fact_publish(&wm, FACT_TYPE_TARGET, &pos, 0, FACT_IMMUTABLE | FACT_PRIO(3), &key)`
-(`<tapestry/csm.h>`), and every application that should spread facts calls
-`transport_facts_tick()` once per cycle. A publish within 15 units of a
-target already held reuses it, and a freshly booted element may not publish
-until it has heard its peers' table. `choreoc` emits `CHOREO_USES_LANDMARKS`
+(`<tapestry/csm.h>`). Spreading them needs nothing else: the
+`gossip_drain()` (or `transport_drain()`) call every element's loop already
+makes each cycle also seeds the element's fact epoch, merges received fact
+frames and sends its own on a Trickle schedule. A publish within 15 units of
+a target already held reuses it, and a freshly booted element may not
+publish until it has heard its peers' table (the call returns
+`WM_FACT_ERR_UNSYNCED`; retry next cycle). `choreoc` emits `CHOREO_USES_LANDMARKS`
 for scripts that read landmarks, so the application knows to publish. In
 Python, pass the element's `tapestry.facts.FactTable` as
 `choreo.tick(wm_entries, scr_state, facts)`.

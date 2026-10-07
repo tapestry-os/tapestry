@@ -129,42 +129,9 @@ void transport_send(const element_state_t *own_state, uint8_t qos_tier)
 
 int transport_drain(world_model_t *wm, element_id_t own_id)
 {
-    int n = gossip_drain(wm, own_id);
+    int n = gossip_drain(wm, own_id);   /* also runs the shared-fact duties */
     gossip_relay_flush();
-    gossip_drain_facts(wm, own_id);
     return n;
-}
-
-/* ── transport_facts_tick ────────────────────────────────────────────────── */
-
-static uint32_t hw_nonce(void);
-
-/* Trickle only needs jitter that differs between elements, not
- * cryptographic randomness: xorshift32 seeded from the hardware nonce and
- * the cycle counter, so no board needs an entropy driver for it. */
-static uint32_t fact_jitter(void)
-{
-    static uint32_t x;
-    if (x == 0u) {
-        x = hw_nonce() ^ k_cycle_get_32() ^ 0x9E3779B9u;
-        if (x == 0u) {
-            x = 1u;
-        }
-    }
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    return x;
-}
-
-bool transport_facts_tick(world_model_t *wm, element_id_t own_id,
-                          uint32_t elapsed_ms)
-{
-    if (!wm_fact_trickle_tick(wm, elapsed_ms, fact_jitter())) {
-        return false;
-    }
-    gossip_send_facts(wm, own_id);
-    return true;
 }
 
 bool transport_poll_directive(element_id_t own_id,
