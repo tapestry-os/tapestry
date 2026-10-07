@@ -50,9 +50,8 @@ Common parameters:
                          choreo_collective_achieved() in choreo.h). Only
                          valid alongside until = "achieved"; not allowed
                          on hold (which never carries until either).
-                         Does NOT affect the discovery events below —
-                         those have no scope (own bit vs any bit is the
-                         event's own name).
+                         Does NOT affect the discovery/landmark events —
+                         those have no scope.
     requires             list of capability names:
                          ["locomotion", "bonding", "sensing", "signaling"]
     indicator            §12 Stage 5 effect: "idle"|"active"|"degraded"|
@@ -98,9 +97,6 @@ never both.  Each track's `filter` table takes:
                 matches when this element's own capabilities satisfy them
     energy_low  bool — matches when this element's own gossiped
                 health_flags has ELEMENT_HEALTH_LOW_BATTERY set
-    discovered  bool — matches when this element's own gossiped
-                'discovered' bit is set (wire v6) — the
-                track a finder migrates onto once it stops searching
 
 An empty/omitted filter (`filter = {}` or no `filter` key) matches every
 element — the "catch-all" a script needs at least one of, in the last
@@ -200,8 +196,15 @@ FRAMES = {"absolute": 0, "collective": 1, "element": 2}
 # here (so an author gets "not yet implemented", not "unknown selector")
 # but rejected explicitly — they need L4 join-order tracking that doesn't
 # exist yet. "id:N" is parsed separately (embeds the id in the string).
-ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3, "discoverer": 4,
-                    "discovery-point": 5}
+ANCHOR_SELECTORS = {"leader": 0, "self": 2, "lowest-energy": 3, "landmark": 4,
+                    "discovery-point": 4}
+# "discovery-point" is an alias for { select = "landmark", type = "target",
+# rank = 0 } — the first target the swarm agreed on (L4 shared facts).
+_LANDMARK_ALIASES = {"discovery-point": ("target", 0)}
+
+# L4 shared-fact types by name (csm.h FACT_TYPE_*); an application type is
+# an integer 0x80..0xFF instead of a name.
+FACT_TYPE_NAMES = {"target": 1, "zone": 2, "hazard": 3, "waypoint": 4}
 _ANCHOR_SELECTORS_DEFERRED = {"newest", "oldest"}
 
 # §12 Stage 5 effect: indicator = "<name>" mirrors substrate_signal_t
@@ -275,10 +278,12 @@ EVENTS = {
     "count_eq":       "count_eq",
     "anchor_lost":    "anchor_lost",
     "quorum_lost":    "quorum_lost",
-    "discovery":      "discovery",
-    "discovery_any":  "discovery_any",
+    "discovery":          "discovery",
+    "landmark_added":     "landmark_added",
+    "landmark_retracted": "landmark_retracted",
 }
 _EVENTS_NEEDING_THRESHOLD = {"count_gte", "count_eq"}
+_EVENTS_TAKING_TYPE = {"landmark_added", "landmark_retracted"}
 
 # "end" is reserved — it's the goto sentinel meaning "complete the script",
 # not an author-assignable step name.
@@ -286,7 +291,7 @@ _RESERVED_STEP_NAMES = {"end"}
 
 # §7 track filter — every key optional; the zero/empty table matches every
 # element (the "catch-all" a script needs at least one of).
-_KNOWN_TRACK_FILTER_PARAMS = {"requires", "energy_low", "discovered"}
+_KNOWN_TRACK_FILTER_PARAMS = {"requires", "energy_low"}
 _KNOWN_TRACK_PARAMS = {"filter", "steps", "max_runtime"}
 
 SCOPES = {"self": 0, "all": 1}
@@ -301,8 +306,7 @@ _ANCHOR_ENUM = {
     "id":             BSEAnchorSelector.ID,
     "self":           BSEAnchorSelector.SELF,
     "lowest-energy":  BSEAnchorSelector.LOWEST_ENERGY,
-    "discoverer":     BSEAnchorSelector.DISCOVERER,
-    "discovery-point": BSEAnchorSelector.DISCOVERY_POINT,
+    "landmark":       BSEAnchorSelector.LANDMARK,
 }
 _MOTION_ENUM = {
     "static": BSEMotion.STATIC,
@@ -316,13 +320,27 @@ _EVENT_ENUM = {
     "count_eq":       ChoreoEvent.COUNT_EQ,
     "anchor_lost":    ChoreoEvent.ANCHOR_LOST,
     "quorum_lost":    ChoreoEvent.QUORUM_LOST,
-    "discovery":      ChoreoEvent.DISCOVERY,
-    "discovery_any":  ChoreoEvent.DISCOVERY_ANY,
+    "discovery":          ChoreoEvent.DISCOVERY,
+    "landmark_added":     ChoreoEvent.LANDMARK_ADDED,
+    "landmark_retracted": ChoreoEvent.LANDMARK_RETRACTED,
 }
 
 
 class ScriptError(ValueError):
     """A schema or validation error in a Choreo script file."""
+
+
+def parse_fact_type(value, where: str) -> int:
+    """A shared-fact type: a FACT_TYPE_NAMES name, or an application type
+    given as an integer 0x80..0xFF."""
+    if isinstance(value, str) and value in FACT_TYPE_NAMES:
+        return FACT_TYPE_NAMES[value]
+    if isinstance(value, int) and not isinstance(value, bool) and \
+            0x80 <= value <= 0xFF:
+        return value
+    raise ScriptError(f"{where}: unknown fact type {value!r} (known: "
+                      f"{sorted(FACT_TYPE_NAMES)}, or an application type "
+                      f"0x80-0xFF)")
 
 
 @dataclass
@@ -335,6 +353,7 @@ class NormalizedTransition:
     event:         str
     goto_step_idx: int
     threshold:     int = 0
+    fact_type:     int = 0     # landmark_* events: FACT_TYPE_*, 0 = any
 
 
 @dataclass
@@ -355,6 +374,8 @@ class NormalizedStep:
     frame:               str = "absolute"          # form/converge only
     anchor_select:       Optional[str] = None       # frame == "element" only
     anchor_id:           Optional[int] = None       # anchor_select == "id" only
+    landmark_type:       Optional[int] = None       # anchor_select == "landmark"
+    landmark_rank:       Optional[int] = None       #   (FACT_TYPE_*, rank)
     motion:              str = "static"             # form only (§6)
     spin_rate_radps:     Optional[float] = None      # motion == "spin" only
     rotation_rad:        Optional[float] = None      # form only: orientation in its frame
@@ -371,7 +392,6 @@ class NormalizedTrack:
     list (§7).  Mirrors choreo_track_t / choreo_track_filter_t."""
     required_caps:       int = 0
     requires_energy_low: bool = False
-    requires_discovered: bool = False   # wire v6
     steps:                List[NormalizedStep] = field(default_factory=list)
     # Same §8.4 cycle-bound rule as ChoreoScript.max_runtime_ms, but
     # per-track: a cycle in one track doesn't bound the others.
@@ -635,7 +655,7 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
             if not isinstance(t, dict):
                 raise ScriptError(f"{twhere}: must be a table, e.g. "
                                   f"{{ event = \"achieved\", goto = \"...\" }}")
-            extra = set(t) - {"event", "goto", "threshold"}
+            extra = set(t) - {"event", "goto", "threshold", "type"}
             if extra:
                 raise ScriptError(f"{twhere}: unknown key(s) {sorted(extra)}")
             event = t.get("event")
@@ -653,9 +673,15 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
             elif "threshold" in t:
                 raise ScriptError(f"{twhere}: 'threshold' only applies to "
                                   f"count_gte/count_eq events")
+            fact_type = 0
+            if "type" in t:
+                if event not in _EVENTS_TAKING_TYPE:
+                    raise ScriptError(f"{twhere}: 'type' only applies to "
+                                      f"landmark_added/landmark_retracted")
+                fact_type = parse_fact_type(t["type"], twhere)
             step.on.append(NormalizedTransition(
                 event=event, goto_step_idx=goto_idx,
-                threshold=t.get("threshold", 0)))
+                threshold=t.get("threshold", 0), fact_type=fact_type))
 
     until = params.get("until")
     if until is not None:
@@ -774,11 +800,13 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
                         raise ScriptError(
                             f"{where}: frame = \"element\" needs "
                             f"anchor = {{ select = ... }}")
-                    extra = set(anchor) - {"select"}
+                    sel = anchor["select"]
+                    allowed = {"select", "type", "rank"} \
+                        if sel == "landmark" else {"select"}
+                    extra = set(anchor) - allowed
                     if extra:
                         raise ScriptError(f"{where}: unexpected anchor "
                                           f"key(s) {sorted(extra)}")
-                    sel = anchor["select"]
                     if isinstance(sel, str) and sel.startswith("id:"):
                         try:
                             step.anchor_id = int(sel[3:])
@@ -798,6 +826,28 @@ def _parse_step(index: int, table: dict, name_to_index: dict,
                             f"{where}: unknown anchor select {sel!r} "
                             f"(known: {sorted(ANCHOR_SELECTORS)}, or "
                             f"\"id:N\")")
+                    elif sel == "landmark" or sel in _LANDMARK_ALIASES:
+                        if sel in _LANDMARK_ALIASES:
+                            tname, rank = _LANDMARK_ALIASES[sel]
+                            step.landmark_type = FACT_TYPE_NAMES[tname]
+                        else:
+                            if "type" not in anchor:
+                                raise ScriptError(
+                                    f"{where}: select = \"landmark\" needs "
+                                    f"type = \"target\"|\"zone\"|\"hazard\""
+                                    f"|\"waypoint\" (or an application "
+                                    f"type 0x80-0xFF)")
+                            step.landmark_type = parse_fact_type(
+                                anchor["type"], where)
+                            rank = anchor.get("rank", 0)
+                            if (not isinstance(rank, int) or
+                                    isinstance(rank, bool) or
+                                    not 0 <= rank <= 255):
+                                raise ScriptError(
+                                    f"{where}: anchor rank must be an "
+                                    f"integer 0..255")
+                        step.landmark_rank = rank
+                        step.anchor_select = "landmark"
                     else:
                         step.anchor_select = sel
         if "radius" in params:
@@ -891,12 +941,12 @@ def _has_cycle(n_steps: int, steps: List[NormalizedStep]) -> bool:
     return any(color[i] == WHITE and visit(i) for i in range(n_steps))
 
 
-def _parse_track_filter(where: str, filt) -> Tuple[int, bool, bool]:
-    """filter = { requires = [...], energy_low = true, discovered = true }
-    -> (required_caps, requires_energy_low, requires_discovered).
+def _parse_track_filter(where: str, filt) -> Tuple[int, bool]:
+    """filter = { requires = [...], energy_low = true }
+    -> (required_caps, requires_energy_low).
     Missing/empty matches every element."""
     if filt is None:
-        return 0, False, False
+        return 0, False
     if not isinstance(filt, dict):
         raise ScriptError(f"{where}: 'filter' must be a table, e.g. "
                           f"filter = {{ requires = [\"sensing\"] }}")
@@ -921,11 +971,7 @@ def _parse_track_filter(where: str, filt) -> Tuple[int, bool, bool]:
     if not isinstance(energy_low, bool):
         raise ScriptError(f"{where}: filter.energy_low must be true/false")
 
-    discovered = filt.get("discovered", False)
-    if not isinstance(discovered, bool):
-        raise ScriptError(f"{where}: filter.discovered must be true/false")
-
-    return required_caps, energy_low, discovered
+    return required_caps, energy_low
 
 
 def _parse_track(index: int, table: dict) -> NormalizedTrack:
@@ -937,7 +983,7 @@ def _parse_track(index: int, table: dict) -> NormalizedTrack:
         raise ScriptError(f"{where}: unexpected keys {sorted(unknown)} "
                           f"(known: {sorted(_KNOWN_TRACK_PARAMS)})")
 
-    required_caps, energy_low, discovered = \
+    required_caps, energy_low = \
         _parse_track_filter(where, table.get("filter"))
 
     raw_steps = table.get("steps")
@@ -963,7 +1009,6 @@ def _parse_track(index: int, table: dict) -> NormalizedTrack:
 
     return NormalizedTrack(required_caps=required_caps,
                            requires_energy_low=energy_low,
-                           requires_discovered=discovered,
                            steps=steps, max_runtime_ms=max_runtime_ms)
 
 
@@ -1006,14 +1051,11 @@ def _track_shadowing_warnings(tracks: List[NormalizedTrack]) -> List[str]:
     instead of last).
 
     Filter semantics (track_matches(), both runtimes): element matches
-    (required_caps R, requires_energy_low L, requires_discovered D) iff
-    its caps ⊇ R and (¬L or the element is energy-low) and (¬D or the
-    element has discovered).  Track j is subsumed by an earlier track i
-    iff every (caps, energy, discovered) state matching j's filter also
-    matches i's:
-      - R_i ⊆ R_j   (i demands no capability j doesn't also demand),
-      - L_i ⟹ L_j  (i's energy constraint is no stricter than j's), and
-      - D_i ⟹ D_j  (i's discovered constraint is no stricter than j's).
+    (required_caps R, requires_energy_low L) iff its caps ⊇ R and (¬L or
+    the element is energy-low).  Track j is subsumed by an earlier track i
+    iff every (caps, energy) state matching j's filter also matches i's:
+      - R_i ⊆ R_j   (i demands no capability j doesn't also demand), and
+      - L_i ⟹ L_j  (i's energy constraint is no stricter than j's).
 
     Non-fatal, matching _derived_capability_warnings() above: the script
     still loads and runs — every element just resolves to the earlier
@@ -1028,15 +1070,13 @@ def _track_shadowing_warnings(tracks: List[NormalizedTrack]) -> List[str]:
                            & tracks[i].required_caps) == tracks[i].required_caps
             energy_ok = tracks[j].requires_energy_low \
                 or not tracks[i].requires_energy_low
-            discovered_ok = tracks[j].requires_discovered \
-                or not tracks[i].requires_discovered
-            if subset_caps and energy_ok and discovered_ok:
+            if subset_caps and energy_ok:
                 out.append(
                     f"tracks[{j}]: unreachable — every element this "
                     f"track's filter matches is already claimed by "
                     f"tracks[{i}]'s filter (§8.4: selection is "
                     f"first-match-wins, and tracks[{i}] requires no "
-                    f"capability, energy, or discovered state tracks[{j}] "
+                    f"capability or energy state tracks[{j}] "
                     f"doesn't also require) — reorder the tracks or "
                     f"tighten tracks[{i}]'s filter")
                 break
@@ -1202,6 +1242,9 @@ def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]
             goal.anchor = _ANCHOR_ENUM[s.anchor_select]
         if s.anchor_id is not None:
             goal.anchor_id = s.anchor_id
+        if s.landmark_type is not None:
+            goal.landmark_type = s.landmark_type
+            goal.landmark_rank = s.landmark_rank or 0
         goal.motion = _MOTION_ENUM[s.motion]
         if s.spin_rate_radps is not None:
             goal.spin_rate_radps = s.spin_rate_radps
@@ -1214,7 +1257,8 @@ def _normalized_to_choreo_steps(steps: List[NormalizedStep]) -> List[ChoreoStep]
         goal.required_caps = s.required_caps
         on = [ChoreoTransition(event=_EVENT_ENUM[t.event],
                                goto_step_idx=t.goto_step_idx,
-                               threshold=t.threshold)
+                               threshold=t.threshold,
+                               fact_type=t.fact_type)
              for t in s.on]
         out.append(ChoreoStep(goal=goal,
                               max_duration_ms=s.max_duration_ms,
@@ -1251,8 +1295,7 @@ def to_choreo_tracks(script: ChoreoScript) -> List[ChoreoTrack]:
     return [
         ChoreoTrack(
             filter=ChoreoTrackFilter(required_caps=t.required_caps,
-                                     requires_energy_low=t.requires_energy_low,
-                                     requires_discovered=t.requires_discovered),
+                                     requires_energy_low=t.requires_energy_low),
             steps=_normalized_to_choreo_steps(t.steps))
         for t in script.tracks
     ]

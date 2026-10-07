@@ -118,8 +118,9 @@ class ChoreoEvent(IntEnum):
     COUNT_EQ       = 4   # threshold
     ANCHOR_LOST    = 5
     QUORUM_LOST    = 6
-    DISCOVERY      = 7   # wire v6 — own discovered bit only
-    DISCOVERY_ANY  = 8   # wire v6 — ANY element's discovered bit
+    DISCOVERY      = 7   # own (local) discovered bit only
+    LANDMARK_ADDED     = 8   # a live shared fact of fact_type is held
+    LANDMARK_RETRACTED = 9   # none live, but a tombstone of fact_type held
 
 
 # Bounded to match choreo.h's CHOREO_MAX_TRANSITIONS — enforced in
@@ -144,6 +145,7 @@ class ChoreoTransition:
     event:         ChoreoEvent
     goto_step_idx: int
     threshold:     int = 0   # COUNT_GTE / COUNT_EQ only
+    fact_type:     int = 0   # LANDMARK_* only: FACT_TYPE_*, 0 = any
 
 
 class ChoreoDeparturePolicy(IntEnum):
@@ -202,6 +204,8 @@ class Goal:
     frame:           BSEFrame = BSEFrame.ABSOLUTE   # FORM/CONVERGE only (bse.py §5)
     anchor:          BSEAnchorSelector = BSEAnchorSelector.LEADER  # frame==ELEMENT only
     anchor_id:       int = 0     # anchor==ID only
+    landmark_type:   int = 0     # anchor==LANDMARK: FACT_TYPE_*
+    landmark_rank:   int = 0     # anchor==LANDMARK: rank (0 = first)
     motion:          BSEMotion = BSEMotion.STATIC   # FORM only (bse.py §6)
     spin_rate_radps: float = 0.0                    # motion==SPIN only
     rotation_rad:       float = 0.0                    # FORM: orientation in its frame, rad CCW
@@ -256,7 +260,6 @@ class ChoreoTrackFilter:
     [[tracks]] uses."""
     required_caps:       int  = ChoreoCapabilities.NONE
     requires_energy_low: bool = False
-    requires_discovered: bool = False   # wire v6
 
 
 @dataclass
@@ -318,6 +321,7 @@ class Choreo:
 
     def __init__(self, element_id: int, capabilities: Optional[int] = None):
         self._bse          = BSE(element_id)
+        self._facts        = None   # FactTable passed to the current tick()
         self._goal: Optional[Goal] = None
         self._state        = ChoreoState.IDLE
         self._capabilities = capabilities   # None ≙ no SCR registered
@@ -630,8 +634,6 @@ class Choreo:
                     break
             if not low:
                 return False
-        if filt.requires_discovered and not self._self_discovered(wm_entries):
-            return False
         return True
 
     def _first_matching_track(self, wm_entries: List[dict]) -> Optional[int]:
@@ -746,9 +748,14 @@ class Choreo:
 
     # ── Per-cycle ─────────────────────────────────────────────────────────────
 
-    def tick(self, wm_entries: List[dict], scr_state: dict) -> None:
+    def tick(self, wm_entries: List[dict], scr_state: dict,
+             facts=None) -> None:
         """
         Drive L6 decomposition for this cycle (WM_CYCLE_MS period).
+
+        facts: this element's tapestry.facts.FactTable (L4 shared facts,
+        wire v7) — read by the LANDMARK anchor and the LANDMARK_* events;
+        None means no facts are held.
 
         Only drives the BSE in RUNNING state.  Transitions RUNNING →
         SUSPENDED on quorum loss — freezing the BSE and any script timers,
@@ -759,7 +766,8 @@ class Choreo:
             if self._n_tracks > 0:
                 self._update_track_selection(wm_entries)
             self._bse.set_track_scope(self.current_track())
-            self._bse.tick(wm_entries, scr_state)
+            self._bse.tick(wm_entries, scr_state, facts)
+            self._facts = facts
             self._script_advance(wm_entries, scr_state)
             if (self._state == ChoreoState.RUNNING and
                     scr_state.get('quorum_state', 2) == self.QUORUM_LOST):
@@ -781,7 +789,7 @@ class Choreo:
             # _suspended_step_timeout()'s own docstring for a known, not
             # yet root-caused issue mirrored from choreo.c).
             if self._goal is not None and self._goal.type == GoalType.HOLD:
-                self._bse.tick(wm_entries, scr_state)
+                self._bse.tick(wm_entries, scr_state, facts)
             self._suspended_step_timeout()
             # _suspended_step_timeout() may have terminated -> IDLE, or
             # advanced to a new step (still SUSPENDED); the recovery
@@ -812,27 +820,12 @@ class Choreo:
         return True
 
     def _self_discovered(self, wm_entries: List[dict]) -> bool:
-        """Wire v6: does the self entry's gossiped 'discovered'
-        key (default False) read true?  DISCOVERY's source (and the
-        requires_discovered track filter's) — mirrors self_discovered()
-        in choreo.c."""
+        """Does the self entry's (local, wire v7) 'discovered' key
+        (default False) read true?  DISCOVERY's source — mirrors
+        self_discovered() in choreo.c."""
         for e in wm_entries:
             if e.get('is_self', False):
                 return e.get('discovered', False)
-        return False
-
-    def _any_element_discovered(self, wm_entries: List[dict]) -> bool:
-        """Wire v6 (finder-anchored scripts): does ANY element — self or a fresh
-        active peer — have 'discovered' set?  DISCOVERY's scope=ALL
-        source (DISCOVERY_ANY) — mirrors any_element_discovered() in choreo.c.
-        Deliberately NOT track-filtered, for the same reason as the C
-        version: the discoverer has already migrated to a different
-        track by the time a searcher needs to see this."""
-        for e in wm_entries:
-            candidate = e.get('is_self', False) or \
-                (e.get('is_active') and not e.get('is_stale'))
-            if candidate and e.get('discovered', False):
-                return True
         return False
 
     def _swarm_size(self, wm_entries: List[dict]) -> int:
@@ -895,8 +888,12 @@ class Choreo:
             return scr_state.get('quorum_state', 2) == self.QUORUM_LOST
         if t.event == ChoreoEvent.DISCOVERY:
             return self._self_discovered(wm_entries)
-        if t.event == ChoreoEvent.DISCOVERY_ANY:
-            return self._any_element_discovered(wm_entries)
+        if t.event == ChoreoEvent.LANDMARK_ADDED:
+            return self._facts is not None and self._facts.count(t.fact_type) > 0
+        if t.event == ChoreoEvent.LANDMARK_RETRACTED:
+            return (self._facts is not None and
+                    self._facts.count(t.fact_type) == 0 and
+                    self._facts.tombstones(t.fact_type) > 0)
         return False
 
     def _advance_to(self, target_idx: int) -> None:
@@ -1064,6 +1061,8 @@ class Choreo:
             frame     = goal.frame,
             anchor    = goal.anchor,
             anchor_id = goal.anchor_id,
+            landmark_type = goal.landmark_type,
+            landmark_rank = goal.landmark_rank,
             motion          = goal.motion,
             spin_rate_radps = goal.spin_rate_radps,
             rotation_rad       = goal.rotation_rad,

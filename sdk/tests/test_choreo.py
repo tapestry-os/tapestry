@@ -839,9 +839,9 @@ def test_anchor_lost_transition():
 
 
 def test_discovery_event_fires_on_own_bit_only():
-    """Per-element scripts: DISCOVERY fires on this element's OWN discovered
-    bit only, ignoring a peer's entirely (no anchor, no ring — each robot
-    stops on its own local edge-detection)."""
+    """Per-element scripts: DISCOVERY fires on this element's OWN (local,
+    wire v7) discovered bit only, ignoring a peer's entry entirely (no
+    anchor, no ring — each robot stops on its own local edge-detection)."""
     c = Choreo(element_id=0)
     steps = [
         ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0)),
@@ -860,62 +860,72 @@ def test_discovery_event_fires_on_own_bit_only():
     assert c.script_step() == 1, "own discovery must fire DISCOVERY, no debounce"
 
 
-def test_discovery_any_event_fires_on_any_peer_even_off_track():
-    """Finder-anchored scripts: DISCOVERY_ANY must see a peer's discovered bit even
-    though that peer has ALREADY migrated to a different track (the
-    'anchor' track, requires_discovered=True) — the whole reason this
-    check is deliberately NOT track-filtered, unlike ACHIEVED's
-    collective predicate (test_track_scoped_collective_excludes_other_
-    track_peer above)."""
+def _targets(*facts):
+    from tapestry import facts as F
+    t = F.FactTable(0)
+    for origin, stamp, x, y in facts:
+        t.receive(F.Fact(F.FACT_TYPE_TARGET, origin, 7, 0,
+                         F.FACT_IMMUTABLE | F.fact_prio(3), stamp, (x, y, 0.0)))
+    return t
+
+
+def test_landmark_added_fires_for_a_held_fact_of_its_type():
+    """Finder-anchored scripts: LANDMARK_ADDED fires while a live fact of
+    the transition's type is held, whoever published it — and only of
+    that type (fact_type 0 = any).  Mirrors the C test of the same name."""
+    from tapestry import facts as F
     c = Choreo(element_id=0)
     steps = [
         ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0)),
                   max_duration_ms=60_000,
-                  on=[ChoreoTransition(event=ChoreoEvent.DISCOVERY_ANY, goto_step_idx=1)]),
-        ChoreoStep(goal=Goal(type=GoalType.FORM, shape=GoalShape.CIRCLE,
-                             frame=BSEFrame.ELEMENT,
-                             anchor=BSEAnchorSelector.DISCOVERER, radius=5.0),
-                  max_duration_ms=60_000),
-    ]
-    assert c.submit_script(steps) == 0
-    entries = wm([(0, 0), (5, 5)], self_id=0)
-    entries[1]['discovered']    = True
-    entries[1]['current_track'] = 1   # a DIFFERENT track than self's 0
-    c.tick(entries, HEALTHY)
-    assert c.script_step() == 1, \
-        "DISCOVERY_ANY must fire even for an off-track peer"
-
-
-def test_discovery_any_includes_self_and_ignores_stale_peers():
-    c = Choreo(element_id=0)
-    steps = [
-        ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0)),
-                  max_duration_ms=60_000,
-                  on=[ChoreoTransition(event=ChoreoEvent.DISCOVERY_ANY, goto_step_idx=1)]),
+                  on=[ChoreoTransition(event=ChoreoEvent.LANDMARK_ADDED,
+                                       goto_step_idx=1,
+                                       fact_type=F.FACT_TYPE_TARGET)]),
         ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000),
     ]
     assert c.submit_script(steps) == 0
     entries = wm([(0, 0), (5, 5)], self_id=0)
-    entries[1]['is_stale'] = True
-    entries[1]['discovered'] = True
-    c.tick(entries, HEALTHY)
-    assert c.script_step() == 0, "a stale peer's bit must not count"
+    facts = F.FactTable(0)
+    c.tick(entries, HEALTHY, facts)
+    assert c.script_step() == 0, "nothing held yet"
+    facts.receive(F.Fact(F.FACT_TYPE_ZONE, 1, 1, 0, 0, 1, (10, 10, 0)))
+    c.tick(entries, HEALTHY, facts)
+    assert c.script_step() == 0, "a zone must not fire a target filter"
+    facts.receive(F.Fact(F.FACT_TYPE_TARGET, 1, 1, 0, 0, 2, (69, 68.4, 0)))
+    c.tick(entries, HEALTHY, facts)
+    assert c.script_step() == 1, "a held target fires, no debounce"
 
-    entries[0]['discovered'] = True
-    c.tick(entries, HEALTHY)
-    assert c.script_step() == 1, "own bit counts for DISCOVERY_ANY too"
 
+def test_landmark_retracted_fires_after_the_find_is_withdrawn():
+    from tapestry import facts as F
+    c = Choreo(element_id=0)
+    steps = [
+        ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000,
+                  on=[ChoreoTransition(event=ChoreoEvent.LANDMARK_RETRACTED,
+                                       goto_step_idx=1,
+                                       fact_type=F.FACT_TYPE_TARGET)]),
+        ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000),
+    ]
+    assert c.submit_script(steps) == 0
+    entries = solo()
+    facts = _targets((1, 2, 69.0, 68.4))
+    c.tick(entries, HEALTHY, facts)
+    assert c.script_step() == 0, "a live find must not fire"
+    facts.retract(facts.find(F.FACT_TYPE_TARGET, 0).key)
+    c.tick(entries, HEALTHY, facts)
+    assert c.script_step() == 1, "the withdrawal fires"
 
-def test_discovery_any_does_not_make_achieved_collective():
-    """The reason the events are separate: scope governs ACHIEVED on the
-    same step, and a patrol leg must advance on THIS element's own
-    achievement while still reacting to any peer's discovery."""
+def test_landmark_added_does_not_make_achieved_collective():
+    """scope governs ACHIEVED on the same step, and a patrol leg must
+    advance on THIS element's own achievement while still reacting to a
+    landmark."""
     c = Choreo(element_id=0)
     steps = [
         ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0),
                              achieve_eps=1.0, achieve_hold_ms=200),
                   max_duration_ms=60_000, advance_on_achieved=True,
-                  on=[ChoreoTransition(event=ChoreoEvent.DISCOVERY_ANY, goto_step_idx=2)]),
+                  on=[ChoreoTransition(event=ChoreoEvent.LANDMARK_ADDED, goto_step_idx=2,
+                                       fact_type=1)]),
         ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000),
         ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000),
     ]
@@ -1001,43 +1011,6 @@ def test_track_energy_low_migration_is_debounced():
         c.tick(entries, HEALTHY)
     assert c.current_track() == 0, "migrated to the low-battery track after the debounce hold"
     assert c.get_directive().target == pytest.approx((0.0, 0.0, 0.0))
-
-
-def test_track_discovered_migration_is_debounced():
-    """Finder-anchored scripts: the element whose own local sensor reflex sets
-    its discovered bit migrates onto the 'anchor' track once that bit
-    has held for a full debounce window — same shape as the energy-low
-    migration above. The 'anchor' filter is declared FIRST (narrower —
-    only matches once discovered) and the catch-all searcher LAST, same
-    ordering discipline every other track pair here uses."""
-    c = Choreo(element_id=0)
-    anchor   = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
-    searcher = [ChoreoStep(goal=Goal(type=GoalType.CONVERGE, target=(0.0, 0.0, 0.0)),
-                           max_duration_ms=60_000)]
-    tracks = [
-        ChoreoTrack(filter=ChoreoTrackFilter(requires_discovered=True), steps=anchor),
-        ChoreoTrack(filter=ChoreoTrackFilter(), steps=searcher),
-    ]
-    entries = solo()
-    assert c.submit_tracks(entries, tracks) == 0
-    assert c.current_track() == 1, "starts on the catch-all searcher track"
-
-    entries[0]["discovered"] = True
-    for _ in range(19):
-        c.tick(entries, HEALTHY)
-    assert c.current_track() == 1, "still debouncing the discoverer switch"
-    for _ in range(2):
-        c.tick(entries, HEALTHY)
-    assert c.current_track() == 0, "migrated to the anchor track after the debounce hold"
-    # A HOLD goal's steady-state directive is MOVE_TO_POINT to the
-    # captured station (bse.h: "station-keeps there [...] to the
-    # captured point") — directive-type HOLD itself is reserved for
-    # quorum-freeze/EXCHANGE-snapshot cases, not a plain HOLD goal's
-    # normal output. solo()'s self position defaults to (0,0,0), which
-    # is what a freshly activated HOLD captures.
-    d = c.get_directive()
-    assert d.type == BSEDirectiveType.MOVE_TO_POINT
-    assert d.target == pytest.approx((0.0, 0.0, 0.0))
 
 
 def test_track_scoped_collective_excludes_other_track_peer():

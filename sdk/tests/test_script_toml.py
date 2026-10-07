@@ -527,8 +527,7 @@ def test_frame_element_needs_an_anchor(tmp_path):
                             goal="converge"))
 
 
-@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy", "discoverer",
-                                    "discovery-point"])
+@pytest.mark.parametrize("select", ["leader", "self", "lowest-energy"])
 def test_frame_element_anchor_selectors_are_recognised(select, tmp_path):
     s = parse_file(one_step(
         f'duration = "5s", frame = "element", '
@@ -914,15 +913,51 @@ def test_discovery_needs_no_threshold(tmp_path):
             tmp_path))
 
 
-def test_discovery_any_event_is_recognised(tmp_path):
-    """Finder-anchored scripts: DISCOVERY_ANY — any element's discovered bit."""
+def test_landmark_anchor_and_its_discovery_point_alias(tmp_path):
+    """select = "landmark" needs a type (rank defaults to 0); the
+    "discovery-point" alias is landmark/target/rank 0."""
+    s = parse_file(one_step(
+        'duration = "5s", frame = "element", '
+        'anchor = { select = "landmark", type = "hazard", rank = 1 }',
+        tmp_path, goal="converge"))
+    st = s.steps[0]
+    assert (st.anchor_select, st.landmark_type, st.landmark_rank) == \
+        ("landmark", 3, 1)
+    g = to_choreo_steps(s)[0].goal
+    assert (g.landmark_type, g.landmark_rank) == (3, 1)
+
+    s = parse_file(one_step(
+        'duration = "5s", frame = "element", '
+        'anchor = { select = "discovery-point" }', tmp_path, goal="converge"))
+    st = s.steps[0]
+    assert (st.anchor_select, st.landmark_type, st.landmark_rank) == \
+        ("landmark", 1, 0)
+
+    with pytest.raises(ScriptError, match="needs type"):
+        parse_file(one_step(
+            'duration = "5s", frame = "element", '
+            'anchor = { select = "landmark" }', tmp_path, goal="converge"))
+    with pytest.raises(ScriptError, match="unknown fact type"):
+        parse_file(one_step(
+            'duration = "5s", frame = "element", '
+            'anchor = { select = "landmark", type = "puddle" }', tmp_path,
+            goal="converge"))
+    with pytest.raises(ScriptError, match="unexpected anchor key"):
+        parse_file(one_step(
+            'duration = "5s", frame = "element", '
+            'anchor = { select = "leader", type = "target" }', tmp_path,
+            goal="converge"))
+
+
+def test_landmark_events_are_recognised_with_an_optional_type(tmp_path):
     s = parse_file(script('''
         [[steps]]
         name = "search"
         [steps.converge]
         target   = [1, 2, 3]
         duration = "60s"
-        on = [ { event = "discovery_any", goto = "found" } ]
+        on = [ { event = "landmark_added", type = "target", goto = "found" },
+               { event = "landmark_retracted", goto = "end" } ]
 
         [[steps]]
         name = "found"
@@ -930,29 +965,37 @@ def test_discovery_any_event_is_recognised(tmp_path):
         duration = "60s"
         ''', tmp_path))
     assert s.steps[0].on == [
-        NormalizedTransition(event="discovery_any", goto_step_idx=1, threshold=0)
+        NormalizedTransition(event="landmark_added", goto_step_idx=1,
+                             threshold=0, fact_type=1),
+        NormalizedTransition(event="landmark_retracted", goto_step_idx=2,
+                             threshold=0, fact_type=0),
     ]
-    t = to_choreo_steps(s)[0].on[0]
-    assert t.event == ChoreoEvent.DISCOVERY_ANY
-    assert t.threshold == 0
+    t = to_choreo_steps(s)[0].on
+    assert t[0].event == ChoreoEvent.LANDMARK_ADDED and t[0].fact_type == 1
+    assert t[1].event == ChoreoEvent.LANDMARK_RETRACTED and t[1].fact_type == 0
 
 
-def test_discovery_any_needs_no_threshold(tmp_path):
+def test_type_only_applies_to_landmark_events(tmp_path):
+    with pytest.raises(ScriptError, match="'type' only applies"):
+        parse_file(one_step(
+            'duration = "60s", '
+            'on = [ { event = "anchor_lost", goto = "end", type = "target" } ]',
+            tmp_path))
+
+def test_landmark_added_needs_no_threshold(tmp_path):
     with pytest.raises(ScriptError, match="only applies to count_gte/count_eq"):
         parse_file(one_step(
             'duration = "60s", '
-            'on = [ { event = "discovery_any", goto = "end", threshold = 2 } ]',
+            'on = [ { event = "landmark_added", goto = "end", threshold = 2 } ]',
             tmp_path))
 
-
 def test_scope_does_not_unlock_for_a_discovery_transition(tmp_path):
-    """Discovery events read no scope — own bit vs any bit is the event's
-    own name — so `scope` still needs until = "achieved" to mean anything,
-    exactly as before the discovery events existed."""
+    """Discovery and landmark events read no scope, so `scope` still needs
+    until = "achieved" to mean anything."""
     with pytest.raises(ScriptError, match="'scope' has no effect"):
         parse_file(one_step(
             'duration = "60s", target = [1, 2, 3], scope = "all", '
-            'on = [ { event = "discovery_any", goto = "end" } ]', tmp_path,
+            'on = [ { event = "landmark_added", goto = "end" } ]', tmp_path,
             goal="converge"))
 
 
@@ -1018,32 +1061,13 @@ def test_energy_low_filter_parses(tmp_path):
     assert s.tracks[1].requires_energy_low is False
 
 
-def test_discovered_filter_parses(tmp_path):
-    """Wire v6 — the track a finder migrates onto."""
-    p = tracks_script("""\
-        [[tracks]]
-        filter = { discovered = true }
-        [[tracks.steps]]
-        hold = { duration = "10s" }
-
-        [[tracks]]
-        [[tracks.steps]]
-        converge = { target = [0, 0, 0], duration = "10s" }
-        """, tmp_path)
-    s = parse_file(p)
-    assert s.tracks[0].requires_discovered is True
-    assert s.tracks[1].requires_discovered is False
-
-    tracks = load_tracks(p)
-    assert tracks[0].filter.requires_discovered is True
-    assert tracks[1].filter.requires_discovered is False
-
-
-def test_discovered_filter_must_be_a_bool(tmp_path):
-    with pytest.raises(ScriptError, match="must be true/false"):
+def test_discovered_filter_is_gone(tmp_path):
+    """Wire v7 removed the gossiped discovered bit, and with it the track
+    filter that read it."""
+    with pytest.raises(ScriptError, match="unknown filter key"):
         parse_file(tracks_script("""\
             [[tracks]]
-            filter = { discovered = "yes" }
+            filter = { discovered = true }
             [[tracks.steps]]
             hold = { duration = "10s" }
 
@@ -1051,7 +1075,6 @@ def test_discovered_filter_must_be_a_bool(tmp_path):
             [[tracks.steps]]
             hold = { duration = "10s" }
             """, tmp_path))
-
 
 # ── Track shadowing (§8.4 declaration-order warnings) ────────────────────────
 # Selection is first-match-wins, so a track subsumed by an EARLIER track's
@@ -1170,43 +1193,6 @@ def test_catch_all_does_shadow_later_energy_low_track(tmp_path):
 
         [[tracks]]
         filter = { energy_low = true }
-        [[tracks.steps]]
-        hold = { duration = "10s" }
-        """, tmp_path)
-    w = shadowing_warnings(parse_file(p))
-    assert len(w) == 1
-    assert "tracks[1]" in w[0]
-
-
-def test_discovered_track_does_not_shadow_catch_all(tmp_path):
-    """A finder-anchored script's real shape: the narrower 'anchor'
-    (discovered = true) track declared FIRST must not make the catch-all
-    searcher track declared after it look unreachable — an undiscovered
-    element matches only the catch-all."""
-    p = tracks_script("""\
-        [[tracks]]
-        filter = { discovered = true }
-        [[tracks.steps]]
-        hold = { duration = "10s" }
-
-        [[tracks]]
-        [[tracks.steps]]
-        converge = { target = [0, 0, 0], duration = "10s" }
-        """, tmp_path)
-    assert shadowing_warnings(parse_file(p)) == []
-
-
-def test_catch_all_does_shadow_later_discovered_track(tmp_path):
-    """The reverse direction: every discovered element also matches an
-    earlier catch-all, so a discovered track declared after it is dead —
-    same directional-comparison requirement energy_low needs above."""
-    p = tracks_script("""\
-        [[tracks]]
-        [[tracks.steps]]
-        hold = { duration = "10s" }
-
-        [[tracks]]
-        filter = { discovered = true }
         [[tracks.steps]]
         hold = { duration = "10s" }
         """, tmp_path)

@@ -159,35 +159,21 @@ typedef enum {
     TAPESTRY_BSE_ANCHOR_SELF           = 2, /* own position (degenerate)     */
     TAPESTRY_BSE_ANCHOR_LOWEST_ENERGY  = 3, /* min energy_level among fresh  */
     /*
-     * Finder-anchored scripts: whichever element (self or a fresh, trusted
-     * peer) has its gossiped element_state_t::discovered bit set (wire
-     * v6) — the element that found a searched-for target. Lowest-id
-     * tiebreak if more than one element's bit is set (P4 determinism:
-     * every element must derive the SAME anchor id from the same world-
-     * model snapshot — see collect_participants()'s comment in bse.c).
-     * Fails to resolve (same as LEADER before an election, or LOWEST_
-     * ENERGY with nobody fresh) until at least one element has actually
-     * discovered something — CHOREO_EVENT_ANCHOR_LOST is this selector's
-     * "nobody has found it yet" signal, same as every other selector.
+     * A point the swarm agreed on, not an element: the live L4 shared fact
+     * (csm.h) of intent.landmark_type at intent.landmark_rank (0 = the
+     * lowest (stamp, origin) — "the first target").  Looked up fresh from
+     * the fact table every tick, so a rebooted element that relearns the
+     * table from any peer resolves the same point as everyone else.  Fails
+     * to resolve (CHOREO_EVENT_ANCHOR_LOST, like any selector) until such a
+     * fact is held.  The first resolution locks at once; a DIFFERENT fact
+     * taking that rank (an earlier-stamped one arriving after a partition)
+     * is adopted only after TAPESTRY_BSE_ANCHOR_HOLD_MS, and a locked fact
+     * that disappears (retracted, evicted, merged as a duplicate) is
+     * replaced at once by whatever now holds the rank.  TOML:
+     * anchor = { select = "landmark", type = "target", rank = 0 }, or its
+     * alias { select = "discovery-point" }.
      */
-    TAPESTRY_BSE_ANCHOR_DISCOVERER     = 4,
-    /*
-     * WHERE it was found, not who found it: the position the discoverer
-     * reported in the first gossiped state this element saw with its
-     * discovered bit set (same candidate set and lowest-id tiebreak as
-     * DISCOVERER), latched once per bse_init() and never moved again.
-     * bse_tick() watches for it every tick whatever goal is active, so the
-     * point is already latched by the time a FORM needs it. Unlike
-     * DISCOVERER, the finder is then free to move (e.g. to take its own
-     * slot in a ring around the point) and may even leave the swarm
-     * without taking the centre with it. Not debounced — a latched point
-     * never changes, so there is nothing to thrash. The finder must stay
-     * put until its peers have heard it (a short HOLD after discovery);
-     * a peer that first hears the bit after the finder moved latches
-     * wherever the finder was by then. Fails to resolve until something
-     * is discovered, same as DISCOVERER.
-     */
-    TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT = 5,
+    TAPESTRY_BSE_ANCHOR_LANDMARK       = 4,
 } tapestry_bse_anchor_selector_t;
 
 /* Anchor selector re-resolution debounce, §5.2: "a selector result must be
@@ -270,6 +256,8 @@ typedef struct {
     tapestry_bse_frame_t           frame;
     tapestry_bse_anchor_selector_t anchor;     /* frame == ELEMENT only */
     element_id_t                   anchor_id;  /* anchor == ID only     */
+    uint8_t                        landmark_type;  /* anchor == LANDMARK: */
+    uint8_t                        landmark_rank;  /* FACT_TYPE_*, rank   */
 
     /* FORM only (see tapestry_bse_motion_t above).  motion == 0 (STATIC)
      * is the default — every existing intent is unaffected. */
@@ -467,15 +455,6 @@ bool bse_goal_achieved(void);
  * bse_tick().  This is CHOREO_EVENT_ANCHOR_LOST's source (choreo.h §8.2).
  */
 bool bse_anchor_lost(void);
-
-/*
- * bse_discovery_point — The TAPESTRY_BSE_ANCHOR_DISCOVERY_POINT latch
- * (see that selector's doc): true and *out set once any element's
- * discovered bit has been seen since bse_init(), false before.  Read-only
- * diagnostics — the latch itself runs inside bse_tick() whatever goal is
- * active.
- */
-bool bse_discovery_point(position_t *out);
 
 /*
  * bse_set_track_scope — Choreo SDK Design doc §7 tracks: tell bse.c

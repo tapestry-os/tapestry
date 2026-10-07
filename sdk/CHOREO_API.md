@@ -210,9 +210,20 @@ Choreos that shouldn't care where the collective happens to be:
 | `"leader"` | the current elected leader |
 | `"self"` | this element (degenerate — station-keeps on itself) |
 | `"lowest-energy"` | the fresh peer (or self) with the lowest `energy_level` |
-| `"discoverer"` | the fresh peer (or self) that has latched its gossiped `discovered` bit (lowest id wins a tie; no anchor at all until someone has discovered) |
-| `"discovery-point"` | WHERE the discoverer was when its bit was first seen — a point latched once per element and never moved again, so the finder can leave (or drop out) without taking the centre with it; not debounced. Give the finder a short `hold` after discovery so its peers hear it before it moves |
+| `"landmark"` | a point the swarm agreed on: the live shared fact (L4, wire v7) of `type` (`"target"`, `"zone"`, `"hazard"`, `"waypoint"`, or an application type `0x80`–`0xFF`; required) at `rank` (default 0 — the earliest-stamped one). Every element holds the same fact table, and one that reboots relearns it from any peer, so all resolve the same point. No anchor until such a fact is held; a different fact taking the rank is adopted after the anchor hold, a retracted one is dropped at once. E.g. `anchor = { select = "landmark", type = "target", rank = 0 }` |
+| `"discovery-point"` | alias for `{ select = "landmark", type = "target", rank = 0 }` |
 | `"id:N"` | the explicit element `N` (testing/debug only) |
+
+Landmarks are published by the application, not by the script: when its
+own sensor confirms a find it calls
+`wm_fact_publish(&wm, FACT_TYPE_TARGET, &pos, 0, FACT_IMMUTABLE | FACT_PRIO(3), &key)`
+(`<tapestry/csm.h>`), and every application that should spread facts calls
+`transport_facts_tick()` once per cycle. A publish within 15 units of a
+target already held reuses it, and a freshly booted element may not publish
+until it has heard its peers' table. `choreoc` emits `CHOREO_USES_LANDMARKS`
+for scripts that read landmarks, so the application knows to publish. In
+Python, pass the element's `tapestry.facts.FactTable` as
+`choreo.tick(wm_entries, scr_state, facts)`.
 
 `"newest"`/`"oldest"` (most/longest recently joined) are named in the
 design doc but not implemented yet — they need join-order tracking the
@@ -355,10 +366,9 @@ case has been identified for either):
 | `element_joined` / `element_lost` | a debounced rise/fall in the fresh participant count (2 s stable, the same lesson [anchor debounce](#frames-and-anchors) encodes — one lucky/unlucky gossip frame must not fire this fleet-wide). |
 | `count_gte` / `count_eq` | the live participant count crosses a `threshold` (required on these two events, rejected on every other). |
 | `anchor_lost` | a `frame = "element"` goal (see above) couldn't resolve any anchor this tick. |
-| `discovery` | **this element's own** `discovered` bit is set (the application latches it when its own sensor finds the target — Tapestry only carries the bit). Takes no `scope`. |
-| `discovery_any` | **any** fresh, trusted element's `discovered` bit is set, including this one's, and regardless of track. Also takes no `scope`. Two events rather than a scope on one because `scope` belongs to `achieved` alone. |
-| `discovery` | **this element's own** `discovered` bit is set (the application latches it when its own sensor finds the target — Tapestry only carries the bit). Takes no `scope`. |
-| `discovery_any` | **any** fresh, trusted element's `discovered` bit is set, including this one's, and regardless of track. Also takes no `scope`. Two events rather than a scope on one because `scope` belongs to `achieved` alone: coupling them would make the collective form of `achieved` change meaning with the discovery predicate. |
+| `discovery` | **this element's own** `discovered` bit is set (the application latches it when its own sensor finds the target; local state, never gossiped). Takes no `scope`. |
+| `landmark_added` | a live shared fact of the transition's `type` (optional; any type if omitted) is held — e.g. `{ event = "landmark_added", type = "target", goto = "found" }`. What the swarm agreed it found, whoever published it. Takes no `scope`. |
+| `landmark_retracted` | no live fact of the `type` is held any more but its retraction (tombstone) is — a false find was withdrawn, so the script can walk back to searching. Takes no `scope`. |
 | `quorum_lost` | this element's quorum just dropped to `LOST` (isolated — no fresh peers). See [Isolation and quorum loss](#isolation-and-quorum-loss) below — this is the one event that composes with, rather than replaces, the runtime's own automatic suspend behavior. |
 
 At most 4 transitions per step (the runtime's fixed-size limit) — the
@@ -407,7 +417,6 @@ A file gives either `[[steps]]` or `[[tracks]]`, never both. Each track's
 |---|---|
 | `requires` | list of capability names, exactly like a step's own `requires` — matches when this element's capabilities satisfy them. |
 | `energy_low` | `true`/`false` — matches when this element's own gossiped health state currently reports low battery. |
-| `discovered` | `true` — matches when this element's own `discovered` bit is set. Migration is debounced like every other track change. |
 
 An empty or omitted `filter` (`filter = {}`, or no `filter` key at all)
 matches **every** element — the catch-all a track table needs at least
