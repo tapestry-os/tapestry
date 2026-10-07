@@ -12,10 +12,15 @@ Writes into a run directory (default logs/ble-<local time>/):
     raw.log     every serial line, prefixed with host time — replayable
     gossip.csv  one row per new gossip frame, de-duplicated by
                 (id, update_seq), so mesh relays of a frame collapse too
+    facts.csv   one row per shared-fact record in a new fact frame (wire
+                v7; each Trickle send is a burst of identical copies,
+                collapsed here)
     status.csv  one row per new debug status packet
     stats.csv   the DK's once-a-second scan counters
     events.log  one time-ordered log: robot text lines, ID-negotiation
-                beacons, reboots, id changes, lost text, DK messages
+                beacons, reboots, id changes, lost text, DK messages, and
+                the first time each shared fact (or its retraction) is
+                heard
     summary.txt per-robot packet counts, estimated loss and RSSI
 
 Debug packets are de-duplicated by (id, seq) — by (address, seq) while a
@@ -25,7 +30,7 @@ never mistaken for a duplicate (a reboot takes longer than the window).  Text ch
 robot: a lost chunk is marked in place, and a partial line is flushed,
 marked, after TEXT_FLUSH_S rather than held.
 
-Packet formats: tapestry-os/include/tapestry/wire.h (gossip) and
+Packet formats: tapestry-os/include/tapestry/wire.h (gossip, facts) and
 examples/cutebot-formation/src/ble_debug.h / ble_debug.c (debug).
 """
 
@@ -51,18 +56,20 @@ from pathlib import Path
 # decode() rejects a header whose version does not match —
 # see wire.h's "Wire schema version" section for why.
 
-WIRE_VERSION = 6
+WIRE_VERSION = 7
 
 MSG_GOSSIP     = 1
 MSG_METRIC     = 2
 MSG_SCR_METRIC = 4
 MSG_DIRECTIVE  = 5
+MSG_FACT       = 6
 
 HEADER_FMT     = struct.Struct('<BBBH')  #  5 bytes: version,type,src_id,payload_len
-GOSSIP_FMT     = struct.Struct('<BfffffffIIBHBBBBBBBBB')  # 49 bytes: id,x,y,z,qw,qx,qy,qz,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,discovered,current_track,reserved0,reserved1,reserved2,reserved3,version
+GOSSIP_FMT     = struct.Struct('<BfffffffIIBHBBBBBBBB')  # 48 bytes: id,x,y,z,qw,qx,qy,qz,logical_clock,update_seq,energy_level,health_flags,relay_qos,achieved,current_track,reserved0,reserved1,reserved2,reserved3,version
 METRIC_FMT     = struct.Struct('<BBBBBBfBBfIffH')  # 30 bytes: element_id,active_total,active_fresh,active_stale,inactive_total,collision_count,fresh_ratio,quorum_held,degraded,confidence,cycle_count,mean_age_ms,mean_position_error,min_separation_x100
 SCR_METRIC_FMT = struct.Struct('<BBBBBBI')  # 10 bytes: element_id,role,leader_id,quorum_state,fresh_count,task_slot,election_count
 DIRECTIVE_FMT  = struct.Struct('<BBBfffffHIB')  # 30 bytes: src_id,target_id,type,x,y,z,spring_k,spacing,goal_id,seq,version
+FACT_FMT       = struct.Struct('<BBHBBHBBIfffHBBHBBIfffHB')  # 53 bytes: sender_id,count,digest,r0_type,r0_origin,r0_epoch,r0_seq,r0_flags,r0_stamp,r0_x,r0_y,r0_z,r0_attr,r1_type,r1_origin,r1_epoch,r1_seq,r1_flags,r1_stamp,r1_x,r1_y,r1_z,r1_attr,version
 # === END GENERATED WIRE PROTOCOL ===
 
 # Must name GOSSIP_FMT's fields in order.  A wire.h change regenerates the
@@ -71,17 +78,23 @@ DIRECTIVE_FMT  = struct.Struct('<BBBfffffHIB')  # 30 bytes: src_id,target_id,typ
 GOSSIP_FIELDS = (
     "id", "x", "y", "z", "qw", "qx", "qy", "qz", "logical_clock",
     "update_seq", "energy_level", "health_flags", "relay_qos", "achieved",
-    "discovered", "current_track", "reserved0", "reserved1", "reserved2",
-    "reserved3", "version",
+    "current_track", "reserved0", "reserved1", "reserved2", "reserved3",
+    "version",
 )
 assert len(GOSSIP_FIELDS) == len(GOSSIP_FMT.unpack(bytes(GOSSIP_FMT.size))), \
     "GOSSIP_FIELDS is out of step with the regenerated GOSSIP_FMT"
 
+# FACT_FMT's record fields, one record: csm.h fact_t.
+FACT_RECORD_FIELDS = ("type", "origin", "epoch", "seq", "flags", "stamp",
+                      "x", "y", "z", "attr")
+assert len(FACT_FMT.unpack(bytes(FACT_FMT.size))) == \
+    4 + 2 * len(FACT_RECORD_FIELDS), \
+    "FACT_RECORD_FIELDS is out of step with the regenerated FACT_FMT"
+FACT_TYPE_NAMES = {1: "target", 2: "zone", 3: "hazard", 4: "waypoint"}
+FACT_RETRACTED = 0x01
+
 AUTH_TAG_SIZE = 4             # CONFIG_TAPESTRY_WIRE_AUTH_ENABLED builds
 ID_NEGOTIATING = 0xFF         # ELEMENT_ID_INVALID
-# cutebot-dars-demo firmware: reserved0..3 carry int16 disc_x/disc_y
-# (hundredths), valid when this health_flags bit is set.
-HEALTH_DISC_POINT_VALID = 0x0100
 
 # ble_debug.c pack_status(): 23 bytes after kind/id/seq.
 STATUS_FMT = struct.Struct("<IbBBhhhhhhhBB")
@@ -98,8 +111,12 @@ REBOOT_SEQ_DROP = 1000        # a debug seq this far backwards means a reboot
 GOSSIP_COLUMNS = [
     "dk_s", "host_time", "addr", "rssi", "adv", "id", "update_seq",
     "x", "y", "z", "yaw_deg", "logical_clock", "energy", "health_flags",
-    "hop", "qos", "achieved", "discovered", "track", "reserved_hex",
-    "disc_x", "disc_y", "version", "auth_tag",
+    "hop", "qos", "achieved", "track", "reserved_hex", "version", "auth_tag",
+]
+FACT_COLUMNS = [
+    "dk_s", "host_time", "addr", "rssi", "sender", "count", "digest",
+    "rec", "type", "origin", "epoch", "seq", "flags", "retracted", "stamp",
+    "x", "y", "z", "attr", "version",
 ]
 STATUS_COLUMNS = [
     "dk_s", "host_time", "addr", "rssi", "id", "seq", "uptime_s", "step",
@@ -149,12 +166,23 @@ def decode_gossip(payload):
     g["extra_len"] = len(extra)
     raw = bytes(g[f"reserved{i}"] for i in range(4))
     g["reserved_hex"] = raw.hex()
-    if g["health_flags"] & HEALTH_DISC_POINT_VALID:
-        dx, dy = struct.unpack("<hh", raw)
-        g["disc_x"], g["disc_y"] = dx / 100.0, dy / 100.0
-    else:
-        g["disc_x"] = g["disc_y"] = ""
     return g
+
+
+def decode_fact(payload):
+    """payload = type byte + fact frame (+ tag).  Returns (header dict,
+    [record dicts]) or None."""
+    body = payload[1:]
+    if len(body) < FACT_FMT.size:
+        return None
+    v = FACT_FMT.unpack_from(body)
+    n = len(FACT_RECORD_FIELDS)
+    hdr = {"sender": v[0], "count": v[1], "digest": v[2], "version": v[-1]}
+    recs = []
+    for i in range(min(v[1], 2)):
+        rec = dict(zip(FACT_RECORD_FIELDS, v[3 + i * n:3 + (i + 1) * n]))
+        recs.append(rec)
+    return hdr, recs
 
 
 def decode_status(payload):
@@ -238,6 +266,10 @@ class Recorder:
         self.gossip = self._csv("gossip.csv", GOSSIP_COLUMNS)
         self.status = self._csv("status.csv", STATUS_COLUMNS)
         self.stats = self._csv("stats.csv", STATS_COLUMNS)
+        self.facts = self._csv("facts.csv", FACT_COLUMNS)
+        self.fact_seen = RecentKeys()     # (sender, frame bytes)
+        self.fact_versions = {}           # fact key -> (stamp, flags)
+        self.fact_frames = {}             # sender -> unique frames
         self.sources = {}         # name -> Source
         self.addr_alias = {}      # debug-set address -> id name
         self.gossip_seen = RecentKeys()   # (id, update_seq)
@@ -303,6 +335,9 @@ class Recorder:
         self._flush_stale()
         if r.kind in ("G", "B"):
             self._gossip(r)
+        elif r.kind == "F" or (r.kind == "U" and r.payload[:1] ==
+                               bytes([MSG_FACT])):
+            self._fact(r)
         elif r.kind in ("S", "T") and len(r.payload) == DEBUG_PAYLOAD_LEN:
             self._debug(r)
 
@@ -367,6 +402,44 @@ class Recorder:
             "hop": g["relay_qos"] & 0x3, "qos": (g["relay_qos"] >> 2) & 0x3,
             "track": g["current_track"],
         })
+
+    # ── shared facts ────────────────────────────────────────────────────
+    def _fact(self, r):
+        d = decode_fact(r.payload)
+        if d is None:
+            self.event(r.addr, "WARN", f"short fact frame ({len(r.payload)} B)")
+            return
+        hdr, recs = d
+        if self.fact_seen.seen((hdr["sender"], r.payload), r.dk_s):
+            return
+        self.fact_frames[hdr["sender"]] = \
+            self.fact_frames.get(hdr["sender"], 0) + 1
+        base = {"dk_s": f"{r.dk_s:.6f}", "host_time": self.host_time,
+                "addr": r.addr, "rssi": r.rssi, **hdr,
+                "digest": f"0x{hdr['digest']:04x}"}
+        if not recs:
+            self.facts.writerow({**base, "rec": ""})
+        for i, rec in enumerate(recs):
+            self.facts.writerow({
+                **base, **rec, "rec": i,
+                "epoch": f"0x{rec['epoch']:04x}",
+                "flags": f"0x{rec['flags']:02x}",
+                "retracted": rec["flags"] & FACT_RETRACTED,
+                "x": round(rec["x"], 3), "y": round(rec["y"], 3),
+                "z": round(rec["z"], 3)})
+            key = (rec["type"], rec["origin"], rec["epoch"], rec["seq"])
+            version = (rec["stamp"], rec["flags"])
+            if self.fact_versions.get(key) == version:
+                continue
+            first = key not in self.fact_versions
+            self.fact_versions[key] = version
+            tname = FACT_TYPE_NAMES.get(rec["type"], f"type{rec['type']}")
+            what = ("retracted" if rec["flags"] & FACT_RETRACTED
+                    else "fact" if first else "updated")
+            self.event(str(hdr["sender"]), "fact",
+                       f"{what} {tname} {rec['origin']}/{rec['epoch']:04x}/"
+                       f"{rec['seq']} at ({rec['x']:.1f},{rec['y']:.1f}) "
+                       f"stamp {rec['stamp']}")
 
     # ── debug telemetry ─────────────────────────────────────────────────
     def _source(self, r):
@@ -485,6 +558,10 @@ class Recorder:
             span = banked + hi - lo + 1
             out.append(f"  {gid:>17}: {n}/{span} frames, "
                        f"{100.0 * (1 - n / span):.1f}% lost, {rs / n:.0f} dBm")
+        out.append("shared-fact frames (unique sends)")
+        for sid, n in sorted(self.fact_frames.items()):
+            out.append(f"  {sid:>17}: {n}")
+        out.append(f"facts heard: {len(self.fact_versions)}")
         out.append(f"garbled lines: {self.bad_lines}, DK resets: {self.dk_resets}")
         text = "\n".join(out) + "\n"
         (self.out / "summary.txt").write_text(text, encoding="utf-8")

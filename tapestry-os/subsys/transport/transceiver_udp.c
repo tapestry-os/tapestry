@@ -11,6 +11,8 @@
  *     rx_directive, other types skipped.  Returns 0 when none are pending.
  * tx_directive/rx_directive: same pattern for tapestry_directive_frame_t
  *     (TAPESTRY_MSG_DIRECTIVE, wire.h v5), sharing the gossip socket.
+ * tx_fact/rx_fact: same again for tapestry_fact_frame_t (TAPESTRY_MSG_FACT,
+ *     wire.h v7).
  *
  * Telemetry (L4/L5 metrics) is sent unicast to CONFIG_TAPESTRY_ORCH_IP via
  * a separate socket opened during init.  These are exposed as UDP-specific
@@ -37,11 +39,11 @@ static int gossip_sock = -1;
 static int metric_sock = -1;
 
 /* Reused buffers — single-threaded main loop, no locking needed.
- * Gossip buffers are sized for the full wire frame (frame + optional auth);
- * tx_buf is shared with directive tx, which is strictly smaller (wire.h's
- * TAPESTRY_MAX_BODY_SIZE comment). */
-static uint8_t tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_WIRE_SIZE];
-static uint8_t rx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_GOSSIP_WIRE_SIZE];
+ * Sized for the largest body behind a header (wire.h's
+ * TAPESTRY_MAX_BODY_SIZE — the v7 fact frame); tx_buf is shared by gossip,
+ * directive and fact tx. */
+static uint8_t tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE];
+static uint8_t rx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE];
 static uint8_t metric_tx_buf[TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_METRIC_FRAME_SIZE];
 
 /* Directive datagrams (TAPESTRY_MSG_DIRECTIVE, v5) arrive on the gossip
@@ -56,6 +58,15 @@ static uint8_t  dir_q[UDP_DIR_QUEUE_DEPTH][TAPESTRY_DIRECTIVE_WIRE_SIZE];
 static uint16_t dir_q_len[UDP_DIR_QUEUE_DEPTH];
 static uint8_t  dir_q_head;
 static uint8_t  dir_q_count;
+
+/* Fact datagrams (TAPESTRY_MSG_FACT, v7): stashed the same way for
+ * udp_rx_fact().  Overflow drops the OLDEST — Trickle re-sends anything
+ * that matters, and a newer frame carries the newer digest. */
+#define UDP_FACT_QUEUE_DEPTH 8
+static uint8_t  fact_q[UDP_FACT_QUEUE_DEPTH][TAPESTRY_FACT_WIRE_SIZE];
+static uint16_t fact_q_len[UDP_FACT_QUEUE_DEPTH];
+static uint8_t  fact_q_head;
+static uint8_t  fact_q_count;
 
 /* ── Helpers ─────────────────────────────────────────────────────────────── */
 
@@ -149,6 +160,22 @@ static void dir_q_push(const uint8_t *payload, uint16_t len)
     dir_q_count++;
 }
 
+/* Stash one fact payload for udp_rx_fact(). */
+static void fact_q_push(const uint8_t *payload, uint16_t len)
+{
+    if (len < TAPESTRY_FACT_FRAME_SIZE || len > TAPESTRY_FACT_WIRE_SIZE) {
+        return;
+    }
+    if (fact_q_count == UDP_FACT_QUEUE_DEPTH) {
+        fact_q_head = (uint8_t)((fact_q_head + 1u) % UDP_FACT_QUEUE_DEPTH);
+        fact_q_count--;
+    }
+    uint8_t slot = (uint8_t)((fact_q_head + fact_q_count) % UDP_FACT_QUEUE_DEPTH);
+    memcpy(fact_q[slot], payload, len);
+    fact_q_len[slot] = len;
+    fact_q_count++;
+}
+
 static int udp_rx(uint8_t *buf, uint16_t max_len)
 {
     if (max_len < TAPESTRY_GOSSIP_WIRE_SIZE || gossip_sock < 0) {
@@ -191,6 +218,11 @@ static int udp_rx(uint8_t *buf, uint16_t max_len)
         if (hdr->type == TAPESTRY_MSG_DIRECTIVE) {
             dir_q_push(rx_buf + TAPESTRY_MSG_HEADER_SIZE,
                        (uint16_t)payload_len);
+            continue;
+        }
+        if (hdr->type == TAPESTRY_MSG_FACT) {
+            fact_q_push(rx_buf + TAPESTRY_MSG_HEADER_SIZE,
+                        (uint16_t)payload_len);
             continue;
         }
         if (hdr->type != TAPESTRY_MSG_GOSSIP ||
@@ -245,6 +277,47 @@ static int udp_tx_directive(const uint8_t *data, uint16_t len)
     return 0;
 }
 
+/* Fact datagrams arrive on the gossip socket and are queued by udp_rx() —
+ * gossip_drain() runs before gossip_drain_facts() in transport_drain(), so
+ * this only empties the queue; one that lands in between waits a cycle. */
+static int udp_rx_fact(uint8_t *buf, uint16_t max_len)
+{
+    if (max_len < TAPESTRY_FACT_WIRE_SIZE || gossip_sock < 0) {
+        return -EINVAL;
+    }
+    if (fact_q_count == 0) {
+        return 0;
+    }
+    uint16_t len = fact_q_len[fact_q_head];
+    memcpy(buf, fact_q[fact_q_head], len);
+    fact_q_head = (uint8_t)((fact_q_head + 1u) % UDP_FACT_QUEUE_DEPTH);
+    fact_q_count--;
+    return (int)len;
+}
+
+static int udp_tx_fact(const uint8_t *data, uint16_t len)
+{
+    if (len > TAPESTRY_FACT_WIRE_SIZE || gossip_sock < 0) {
+        return -EINVAL;
+    }
+
+    const tapestry_fact_frame_t *frame = (const tapestry_fact_frame_t *)data;
+
+    tapestry_msg_header_t *hdr = (tapestry_msg_header_t *)tx_buf;
+    hdr->version     = TAPESTRY_WIRE_VERSION;
+    hdr->type        = TAPESTRY_MSG_FACT;
+    hdr->src_id      = frame->sender_id;
+    hdr->payload_len = len;
+    memcpy(tx_buf + TAPESTRY_MSG_HEADER_SIZE, data, len);
+
+    struct sockaddr_in dst;
+    fill_addr(&dst, CONFIG_TAPESTRY_GOSSIP_BCAST, CONFIG_TAPESTRY_GOSSIP_PORT);
+    zsock_sendto(gossip_sock, tx_buf,
+                 (size_t)(TAPESTRY_MSG_HEADER_SIZE + len), 0,
+                 (struct sockaddr *)&dst, sizeof(dst));
+    return 0;
+}
+
 static void udp_set_power(float level)
 {
     ARG_UNUSED(level);
@@ -258,6 +331,8 @@ const tapestry_transceiver_t transceiver_udp = {
     .set_power    = udp_set_power,
     .tx_directive = udp_tx_directive,
     .rx_directive = udp_rx_directive,
+    .tx_fact      = udp_tx_fact,
+    .rx_fact      = udp_rx_fact,
 };
 
 /* ── UDP-specific extensions (telemetry) ────────────────────────────────── */

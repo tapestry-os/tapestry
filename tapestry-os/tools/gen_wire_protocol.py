@@ -12,8 +12,9 @@ wire.h directly and regenerates the mirrored section of each consumer,
 so there is exactly one place a wire format is ever actually written.
 
 What gets generated (and MUST NOT be hand-edited): TAPESTRY_WIRE_VERSION,
-the tapestry_msg_type_t constants, and the four struct.Struct(...) format
-objects (HEADER_FMT, GOSSIP_FMT, METRIC_FMT, SCR_METRIC_FMT).  Everything
+the tapestry_msg_type_t constants, and the struct.Struct(...) format
+objects (HEADER_FMT, GOSSIP_FMT, METRIC_FMT, SCR_METRIC_FMT, DIRECTIVE_FMT,
+FACT_FMT).  Everything
 else in each consumer file — ports, sim-only extensions (MSG_CONTROL,
 CTRL_FMT — defined in sim_protocol.h, not wire.h), and all encode/decode
 logic — is ordinary hand-maintained code and is left untouched.
@@ -64,7 +65,7 @@ C_TYPE_TO_FMT = {
     "float":    "f",
 }
 
-# (C struct name, Python Struct variable name) — the four wire.h frames
+# (C struct name, Python Struct variable name) — the wire.h frames
 # with a Python mirror.  Order here is the order emitted, not significant
 # to parsing.
 STRUCTS = [
@@ -73,6 +74,7 @@ STRUCTS = [
     ("tapestry_metric_frame_t",     "METRIC_FMT"),
     ("tapestry_scr_metric_frame_t", "SCR_METRIC_FMT"),
     ("tapestry_directive_frame_t",  "DIRECTIVE_FMT"),
+    ("tapestry_fact_frame_t",       "FACT_FMT"),
 ]
 
 

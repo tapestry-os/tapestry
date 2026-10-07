@@ -12,8 +12,16 @@
  *
  * Manufacturer-specific AD layout:
  *   [0-1]  TAPESTRY_BLE_COMPANY_ID  (0xD7, 0x08)
- *   [2]    TAPESTRY_MSG_GOSSIP (1)
- *   [3-N]  gossip frame + optional auth tag (TAPESTRY_GOSSIP_WIRE_SIZE bytes)
+ *   [2]    TAPESTRY_MSG_GOSSIP (1), or TAPESTRY_MSG_FACT (6)
+ *   [3-N]  gossip frame + optional auth tag (TAPESTRY_GOSSIP_WIRE_SIZE bytes),
+ *          or fact frame + optional auth tag (TAPESTRY_FACT_WIRE_SIZE bytes)
+ *
+ * Fact frames (wire.h v7) ride a SECOND advertising set so the state set's
+ * payload never alternates.  Each tx_fact() starts that set for
+ * FACT_ADV_EVENTS advertising events at ~30 ms and the controller stops it
+ * on its own (num_events, as Zephyr's BLE Mesh advertiser does): the radio
+ * is idle between Trickle sends.  Needs CONFIG_BT_EXT_ADV_MAX_ADV_SET >= 2
+ * (3 with the cutebot's BLE debug set).
  *
  * Use opt=0 (not BT_LE_ADV_OPT_USE_IDENTITY) so each board advertises with a
  * session-unique RPA.  When CONFIG_BT_SETTINGS is absent and FICR is
@@ -81,6 +89,9 @@ LOG_MODULE_REGISTER(transceiver_ble, LOG_LEVEL_INF);
  * than the radio if the frame outgrows the budget.
  */
 #define MFR_DATA_MAX_SIZE  200u   /* conservative single-PDU ceiling — see above */
+#define FACT_MFR_DATA_SIZE (MFR_OFF_FRAME + TAPESTRY_FACT_WIRE_SIZE)
+BUILD_ASSERT(FACT_MFR_DATA_SIZE <= MFR_DATA_MAX_SIZE,
+             "Tapestry fact AD record exceeds the single-PDU budget.");
 BUILD_ASSERT(MFR_DATA_SIZE <= MFR_DATA_MAX_SIZE,
              "Tapestry gossip AD record exceeds this conservative single-PDU "
              "extended-advertising budget. Verify the real per-PDU limit on "
@@ -109,6 +120,10 @@ BUILD_ASSERT(MFR_DATA_SIZE <= MFR_DATA_MAX_SIZE,
  * verify authentication before interpreting the frame content. */
 K_MSGQ_DEFINE(ble_rx_q,        TAPESTRY_GOSSIP_WIRE_SIZE, RX_QUEUE_DEPTH, 4);
 K_MSGQ_DEFINE(ble_discovery_q, sizeof(uint32_t),           RX_QUEUE_DEPTH, 4);
+/* Fact frames are rare (Trickle-paced) and each arrives FACT_ADV_EVENTS
+ * times per send, so a short queue is plenty. */
+#define FACT_RX_QUEUE_DEPTH 8
+K_MSGQ_DEFINE(ble_fact_rx_q,   TAPESTRY_FACT_WIRE_SIZE,   FACT_RX_QUEUE_DEPTH, 4);
 
 static uint8_t mfr_data[MFR_DATA_SIZE];
 
@@ -121,12 +136,22 @@ static struct bt_data adv_data[] = {
  * update its data.  NULL cb: no advertiser-activity notifications needed. */
 static struct bt_le_ext_adv *ext_adv;
 
+/* Fact set: a separate payload and set, bursting FACT_ADV_EVENTS events per
+ * send at the fast interval (30-37.5 ms). */
+#define FACT_ADV_EVENTS 3u
+static uint8_t fact_mfr_data[FACT_MFR_DATA_SIZE];
+static struct bt_data fact_adv_data[] = {
+    BT_DATA(BT_DATA_MANUFACTURER_DATA, fact_mfr_data, FACT_MFR_DATA_SIZE),
+};
+static struct bt_le_ext_adv *fact_adv;
+
 /* ── Scan callback ───────────────────────────────────────────────────────── */
 
 struct parse_ctx {
     bool    found;
+    bool    is_fact;
     int8_t  rssi;
-    uint8_t wire[TAPESTRY_GOSSIP_WIRE_SIZE]; /* raw frame + optional auth tag */
+    uint8_t wire[TAPESTRY_FACT_WIRE_SIZE];   /* raw frame + optional auth tag */
 };
 
 __weak void ble_transceiver_other_tapestry_ad(const uint8_t *data, uint8_t len,
@@ -151,6 +176,13 @@ static bool parse_ad_element(struct bt_data *data, void *user_data)
         d[MFR_OFF_COMPANY + 1] != TAPESTRY_BLE_COMPANY_ID_HI) {
         return true;
     }
+    if (d[MFR_OFF_TYPE] == TAPESTRY_MSG_FACT &&
+        data->data_len >= FACT_MFR_DATA_SIZE) {
+        memcpy(ctx->wire, d + MFR_OFF_FRAME, TAPESTRY_FACT_WIRE_SIZE);
+        ctx->found   = true;
+        ctx->is_fact = true;
+        return false;
+    }
     if (data->data_len < MFR_DATA_SIZE || d[MFR_OFF_TYPE] != TAPESTRY_MSG_GOSSIP) {
         ble_transceiver_other_tapestry_ad(d, data->data_len, ctx->rssi);
         return true;
@@ -170,6 +202,12 @@ static void scan_cb(const bt_addr_le_t *addr, int8_t rssi, uint8_t adv_type,
     struct parse_ctx ctx = { .rssi = rssi };
     bt_data_parse(buf, parse_ad_element, &ctx);
     if (!ctx.found) {
+        return;
+    }
+    if (ctx.is_fact) {
+        if (k_msgq_put(&ble_fact_rx_q, ctx.wire, K_NO_WAIT) != 0) {
+            LOG_DBG("BLE fact RX queue full — frame dropped");
+        }
         return;
     }
 
@@ -246,6 +284,21 @@ static int ble_init(void)
         return ret;
     }
 
+    fact_mfr_data[MFR_OFF_COMPANY]     = TAPESTRY_BLE_COMPANY_ID_LO;
+    fact_mfr_data[MFR_OFF_COMPANY + 1] = TAPESTRY_BLE_COMPANY_ID_HI;
+    fact_mfr_data[MFR_OFF_TYPE]        = TAPESTRY_MSG_FACT;
+    ret = bt_le_ext_adv_create(BT_LE_ADV_PARAM(BT_LE_ADV_OPT_EXT_ADV,
+                                               BT_GAP_ADV_FAST_INT_MIN_1,
+                                               BT_GAP_ADV_FAST_INT_MAX_1,
+                                               NULL),
+                               NULL, &fact_adv);
+    if (ret) {
+        /* Not fatal: gossip still works, this element just never sends
+         * facts (it still receives them). */
+        LOG_ERR("fact adv set: %d — raise CONFIG_BT_EXT_ADV_MAX_ADV_SET", ret);
+        fact_adv = NULL;
+    }
+
     LOG_INF("BLE transceiver ready (scan + extended advertising)");
     return 0;
 }
@@ -277,6 +330,46 @@ static int ble_rx(uint8_t *buf, uint16_t max_len)
     return (int)TAPESTRY_GOSSIP_WIRE_SIZE;
 }
 
+static int ble_tx_fact(const uint8_t *data, uint16_t len)
+{
+    if (fact_adv == NULL) {
+        return -ENODEV;
+    }
+    if (len > TAPESTRY_FACT_WIRE_SIZE) {
+        return -EINVAL;
+    }
+    /* A burst still running (Trickle at FACT_IMIN_MS can fire again within
+     * ~100 ms) is cut short and restarted with the newer frame. */
+    (void)bt_le_ext_adv_stop(fact_adv);
+    memcpy(fact_mfr_data + MFR_OFF_FRAME, data, len);
+    int ret = bt_le_ext_adv_set_data(fact_adv, fact_adv_data,
+                                     ARRAY_SIZE(fact_adv_data), NULL, 0);
+    if (ret) {
+        LOG_WRN("fact set_data: %d", ret);
+        return ret;
+    }
+    const struct bt_le_ext_adv_start_param start = {
+        .timeout    = 0,
+        .num_events = FACT_ADV_EVENTS,
+    };
+    ret = bt_le_ext_adv_start(fact_adv, &start);
+    if (ret) {
+        LOG_WRN("fact adv start: %d", ret);
+    }
+    return ret;
+}
+
+static int ble_rx_fact(uint8_t *buf, uint16_t max_len)
+{
+    if (max_len < TAPESTRY_FACT_WIRE_SIZE) {
+        return -EINVAL;
+    }
+    if (k_msgq_get(&ble_fact_rx_q, buf, K_NO_WAIT) != 0) {
+        return 0;
+    }
+    return (int)TAPESTRY_FACT_WIRE_SIZE;
+}
+
 static void ble_set_power(float level)
 {
     ARG_UNUSED(level);
@@ -289,6 +382,8 @@ const tapestry_transceiver_t transceiver_ble = {
     .tx        = ble_tx,
     .rx        = ble_rx,
     .set_power = ble_set_power,
+    .tx_fact   = ble_tx_fact,
+    .rx_fact   = ble_rx_fact,
 };
 
 /* ── BLE-specific extensions (auto-ID boot protocol) ────────────────────── */

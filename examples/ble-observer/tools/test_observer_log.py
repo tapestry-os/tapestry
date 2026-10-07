@@ -15,7 +15,7 @@ ADDR_D = "C0:00:00:00:00:02"
 def gossip_line(t_s, eid, useq, x=1.5, y=2.5, health=0, reserved=b"\0\0\0\0",
                 tag=b"", addr=ADDR_G, hop=0):
     frame = ol.GOSSIP_FMT.pack(eid, x, y, 0.0, 1.0, 0.0, 0.0, 0.0, 7, useq,
-                               90, health, hop, 0, 0, 0, *reserved,
+                               90, health, hop, 0, 0, *reserved,
                                ol.WIRE_VERSION)
     payload = bytes([ol.MSG_GOSSIP]) + frame + tag
     kind = "B" if eid == 0xFF else "G"
@@ -68,17 +68,48 @@ def test_gossip_dedup_and_relays(tmp_path):
     ])
     g = rows(tmp_path, "gossip.csv")
     assert [r["update_seq"] for r in g] == ["10", "11"]
-    assert g[0]["x"] == "1.5" and g[0]["disc_x"] == ""
+    assert g[0]["x"] == "1.5"
 
 
-def test_disc_point_and_auth_tag(tmp_path):
-    reserved = struct.pack("<hh", 1234, -567)
-    run(tmp_path, [gossip_line(1.0, 1, 5, health=0x0100, reserved=reserved,
+def test_auth_tag_and_reserved_bytes(tmp_path):
+    run(tmp_path, [gossip_line(1.0, 1, 5, health=0x0100,
+                               reserved=b"\x01\x02\x03\x04",
                                tag=b"\xaa\xbb\xcc\xdd")])
     g = rows(tmp_path, "gossip.csv")[0]
-    assert (g["disc_x"], g["disc_y"]) == ("12.34", "-5.67")
+    assert g["reserved_hex"] == "01020304"
     assert g["auth_tag"] == "aabbccdd"
     assert g["health_flags"] == "0x0100"
+
+
+def fact_line(t_s, sender, digest, recs, kind="F", addr=ADDR_G):
+    flat = []
+    for r in recs + [None] * (2 - len(recs)):
+        flat += list(r) if r else [0] * 10
+    frame = ol.FACT_FMT.pack(sender, len(recs), digest, *flat, ol.WIRE_VERSION)
+    payload = bytes([ol.MSG_FACT]) + frame
+    return f"{int(t_s * 1e6)},-58,{addr},E,{kind},{sender},{digest},{payload.hex()}"
+
+
+def test_fact_frames_are_deduplicated_and_logged(tmp_path):
+    leak = (1, 0, 0x0A0A, 0, 0x0E, 1, 69.0, 68.4, 0.0, 0)
+    _, ev = run(tmp_path, [
+        fact_line(1.00, 0, 0xBC77, [leak]),
+        fact_line(1.03, 0, 0xBC77, [leak]),       # same burst
+        fact_line(9.00, 2, 0xBC77, [leak]),       # a peer re-sends it
+        fact_line(9.50, 3, 0x0000, []),            # rebooted robot's beacon
+        fact_line(9.60, 2, 0x1234, [leak[:4] + (0x0F, 2) + leak[6:]],
+                  kind="U"),                       # retracted; old DK firmware
+    ])
+    f = rows(tmp_path, "facts.csv")
+    assert [r["sender"] for r in f] == ["0", "2", "3", "2"]
+    assert (f[0]["type"], f[0]["x"], f[0]["y"], f[0]["epoch"]) == \
+        ("1", "69.0", "68.4", "0x0a0a")
+    assert f[2]["count"] == "0" and f[2]["rec"] == ""
+    assert f[3]["retracted"] == "1"
+    facts = [e for e in ev if " fact " in e]
+    assert len(facts) == 2
+    assert "fact target 0/0a0a/0 at (69.0,68.4) stamp 1" in facts[0]
+    assert "retracted target 0/0a0a/0" in facts[1]
 
 
 def test_beacon_logged_once(tmp_path):

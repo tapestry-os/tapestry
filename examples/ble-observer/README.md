@@ -5,11 +5,14 @@ advertisement in range and streams it to a Linux host over the DK's USB
 serial, so an untethered robot run can be debugged afterwards. It never
 transmits and never joins the collective.
 
-It records two kinds of traffic:
+It records three kinds of traffic:
 
 - **Gossip**: every element's state frame (`tapestry-os/include/tapestry/wire.h`),
   sent as non-connectable *extended* advertising. This includes boot-time
   ID-negotiation beacons, which use the same frame with id 255.
+- **Shared facts** (wire v7): each element's fact frames — up to two fact
+  records plus a digest of its fact table — sent in short bursts on their
+  own extended advertising set, paced by Trickle.
 - **Debug telemetry**: the legacy advertising set that
   `examples/cutebot-formation` adds when built with
   `-DEXTRA_CONF_FILE=ble_debug.conf`. It carries status packets and a log text
@@ -87,9 +90,9 @@ t_us,rssi,addr,adv,kind,id,seq,hex
 | `rssi` | dBm |
 | `addr` | advertiser address: random, per boot; a robot's gossip and debug sets have different ones |
 | `adv` | `L` legacy / `E` extended; a trailing `!` marks an incomplete report |
-| `kind` | `G` gossip, `B` negotiation beacon, `S` debug status, `T` debug text, `U` other Tapestry data |
-| `id` | element id (255 while negotiating) |
-| `seq` | `G`: update_seq, `B`: nonce, `S`/`T`: debug packet seq |
+| `kind` | `G` gossip, `B` negotiation beacon, `F` fact frame, `S` debug status, `T` debug text, `U` other Tapestry data |
+| `id` | element id (255 while negotiating); `F`: the sender |
+| `seq` | `G`: update_seq, `B`: nonce, `F`: table digest, `S`/`T`: debug packet seq |
 | `hex` | manufacturer data after the company id, starting with the type/kind byte |
 
 Lines starting with `#` come from the DK itself: a banner at boot, then a
@@ -113,10 +116,11 @@ relative to where you start the script (`--out DIR` overrides it):
 | File | Contents |
 |---|---|
 | `raw.log` | every serial line with host time; `--replay raw.log` re-decodes it |
-| `gossip.csv` | one row per new `(id, update_seq)`, so relays collapse; includes `disc_x`/`disc_y` when the frame flags them valid |
+| `gossip.csv` | one row per new `(id, update_seq)`, so relays collapse |
+| `facts.csv` | one row per fact record in a new fact frame (a burst's copies collapse); a digest-only frame (an empty table, e.g. a rebooted robot) is one row with no record |
 | `status.csv` | one row per new debug status packet |
 | `stats.csv` | the DK's per-second counters |
-| `events.log` | one time-ordered log of robot text lines, beacons, id assignment, reboots, lost text and DK messages |
+| `events.log` | one time-ordered log of robot text lines, beacons, id assignment, reboots, lost text, DK messages, and the first time each fact (or its retraction) is heard |
 | `summary.txt` | per robot: unique packets / sequence span (= loss), mean RSSI |
 
 Debug packets are de-duplicated by `(id, seq)`, or by `(address, seq)`

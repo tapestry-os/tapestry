@@ -59,6 +59,28 @@ void gossip_send_directive(const tapestry_directive_frame_t *d);
 bool gossip_poll_directive(tapestry_directive_frame_t *out,
                            element_id_t own_id);
 
+/* ── Fact frames (wire.h v7) ─────────────────────────────────────────────── */
+
+/* Pack the next one or two of wm's facts (rotation) and its digest into
+ * one frame.  Split from gossip_send_facts() so hosts without a
+ * transceiver (tests, simulations) build the exact bytes elements send. */
+void gossip_fact_frame_build(world_model_t *wm, element_id_t own_id,
+                             tapestry_fact_frame_t *out);
+
+/* Merge one received fact frame into wm (records, then digest — see
+ * gossip.c).  Drops a wrong-version frame and our own id's.  Returns 1 if
+ * applied, 0 if dropped. */
+int gossip_fact_frame_apply(world_model_t *wm, element_id_t own_id,
+                            const tapestry_fact_frame_t *f);
+
+/* Build, sign (when auth is enabled) and send one fact frame via every
+ * transceiver with tx_fact. */
+void gossip_send_facts(world_model_t *wm, element_id_t own_id);
+
+/* Drain every transceiver's fact frames through the receive gates into
+ * wm.  Returns frames applied. */
+int gossip_drain_facts(world_model_t *wm, element_id_t own_id);
+
 /* ── Auto-ID discovery (boot window only) ────────────────────────────────── */
 /* Medium-agnostic primitives behind transport_negotiate_id().  A discovery
  * beacon is an ordinary gossip frame with id = ELEMENT_ID_INVALID and the

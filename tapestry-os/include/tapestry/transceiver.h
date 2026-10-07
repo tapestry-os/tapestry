@@ -69,6 +69,15 @@ typedef struct {
      * unchanged with these members zero-initialized. */
     int (*tx_directive)(const uint8_t *data, uint16_t len);
     int (*rx_directive)(uint8_t *buf, uint16_t max_len);
+
+    /* Fact frames (wire.h v7, TAPESTRY_MSG_FACT) — same contract, raw
+     * tapestry_fact_frame_t bytes (+ auth tag).  OPTIONAL like the
+     * directive pair: NULL means this medium carries no facts.  tx_fact is
+     * a one-shot send paced by Trickle (gossip.c), not a payload that
+     * persists between calls — on BLE it starts a short burst on its own
+     * advertising set and lets the controller stop it. */
+    int (*tx_fact)(const uint8_t *data, uint16_t len);
+    int (*rx_fact)(uint8_t *buf, uint16_t max_len);
 } tapestry_transceiver_t;
 
 #endif /* TAPESTRY_TRANSCEIVER_H */

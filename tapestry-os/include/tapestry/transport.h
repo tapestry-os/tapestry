@@ -56,8 +56,22 @@ int transport_init(void);
 void transport_send(const element_state_t *own_state, uint8_t qos_tier);
 
 /* Drain all pending received gossip frames into wm.  Skips own_id frames.
- * Returns the total number of frames processed across all transports. */
+ * Also merges any received shared-fact frames (wire v7) into wm's fact
+ * table.  Returns the number of GOSSIP frames processed across all
+ * transports. */
 int transport_drain(world_model_t *wm, element_id_t own_id);
+
+/* ── Shared facts (wire.h v7) ────────────────────────────────────────────── */
+
+/* Advance the fact Trickle timer by elapsed_ms and, when it is due, send
+ * one fact frame (the next one or two records plus the table digest) on
+ * every medium that carries facts.  Call once per cycle, after
+ * transport_drain(), from every application that should spread facts —
+ * an element that only drains still learns them but never re-sends, so a
+ * peer that rejoins later cannot learn them from it.  Returns true if a
+ * frame was sent.  Set wm's epoch (wm_fact_set_epoch()) once at boot. */
+bool transport_facts_tick(world_model_t *wm, element_id_t own_id,
+                          uint32_t elapsed_ms);
 
 /* ── Remote directives (wire.h v5) ───────────────────────────────────────── */
 

@@ -25,6 +25,7 @@
  *   3  (reserved — simulation control; never used on hardware)
  *   4  TAPESTRY_MSG_SCR_METRIC   — element → telemetry collector (L5)
  *   5  TAPESTRY_MSG_DIRECTIVE    — BSE host → element (remote L6, v5)
+ *   6  TAPESTRY_MSG_FACT         — element ↔ element shared facts (L4, v7)
  *
  * BLE wire identification
  * ────────────────────────
@@ -145,8 +146,16 @@
  * last field (see its own doc below), so any new field is inserted
  * before it and necessarily moves its offset; not guarding a translation
  * error the way v2/v3 were, same as v4/v5.
+ *
+ * v7: adds tapestry_fact_frame_t (TAPESTRY_MSG_FACT) — L4 shared facts
+ * (csm.h), a replicated table of facts about the world re-sent on a
+ * Trickle schedule — and removes `discovered` from the gossip frame
+ * (49 -> 48 bytes): what a finder found is now a fact every element holds
+ * (and a rebooted element relearns from any peer), not a per-element bit
+ * whose meaning depended on where its sender happened to be.  The bit
+ * stays in element_state_t as local-only state.
  */
-#define TAPESTRY_WIRE_VERSION   6u
+#define TAPESTRY_WIRE_VERSION   7u
 
 /* ── Message types ───────────────────────────────────────────────────────── */
 
@@ -156,6 +165,7 @@ typedef enum {
     /* 3: sim-only control — never transmitted by hardware elements */
     TAPESTRY_MSG_SCR_METRIC = 4,
     TAPESTRY_MSG_DIRECTIVE  = 5,
+    TAPESTRY_MSG_FACT       = 6,
 } tapestry_msg_type_t;
 
 /* ── Message header ──────────────────────────────────────────────────────── */
@@ -177,10 +187,10 @@ typedef struct {
  * Carries one element's authoritative state to all peers.
  * Sent every GOSSIP_INTERVAL_MS; received and fed into wm_receive_gossip().
  *
- * Python format: struct.Struct('<BfffffffIIBHBBBBBBBBB')
- * Size: 49 bytes
+ * Python format: struct.Struct('<BfffffffIIBHBBBBBBBB')
+ * Size: 48 bytes
  * Fields: id, x, y, z, qw, qx, qy, qz, logical_clock, update_seq,
- *         energy_level, health_flags, relay_qos, achieved, discovered,
+ *         energy_level, health_flags, relay_qos, achieved,
  *         current_track, reserved0, reserved1, reserved2, reserved3,
  *         version
  *
@@ -223,14 +233,6 @@ typedef struct {
  *   peers aggregate a collective ("scope = all") achievement predicate
  *   from gossiped state alone; see choreo_collective_achieved().
  *   Eventually consistent like every other gossiped field — no barrier.
- *
- * discovered: this element's own-detected "found the target" bit (v6,
- *   the discovery feature's ANCHOR_DISCOVERER / CHOREO_EVENT_DISCOVERY) as
- *   of its last gossip send — 0 or 1, same shape and same eventual-consistency
- *   caveat as `achieved` above. Sticky once set locally (an element does
- *   not un-discover) — see element_state_t's own doc. Lets peers resolve
- *   an ELEMENT-frame anchor to whichever peer discovered, and a
- *   collective CHOREO_EVENT_DISCOVERY, purely from gossiped wm state.
  *
  * current_track: this element's active track index (choreo_current_
  *   track(), v4).  0 for every element on a script with no [[tracks]] —
@@ -277,7 +279,6 @@ typedef struct {
                                     /* u8 through v5 — see csm.h)              */
     uint8_t  relay_qos;            /* hop_count[1:0] | qos_tier[3:2] — packed */
     uint8_t  achieved;             /* own-goal achievement predicate, 0/1     */
-    uint8_t  discovered;           /* own-detected target bit, 0/1 (v6)       */
     uint8_t  current_track;        /* active track index (v4, choreo.h §7)    */
     /* Always 0, unread by any code today — future fields (v6). Four
      * individually named bytes, not uint8_t reserved[4]: tools/
@@ -292,7 +293,7 @@ typedef struct {
     uint8_t  version;              /* TAPESTRY_WIRE_VERSION — see above       */
 } __attribute__((packed)) tapestry_gossip_frame_t;
 
-#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 49 */
+#define TAPESTRY_GOSSIP_FRAME_SIZE   ((uint16_t)sizeof(tapestry_gossip_frame_t))   /* 48 */
 
 /* ── relay_qos packing ───────────────────────────────────────────────────── */
 
@@ -445,22 +446,91 @@ typedef struct {
 #define TAPESTRY_DIRECTIVE_WIRE_SIZE   \
     ((uint16_t)(TAPESTRY_DIRECTIVE_FRAME_SIZE + TAPESTRY_WIRE_AUTH_TAG_SIZE))
 
+/* ── Fact frame (v7) ─────────────────────────────────────────────────────── */
+/*
+ * Carries up to two L4 shared-fact records (csm.h's fact_t) plus a digest
+ * of the sender's whole fact table.  Sent on a Trickle schedule
+ * (wm_fact_trickle_tick()), separate from the 500 ms state gossip; on BLE
+ * it rides its own advertising set, so the state set's payload never
+ * alternates.  A frame with count 0 is a digest-only beacon: a freshly
+ * booted element's empty table announces itself so its peers notice the
+ * mismatch and re-send at FACT_IMIN_MS.
+ *
+ * Python format: struct.Struct('<BBHBBHBBIfffHBBHBBIfffHB')
+ * Size: 53 bytes, 57 with the auth tag.  The smallest transport budget is
+ *   the cutebot BLE build's CONFIG_BT_CTLR_ADV_DATA_LEN_MAX=64: less 2 AD
+ *   header and 3 company/type bytes leaves 59, so frame + tag fit with 2
+ *   bytes to spare.  Syslink P2P (64-byte MTU, 1 port byte) has 63.
+ *
+ * sender_id: first byte, as in every frame.
+ * count: valid records, 0..2; unused record bytes are zero.
+ * digest: wm_fact_digest() of the sender's table AFTER this frame's records
+ *   were packed — what receivers compare with their own (wm_fact_heard_
+ *   digest()).
+ * rN_*: fact_t fields in declaration order — type, origin, epoch, seq,
+ *   flags, stamp, x, y, z, attr (24 bytes a record).  Flattened rather
+ *   than a nested record struct because tools/gen_wire_protocol.py parses
+ *   only "TYPE name;" lines.
+ * version: TAPESTRY_WIRE_VERSION, last field — same rationale as the
+ *   gossip frame.
+ *
+ * When CONFIG_TAPESTRY_WIRE_AUTH_ENABLED is set, TAPESTRY_WIRE_AUTH_TAG_SIZE
+ * additional bytes follow the frame on the wire (not counted here).
+ */
+typedef struct {
+    uint8_t  sender_id;
+    uint8_t  count;
+    uint16_t digest;
+    uint8_t  r0_type;
+    uint8_t  r0_origin;
+    uint16_t r0_epoch;
+    uint8_t  r0_seq;
+    uint8_t  r0_flags;
+    uint32_t r0_stamp;
+    float    r0_x;
+    float    r0_y;
+    float    r0_z;
+    uint16_t r0_attr;
+    uint8_t  r1_type;
+    uint8_t  r1_origin;
+    uint16_t r1_epoch;
+    uint8_t  r1_seq;
+    uint8_t  r1_flags;
+    uint32_t r1_stamp;
+    float    r1_x;
+    float    r1_y;
+    float    r1_z;
+    uint16_t r1_attr;
+    uint8_t  version;
+} __attribute__((packed)) tapestry_fact_frame_t;
+
+#define TAPESTRY_FACT_FRAME_SIZE  ((uint16_t)sizeof(tapestry_fact_frame_t))  /* 53 */
+#define TAPESTRY_FACT_RECORD_SIZE 24u
+#define TAPESTRY_FACT_RECORDS_MAX 2u
+
+/* Full on-wire size: frame + optional HMAC auth tag */
+#define TAPESTRY_FACT_WIRE_SIZE   \
+    ((uint16_t)(TAPESTRY_FACT_FRAME_SIZE + TAPESTRY_WIRE_AUTH_TAG_SIZE))
+
 /* ── Worst-case receive buffer size ──────────────────────────────────────── */
 /*
- * Actual max of the two bodies that ever ride behind tapestry_msg_header_t
+ * Actual max of the bodies that ever ride behind tapestry_msg_header_t
  * (TAPESTRY_SCR_METRIC_FRAME_SIZE and TAPESTRY_DIRECTIVE_WIRE_SIZE are
- * smaller than both and never dominate) — not a hardcoded assumption
+ * smaller and never dominate; the v7 fact frame is the largest today) — not a hardcoded assumption
  * about which one wins.  It used
  * to be hardcoded ("metric frame > gossip wire frame, so metric wins"),
  * which silently stopped being true once tapestry_gossip_frame_t grew
  * past the metric frame's 30 bytes (v3: z + orientation) and would have
  * left every RX buffer sized off this macro undersized.
  */
-#define TAPESTRY_MAX_BODY_SIZE \
+#define TAPESTRY_MAX_BODY_SIZE_2 \
     (TAPESTRY_GOSSIP_WIRE_SIZE > TAPESTRY_METRIC_FRAME_SIZE \
      ? TAPESTRY_GOSSIP_WIRE_SIZE : TAPESTRY_METRIC_FRAME_SIZE)
+#define TAPESTRY_MAX_BODY_SIZE \
+    (TAPESTRY_FACT_WIRE_SIZE > TAPESTRY_MAX_BODY_SIZE_2 \
+     ? TAPESTRY_FACT_WIRE_SIZE : TAPESTRY_MAX_BODY_SIZE_2)
 
 #define TAPESTRY_MAX_MSG_SIZE \
-    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 54 (58 with auth) */
+    (TAPESTRY_MSG_HEADER_SIZE + TAPESTRY_MAX_BODY_SIZE)   /* 58 (62 with auth) */
 
 #endif /* TAPESTRY_WIRE_H */
