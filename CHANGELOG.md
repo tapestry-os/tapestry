@@ -5,6 +5,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+> **Breaking:** wire v6 → v7. Reflash every element from one build.
+
+### Added
+- **L4 shared facts** (wire v7, `TAPESTRY_MSG_FACT`): a replicated table of
+  facts about the world (`wm_fact_publish()`/`_retract()`/`_find()` in
+  `csm.h`, `facts.c`), keyed by (type, origin, per-boot epoch, seq), merged
+  deterministically, re-sent on a Trickle schedule (`transport_facts_tick()`)
+  so a rebooted element relearns them from any peer. Fact frames carry two
+  records and a table digest; BLE sends them as 3-event bursts on their own
+  advertising set, syslink on P2P port 1, UDP as message type 6. Python
+  mirror `tapestry.facts`, parity-tested against the C engine.
+- **Landmarks in Choreo**: `anchor = { select = "landmark", type, rank }`
+  (`TAPESTRY_BSE_ANCHOR_LANDMARK`) and events `landmark_added` /
+  `landmark_retracted` with an optional `type`. `choreoc` emits
+  `CHOREO_USES_LANDMARKS`.
+
+### Changed
+- `anchor = { select = "discovery-point" }` is now an alias for the first
+  target landmark. The leak demo publishes its find as a target fact, so a
+  robot switched off and on rings the agreed point instead of a peer's slot.
+- `element_state_t::discovered` is local only; the `discovery` event still
+  reads it.
+
+### Removed
+- `discovered` byte from the gossip frame (49 → 48 bytes), the
+  `"discoverer"` anchor, the `discovery_any` event, and the `discovered = true`
+  track filter.
+
 ## [1.1.0] - 2026-09-19
 
 > **Breaking:** wire v4 → v6 (v5 added the directive frame, v6 the discovery
