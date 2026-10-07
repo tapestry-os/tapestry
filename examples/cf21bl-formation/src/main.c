@@ -50,17 +50,13 @@
  *
  * Safety layer (see the flight_state_t machine below):
  *   - Own battery LOW (cf21bl_pm_battery_low(), DEMO_MODE_CHOREO only):
- *     this file preempts the running Choreo goal/script with a CONVERGE-
- *     to-home goal (choreo_preempt_goal()) — a graceful, L6/L7-mediated
- *     return-to-base rather than an abrupt stop, and the demo for the
- *     v1.0 goal-queue-with-preemption feature. The original goal/script
- *     resumes automatically if this drone somehow un-preempts (it
- *     doesn't in practice — see the call site) rather than being lost.
+ *     land in place (why=battery).  It used to fly home, but after an
+ *     EXCHANGE home is where the partner lands — see the call site.
  *   - Own battery CRITICAL (cf21bl_pm_battery_critical(), a lower/later
  *     threshold than LOW): still handled independently inside
  *     cf21bl_stabilizer.c (CONFIG_CF21BL_PM forced-landing path) — no code
  *     needed here, and it does not depend on or affect other drones. This
- *     is the hard backstop if RTH above doesn't land in time.
+ *     is the hard backstop if the LOW landing above doesn't finish in time.
  *   - Own lighthouse fix lost: this file must intervene, because the
  *     stabilizer reinterprets stale linear.x/y as velocity feedforward
  *     once POS_HOLD falls back — holding a position-style value through
@@ -311,6 +307,7 @@ typedef enum {
                              * on_departure policy responded (land_in_place,
                              * a completed recall, or a HOLD that timed
                              * out) — see choreo_departure_triggered() */
+    LAND_REASON_BATTERY,    /* battery low — premature landing in place    */
 } land_reason_t;
 
 #ifdef CONFIG_DEMO_MODE_CHOREO
@@ -323,6 +320,7 @@ static const char *land_reason_name(land_reason_t r)
     case LAND_REASON_BACKSTOP: return " why=backstop";
     case LAND_REASON_FIXLOSS:  return " why=fixloss";
     case LAND_REASON_GEOFENCE: return " why=geofence";
+    case LAND_REASON_BATTERY:  return " why=battery";
     case LAND_REASON_DEPARTURE:
         /* Which policy actually executed (RECALL that fell back to
          * landing is reported as LAND_IN_PLACE by choreo.c itself — see
@@ -356,7 +354,8 @@ static tapestry_departure_reason_t land_departure_reason(land_reason_t r)
      * this whole mechanism was built to keep (see csm.h's rationale).
      * COMPLETE is the closest fit: like a normal finish, this is a
      * graceful, policy-decided stop, not an emergency backstop/fixloss/
-     * geofence condition. */
+     * geofence condition.  BATTERY likewise: a deliberate early landing. */
+    case LAND_REASON_BATTERY:
     case LAND_REASON_DEPARTURE:
     case LAND_REASON_COMPLETE:
     case LAND_REASON_NONE:
@@ -373,14 +372,12 @@ static tapestry_departure_reason_t land_departure_reason(land_reason_t r)
  * function warning there.
  *
  * "home" for this platform is the lighthouse-frame position
- * cf21bl_stabilizer.c latches at arming/first fix (same source RTH's own
- * inline CONVERGE goal already uses). A plain C function pointer has no
- * closure over main()'s locals, unlike RTH's inline construction, so z
- * (own current commanded cruise altitude — 0 would ramp to ground level
- * mid-flight while still translating home, same reasoning as RTH's own
- * comment) is mirrored into g_departure_recall_z_m once per tick, right
- * before choreo_tick() runs, the only point this callback can be invoked
- * from. */
+ * cf21bl_stabilizer.c latches at arming/first fix. A plain C function
+ * pointer has no closure over main()'s locals, so z (own current commanded
+ * cruise altitude — 0 would ramp to ground level mid-flight while still
+ * translating home) is mirrored into g_departure_recall_z_m once per tick,
+ * right before choreo_tick() runs, the only point this callback can be
+ * invoked from. */
 static float g_departure_recall_z_m;
 
 static bool cf21bl_departure_recall_point(position_t *out)
@@ -490,11 +487,10 @@ int main(void)
      * options tapestry-scr-hw's reference element feeds to scr_init().
      * SCR_CAP_ACTUATOR satisfies the script's CHOREO_CAP_LOCOMOTION
      * requirement, enforced below by choreo_submit_script() now that a
-     * real scr is registered.  SCR_CAP_ABS_POSITION satisfies the
-     * battery-low RTH preemption's derived CHOREO_CAP_ABS_POSITION
-     * requirement (choreo.c's derived_caps(): CONVERGE + frame ==
-     * ABSOLUTE, which the RTH goal is) — this drone genuinely has it, via
-     * the lighthouse fix cf21bl_stabilizer_get_pos_home() reads from. */
+     * real scr is registered.  SCR_CAP_ABS_POSITION satisfies the derived
+     * CHOREO_CAP_ABS_POSITION requirement of absolute-frame goals
+     * (choreo.c's derived_caps(), e.g. a departure RECALL point) — this
+     * drone genuinely has it, via its lighthouse fix. */
     scr_state_t scr;
     scr_init(&scr, element_id,
         (uint8_t)CONFIG_TAPESTRY_QUORUM_MIN,
@@ -1012,63 +1008,23 @@ int main(void)
             was_up = quorum_up;
 
 #if defined(CONFIG_CF21BL_PM) && defined(CONFIG_PWM)
-            /* Battery-triggered preemption (the L6/L7 goal-queue demo):
-             * on the low-battery edge, park whatever's running and fly
-             * straight home via choreo_preempt_goal(). CONVERGE, not
-             * MOVE — MOVE's directive is intent.target displaced by this
-             * drone's offset from the participant centroid (see bse.h),
-             * which is wrong here: the drone wants literally home, not
-             * home + formation offset. CONVERGE collapses straight to
-             * the target and is otherwise unused by this demo's script,
-             * so it's unambiguous when it appears. cf21bl_stabilizer_get_
-             * pos_home() needs CONFIG_PWM for the same reason the other
-             * two call sites below guard it that way. */
-            static bool was_battery_low;
-            bool battery_low =
-                (own_state.health_flags & ELEMENT_HEALTH_LOW_BATTERY) != 0;
-            if (battery_low && !was_battery_low && !choreo_is_preempted()) {
-                float home_x, home_y;
-                if (cf21bl_stabilizer_get_pos_home(&home_x, &home_y)) {
-                    /* z: own_pos_m.z (the current commanded cruise
-                     * altitude), not 0 — cf21bl_stabilizer_get_pos_home()
-                     * only returns a lighthouse x/y, and CONVERGE's target
-                     * is read verbatim as the altitude setpoint
-                     * (z_setpoint_m = dir->target.z below). Leaving z at
-                     * its implicit 0 would command an immediate ramp to
-                     * ground level while still translating home — this
-                     * demo's own landing sequence already lands in place
-                     * once quiescent, so RTH only needs to move laterally. */
-                    /* Home is where WE took off, which after an EXCHANGE
-                     * is where the PARTNER now is.  RTH ends in a landing,
-                     * so aiming at an occupied spot is a collision, not a
-                     * close pass — and the emergency repulsion cannot save
-                     * it, because the goal point itself is the problem.
-                     * Nudge the destination clear before submitting it. */
-                    float rth_x = home_x, rth_y = home_y;
-                    bool  moved = demo_deconflict_point(&wm, &rth_x, &rth_y);
-
-                    choreo_goal_t rth = {
-                        .type   = CHOREO_GOAL_CONVERGE,
-                        .target = { rth_x, rth_y, own_pos_m.z },
-                    };
-                    int rc = choreo_preempt_goal(&rth);
-                    if (moved) {
-                        LOG_WRN("id=%u battery low — preempting to "
-                                "return-to-home (%.2f, %.2f), rc=%d "
-                                "[deconflicted from home (%.2f, %.2f): a "
-                                "peer is parked there]",
-                                (unsigned)element_id, (double)rth_x,
-                                (double)rth_y, rc, (double)home_x,
-                                (double)home_y);
-                    } else {
-                        LOG_WRN("id=%u battery low — preempting to "
-                                "return-to-home (%.2f, %.2f), rc=%d",
-                                (unsigned)element_id, (double)rth_x,
-                                (double)rth_y, rc);
-                    }
-                }
+            /* Low battery: land in place.  Flying home used to be the
+             * response, but after an EXCHANGE home is where the partner
+             * is landing (flight 64 run 4: 0.30 m apart), and the drone
+             * has least margin left exactly when it would cross the
+             * arena.  why=battery on the status line. */
+            if ((own_state.health_flags & ELEMENT_HEALTH_LOW_BATTERY) != 0) {
+                LOG_WRN("id=%u battery low — premature landing in place at "
+                        "(%.2f, %.2f)", (unsigned)element_id,
+                        (double)own_pos_m.x, (double)own_pos_m.y);
+                state = FLIGHT_LANDING;
+                land_reason = LAND_REASON_BATTERY;
+                land_hold_x = own_pos_m.x;
+                land_hold_y = own_pos_m.y;
+                land_hold_valid = true;
+                sp.linear.z = LAND_HOLD_CMD_M - 1.0f;
+                break;
             }
-            was_battery_low = battery_low;
 #endif
 
 #ifdef CONFIG_PWM
@@ -1180,11 +1136,7 @@ int main(void)
              * references only this drone's own station, so it is tracked
              * even with quorum lost (a solo drone station-keeps properly);
              * peer-referential directives are frozen while LOST. CONVERGE
-             * is included here too: this demo's own script never submits
-             * CONVERGE, so it can only mean the battery-preempt RTH goal
-             * above, which references only this drone's own home
-             * coordinate — an isolated, low-battery drone must still be
-             * able to fly home. */
+             * to an absolute point is self-referential too. */
             bool self_referential =
                 choreo_current_goal_type() == CHOREO_GOAL_HOLD ||
                 choreo_current_goal_type() == CHOREO_GOAL_CONVERGE;
@@ -1418,10 +1370,10 @@ int main(void)
              *
              * step=-1 is ambiguous on its own — the script deactivates both
              * when it completes and when choreo_preempt_goal() parks it —
-             * so a preempting goal (battery RTH) is called out explicitly.
-             * Flight 42 lost its "preempting to return-to-home" WRN to
-             * console splicing and the 1 Hz line showed a drone flying
-             * 1.5 m across the arena at step=-1 with no stated reason.
+             * so a preempting goal is called out explicitly.  Flight 42
+             * lost its preemption WRN to console splicing and the 1 Hz line
+             * showed a drone flying 1.5 m across the arena at step=-1 with
+             * no stated reason.
              * why= is absent while still flying.
              *
              * facts= counts shared-fact frames heard from peers (wire v7).
@@ -1453,6 +1405,49 @@ int main(void)
                     (double)alt_cmd_m, (double)sp.linear.z);
 #endif
         }
+
+#ifdef CONFIG_CF21BL_END_TRACE
+        {
+            /* Nearest active peer, stale included (same set as min_d). */
+            const wm_entry_t *near = NULL;
+            float near_d2 = 0.0f;
+            for (int i = 0; i < MAX_ELEMENTS; i++) {
+                const wm_entry_t *e = &wm.entries[i];
+                if (!e->is_active || e->is_self) {
+                    continue;
+                }
+                float dx = e->state.position.x - own_pos_m.x;
+                float dy = e->state.position.y - own_pos_m.y;
+                float d2 = dx * dx + dy * dy;
+                if (!near || d2 < near_d2) {
+                    near = e;
+                    near_d2 = d2;
+                }
+            }
+            bool close = log_min_dist_m >= 0.0f && log_min_dist_m < 0.8f;
+            bool on = state == FLIGHT_LANDING ||
+                      (state == FLIGHT_FLYING &&
+                       (close || choreo_is_preempted() ||
+                        choreo_script_step() >= (int)CHOREO_SCRIPT_LEN - 1));
+            static uint32_t etrace_accum;
+            etrace_accum += WM_CYCLE_MS;
+            if (on && near && etrace_accum >= 500u) {
+                etrace_accum = 0u;
+                const tapestry_bse_directive_t *d = choreo_get_directive();
+                LOG_INF("E s=%d%c p=%.2f,%.2f d=%.2f,%.2f c=%.2f,%.2f "
+                        "n%u=%.2f,%.2f a=%u m=%.2f q=%c",
+                        choreo_script_step(), flight_state_name(state)[0],
+                        (double)own_pos_m.x, (double)own_pos_m.y,
+                        (double)d->target.x, (double)d->target.y,
+                        (double)target.x, (double)target.y,
+                        (unsigned)near->state.id,
+                        (double)near->state.position.x,
+                        (double)near->state.position.y,
+                        (unsigned)near->age_ms, (double)log_min_dist_m,
+                        log_quorum_up ? 'H' : 'L');
+            }
+        }
+#endif
 
         gossip_accum += WM_CYCLE_MS;
 #ifdef CONFIG_DEMO_MODE_CHOREO

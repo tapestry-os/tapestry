@@ -135,7 +135,8 @@ id=0 LANDED peers 1/1 pos=(0.72,0.77) tgt=(0.72,0.93) alt=0.30 cmd_z=-1.00
 ```
 
 - `why=` — how the flight ended: `complete` (Choreo ran out, the good
-  case), `backstop` (`mission duration elapsed`), `fixloss`, `geofence`.
+  case), `backstop` (`mission duration elapsed`), `fixloss`, `geofence`,
+  `battery` (battery low: premature landing in place).
   Absent while still flying. From the ground `complete` and `backstop`
   look identical, so read this before concluding a Choreo finished.
 - `facts=` — shared-fact frames heard from peers (wire v7). This Choreo

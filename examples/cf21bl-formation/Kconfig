@@ -122,6 +122,18 @@ config DEMO_MISSION_MARGIN_S
 	  Raise this when chasing script behavior on a poor link; lower it
 	  for a tight safety envelope on a good one.
 
+config CF21BL_END_TRACE
+	bool "2 Hz trace of the script's end and of close approaches"
+	depends on DEMO_MODE_CHOREO
+	default n
+	help
+	  A short "E" line every 500 ms while on the script's last step,
+	  while landing, or while a peer is within 0.8 m: own position,
+	  directive target, tracker command, nearest peer (id, last gossiped
+	  position, age) and separation.  For diagnosing an end-of-script
+	  drift toward the partner (flight 62).  Limited to those windows
+	  because the console costs gossip (see DEMO_CONSOLE_VERBOSE).
+
 config DEMO_CONSOLE_VERBOSE
 	bool "Verbose console (per-tick tracking, lighthouse + stabilizer info)"
 	default n

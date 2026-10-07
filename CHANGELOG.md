@@ -26,6 +26,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`TAPESTRY_BSE_ANCHOR_LANDMARK`) and events `landmark_added` /
   `landmark_retracted` with an optional `type`. `choreoc` emits
   `CHOREO_USES_LANDMARKS`.
+- `cf21bl-formation`: `CONFIG_CF21BL_END_TRACE` (default off) prints a short
+  2 Hz line on the script's last step, while landing and near a peer: own
+  position, target, command, nearest peer and its age.
 
 ### Changed
 - `anchor = { select = "discovery-point" }` is now an alias for the first
@@ -37,6 +40,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keeps quorum; a silent peer is noticed 1.5 s later. `cutebot-formation`
   no longer overrides it; `webots-warehouse` keeps 1500 ms, which its scenes
   are tuned to (at 3000 ms scene 2's partition never forms).
+- `cf21bl-formation` lands in place on low battery (`why=battery`) instead of
+  flying home, which after a swap is where the partner lands.
 
 ### Fixed
 - The `webots-warehouse` compile check (`ci-check`) builds on Linux: the
