@@ -138,6 +138,10 @@ id=0 LANDED peers 1/1 pos=(0.72,0.77) tgt=(0.72,0.93) alt=0.30 cmd_z=-1.00
   case), `backstop` (`mission duration elapsed`), `fixloss`, `geofence`.
   Absent while still flying. From the ground `complete` and `backstop`
   look identical, so read this before concluding a Choreo finished.
+- `facts=` — shared-fact frames heard from peers (wire v7). This Choreo
+  publishes no facts, so they are digest-only beacons, one every few
+  seconds per drone once settled; a count that keeps rising on both
+  consoles shows the fact path works over syslink P2P.
 - `min_d=` — distance to the nearest fresh peer, the separation margin
   against `DEMO_MIN_SEP_M` (0.50 m). `-1.00` means no fresh peer in view:
   separation UNKNOWN, not known-safe.

@@ -1420,11 +1420,16 @@ int main(void)
              * Flight 42 lost its "preempting to return-to-home" WRN to
              * console splicing and the 1 Hz line showed a drone flying
              * 1.5 m across the arena at step=-1 with no stated reason.
-             * why= is absent while still flying. */
+             * why= is absent while still flying.
+             *
+             * facts= counts shared-fact frames heard from peers (wire v7).
+             * This Choreo publishes none, so the frames are digest-only
+             * beacons — but a count that keeps rising is the proof that fact
+             * frames cross syslink P2P in both directions. */
             const char *sep_mark = !log_sep_measured ? "?"
                                  : (log_sep.stale    ? "*" : "");
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
-                    "cmd_z=%.2f min_d=%.2f%s step=%d%s q=%c%s%s%s",
+                    "cmd_z=%.2f min_d=%.2f%s step=%d%s q=%c%s%s%s facts=%u",
                     (unsigned)element_id, flight_state_name(state), fresh, active,
                     (double)own_pos_m.x, (double)own_pos_m.y,
                     (double)target.x, (double)target.y,
@@ -1435,7 +1440,8 @@ int main(void)
                     log_quorum_up ? 'H' : 'L',
                     choreo_goal_status() == CHOREO_STATE_SUSPENDED ? "(susp)" : "",
                     choreo_goal_achieved() ? " achieved" : "",
-                    land_reason_name(land_reason));
+                    land_reason_name(land_reason),
+                    (unsigned)wm.facts.frames_heard);
 #else
             LOG_INF("id=%u %s peers %d/%d pos=(%.2f,%.2f) tgt=(%.2f,%.2f) alt=%.2f "
                     "cmd_z=%.2f",
