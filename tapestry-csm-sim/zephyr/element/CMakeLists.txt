@@ -7,6 +7,7 @@ set(TAPESTRY_OS_CSM  ${TAPESTRY_OS_ROOT}/subsys/csm)
 
 target_sources(app PRIVATE
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_CSM}/facts.c
     src/movement.c
     src/comms.c
     src/main.c

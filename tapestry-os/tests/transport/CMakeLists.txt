@@ -16,6 +16,7 @@ set(TAPESTRY_OS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../..)
 target_sources(app PRIVATE
     src/main.c
     ${TAPESTRY_OS_ROOT}/subsys/csm/world_model.c
+    ${TAPESTRY_OS_ROOT}/subsys/csm/facts.c
     ${TAPESTRY_OS_ROOT}/subsys/transport/gossip.c
 )
 

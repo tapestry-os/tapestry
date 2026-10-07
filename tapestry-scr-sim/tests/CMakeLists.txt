@@ -14,6 +14,7 @@ set(TAPESTRY_OS_SCR  ${TAPESTRY_OS_ROOT}/subsys/scr)
 target_sources(app PRIVATE
     src/main.c
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_CSM}/facts.c
     ${TAPESTRY_OS_SCR}/scr.c
 )
 

@@ -16,6 +16,7 @@ target_sources(app PRIVATE
     # wm_get_entry(); the suite builds its own wm.entries[] by hand, but
     # the accessor itself lives here.
     ${TAPESTRY_OS_ROOT}/subsys/csm/world_model.c
+    ${TAPESTRY_OS_ROOT}/subsys/csm/facts.c
     # demo_set_leds() calls substrate_set_signal(); the null substrate
     # provides it (same trick as cf21bl-formation's own tests).
     ${TAPESTRY_OS_ROOT}/boards/substrate_null.c)

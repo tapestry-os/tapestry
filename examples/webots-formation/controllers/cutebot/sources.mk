@@ -23,6 +23,7 @@ C_SOURCES = $(CUTEBOT_DIR)/main.c \
             $(CUTEBOT_DIR)/tracker.c \
             $(COMMON)/transceiver_udp_posix.c \
             $(TAPESTRY_OS)/subsys/csm/world_model.c \
+            $(TAPESTRY_OS)/subsys/csm/facts.c \
             $(TAPESTRY_OS)/subsys/scr/scr.c \
             $(TAPESTRY_OS)/subsys/bse/bse.c \
             $(TAPESTRY_OS)/subsys/choreo/choreo.c \

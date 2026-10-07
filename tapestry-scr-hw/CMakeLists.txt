@@ -33,6 +33,7 @@ target_sources(app PRIVATE
     ${TAPESTRY_OS_RUNTIME}/runtime.c
     ${TAPESTRY_OS_RUNTIME}/power.c
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_CSM}/facts.c
     ${TAPESTRY_OS_SCR}/scr.c
     ${TAPESTRY_OS_BSE}/bse.c
     ${TAPESTRY_OS_CHOREO}/choreo.c
