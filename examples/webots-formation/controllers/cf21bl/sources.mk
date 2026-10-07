@@ -27,6 +27,7 @@ C_SOURCES = $(CF21BL_DIR)/main.c \
             $(COMMON)/transceiver_udp_posix.c \
             $(COMMON)/tracker.c \
             $(TAPESTRY_OS)/subsys/csm/world_model.c \
+            $(TAPESTRY_OS)/subsys/csm/facts.c \
             $(TAPESTRY_OS)/subsys/scr/scr.c \
             $(TAPESTRY_OS)/subsys/bse/bse.c \
             $(TAPESTRY_OS)/subsys/choreo/choreo.c \

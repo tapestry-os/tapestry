@@ -12,7 +12,9 @@ set(TAPESTRY_OS_CSM  ${TAPESTRY_OS_ROOT}/subsys/csm)
 
 target_sources(app PRIVATE
     src/main.c
+    src/facts_test.c
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_CSM}/facts.c
 )
 
 # crazyflie21bl hardware additions:

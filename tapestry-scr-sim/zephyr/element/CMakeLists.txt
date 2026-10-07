@@ -17,6 +17,7 @@ target_sources(app PRIVATE
     ${CSM_ELEM_SRC}/comms.c        # L4 UDP transport: reused verbatim
     ${CSM_ELEM_SRC}/movement.c     # random walk + repulsion: reused verbatim
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_CSM}/facts.c
     ${TAPESTRY_OS_SCR}/scr.c
     ${TAPESTRY_OS_BSE}/bse.c
     ${TAPESTRY_OS_CHOREO}/choreo.c

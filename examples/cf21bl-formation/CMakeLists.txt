@@ -24,6 +24,7 @@ target_sources(app PRIVATE
     src/main.c
     src/formation.c
     ${TAPESTRY_OS_CSM}/world_model.c
+    ${TAPESTRY_OS_CSM}/facts.c
     ${TAPESTRY_OS_TRANSPORT}/transport.c
     ${TAPESTRY_OS_TRANSPORT}/gossip.c
     ${TAPESTRY_OS_TRANSPORT}/transceiver_syslink_p2p.c

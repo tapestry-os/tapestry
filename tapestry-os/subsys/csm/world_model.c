@@ -88,6 +88,7 @@ void wm_init(world_model_t *wm,
 
     wm->owner_id          = owner_id;
     wm->consistency_bias  = consistency_bias;
+    wm_facts_init(wm);
 
     /*
      * entries[] is indexed by element ID directly.  Every peer ID that
@@ -218,6 +219,7 @@ void wm_tick(world_model_t *wm, uint32_t elapsed_ms)
     }
 
     wm->cycle_count++;
+    wm_fact_tick(wm, elapsed_ms);
 
     /* Reset per-cycle collision count before caller runs wm_check_collisions */
     wm->metric.collision_count = 0;

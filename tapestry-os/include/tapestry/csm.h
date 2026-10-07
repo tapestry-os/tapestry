@@ -367,6 +367,169 @@ typedef struct {
     float    confidence;         /* Proximity to quorum [0.0, 1.0]            */
 } wm_consistency_metric_t;
 
+/* ── Shared facts ────────────────────────────────────────────────────────── */
+/*
+ * A small replicated table of things the swarm knows about the WORLD (a
+ * target found here, a hazard there), kept apart from each element's own
+ * state.  Every element holds the same table and re-sends it on a Trickle
+ * schedule (RFC 6206), so an element that joins or reboots late learns
+ * every fact from whichever peer it hears first — the originator need not
+ * be present.  See the design doc "Tapestry L4 Shared Facts — Design".
+ *
+ * Keys are (type, origin, epoch, seq): origin is the creator's id AT
+ * CREATION (it may change after a reboot), epoch a random number drawn per
+ * boot (wm_fact_set_epoch()), seq a per-boot counter.  No two elements can
+ * create the same key, so publishing needs no coordination.
+ *
+ * Merge (per key): a retraction beats any live version; otherwise
+ * immutable facts keep the LOWER (stamp, origin) — the first report
+ * stands — and mutable facts the higher (last writer wins).  stamp is a
+ * Lamport clock over facts (wm_facts_t::clock).  Ordering across keys:
+ * rank 0 of a type is its live fact with the lowest (stamp, origin, epoch,
+ * seq) — every element holding the same table derives the same ranks.
+ *
+ * Duplicates: each type has a merge radius (wm_fact_merge_radius()).  A
+ * publish within that radius of a live fact of the same type reuses it;
+ * two such facts created before their creators heard each other resolve
+ * to the lower (stamp, origin) everywhere, on arrival.
+ *
+ * Capacity: a full table still admits a new fact and evicts its lowest-
+ * ranked entry — tombstones first, then the lowest priority, then the
+ * oldest stamp — immutable facts included.  A received fact that would
+ * itself be that entry is dropped on arrival, so an evicted fact a peer
+ * re-sends does not bounce back.  Eviction sends nothing; it is counted
+ * in wm_facts_t::evictions (the application logs it, choreo sees it as a
+ * lost landmark anchor).
+ *
+ * Safety never depends on facts: separation, fences and quorum read
+ * element state only.
+ */
+
+#define FACT_TYPE_NONE      0u      /* invalid / "any type" in filters   */
+#define FACT_TYPE_TARGET    1u
+#define FACT_TYPE_ZONE      2u
+#define FACT_TYPE_HAZARD    3u
+#define FACT_TYPE_WAYPOINT  4u
+#define FACT_TYPE_APP_MIN   0x80u   /* 0x80..0xFF application-defined    */
+
+/* fact_t::flags */
+#define FACT_RETRACTED      0x01u   /* tombstone                         */
+#define FACT_IMMUTABLE      0x02u   /* first report stands               */
+#define FACT_PRIO_SHIFT     2u
+#define FACT_PRIO_MASK      0x0Cu   /* 0 low .. 3 high; lowest evicted first */
+#define FACT_PRIO(p)        ((uint8_t)(((uint8_t)(p) << FACT_PRIO_SHIFT) & FACT_PRIO_MASK))
+#define FACT_PRIO_OF(flags) ((uint8_t)(((flags) & FACT_PRIO_MASK) >> FACT_PRIO_SHIFT))
+
+/* Sizing and timing.  Each takes its CONFIG_TAPESTRY_FACT_* Kconfig value
+ * when the build defines one, else the default here (host builds). */
+#ifndef WM_MAX_FACTS
+#  ifdef CONFIG_TAPESTRY_WM_MAX_FACTS
+#    define WM_MAX_FACTS CONFIG_TAPESTRY_WM_MAX_FACTS
+#  else
+#    define WM_MAX_FACTS 16
+#  endif
+#endif
+#ifndef FACT_MAX_PER_ORIGIN       /* live facts per (origin, epoch)      */
+#  ifdef CONFIG_TAPESTRY_FACT_MAX_PER_ORIGIN
+#    define FACT_MAX_PER_ORIGIN CONFIG_TAPESTRY_FACT_MAX_PER_ORIGIN
+#  else
+#    define FACT_MAX_PER_ORIGIN WM_MAX_FACTS
+#  endif
+#endif
+#ifndef FACT_TOMBSTONE_TTL_MS
+#  ifdef CONFIG_TAPESTRY_FACT_TOMBSTONE_TTL_MS
+#    define FACT_TOMBSTONE_TTL_MS CONFIG_TAPESTRY_FACT_TOMBSTONE_TTL_MS
+#  else
+#    define FACT_TOMBSTONE_TTL_MS 60000u
+#  endif
+#endif
+#ifndef FACT_IMIN_MS              /* Trickle minimum interval            */
+#  ifdef CONFIG_TAPESTRY_FACT_IMIN_MS
+#    define FACT_IMIN_MS CONFIG_TAPESTRY_FACT_IMIN_MS
+#  else
+#    define FACT_IMIN_MS 250u
+#  endif
+#endif
+#ifndef FACT_IMAX_MS              /* Trickle maximum interval            */
+#  ifdef CONFIG_TAPESTRY_FACT_IMAX_MS
+#    define FACT_IMAX_MS CONFIG_TAPESTRY_FACT_IMAX_MS
+#  else
+#    define FACT_IMAX_MS 8000u
+#  endif
+#endif
+#ifndef FACT_K                    /* Trickle redundancy constant         */
+#  ifdef CONFIG_TAPESTRY_FACT_K
+#    define FACT_K CONFIG_TAPESTRY_FACT_K
+#  else
+#    define FACT_K 2u
+#  endif
+#endif
+/* A freshly booted element may not publish until it has heard one fact
+ * frame (its peers' table, possibly empty) or this long has passed with
+ * none.  Without it a rebooted robot that drives over a known marker
+ * before the table reaches it would publish a duplicate with a LOW stamp
+ * (its clock starts at 0) and win the merge, moving the agreed point. */
+#ifndef FACT_SYNC_TIMEOUT_MS
+#define FACT_SYNC_TIMEOUT_MS (2u * FACT_IMAX_MS)
+#endif
+/* Merge radius for FACT_TYPE_TARGET, in world units (about the finder's
+ * detection range on the Cutebot board).  Other built-in types merge only
+ * by key (radius 0); zones move, so they must never merge by distance. */
+#ifndef FACT_MERGE_RADIUS_TARGET
+#define FACT_MERGE_RADIUS_TARGET 15.0f
+#endif
+
+typedef struct {
+    uint8_t      type;     /* FACT_TYPE_*                                  */
+    element_id_t origin;   /* creator's id at creation                     */
+    uint16_t     epoch;    /* creator's random per-boot number             */
+    uint8_t      seq;      /* creator's per-boot counter                   */
+} fact_key_t;
+
+typedef struct {
+    fact_key_t key;
+    uint8_t    flags;      /* FACT_RETRACTED | FACT_IMMUTABLE | FACT_PRIO() */
+    uint32_t   stamp;      /* Lamport clock of the last writer             */
+    position_t pos;        /* same world frame and units as element state  */
+    uint16_t   attr;       /* type-specific: a radius, a class, a confidence */
+} fact_t;
+
+typedef enum {
+    WM_FACT_EVICT_CAPACITY   = 1,   /* table full                          */
+    WM_FACT_EVICT_PER_ORIGIN = 2,   /* origin over FACT_MAX_PER_ORIGIN     */
+} wm_fact_evict_reason_t;
+
+typedef struct {
+    fact_t   fact;
+    bool     used;
+    uint32_t held_ms;      /* since this element first held the key        */
+    uint32_t tomb_ms;      /* since it became a tombstone here             */
+} wm_fact_slot_t;
+
+typedef struct {
+    wm_fact_slot_t slots[WM_MAX_FACTS];
+    uint16_t epoch;            /* own per-boot epoch (wm_fact_set_epoch)   */
+    uint8_t  next_seq;         /* own next seq                             */
+    uint32_t clock;            /* Lamport clock over facts                 */
+    bool     synced;           /* may publish — see FACT_SYNC_TIMEOUT_MS   */
+    uint32_t since_init_ms;
+    uint32_t frames_heard;     /* peer fact frames merged                  */
+    /* Trickle (RFC 6206) */
+    uint32_t trickle_i_ms;     /* current interval length                  */
+    uint32_t trickle_t_ms;     /* send point within it                     */
+    uint32_t trickle_elapsed_ms;
+    uint8_t  trickle_c;        /* consistent digests heard this interval   */
+    bool     trickle_fired;    /* send point passed this interval          */
+    bool     trickle_started;
+    uint8_t  cursor;           /* rotation over slots for frame packing    */
+    /* Eviction telemetry */
+    uint32_t   evictions;
+    fact_key_t last_evicted;
+    uint8_t    last_evict_reason;   /* wm_fact_evict_reason_t              */
+    uint32_t   last_evicted_age_ms;
+    uint8_t    last_evicted_flags;
+} wm_facts_t;
+
 /* ── World model ─────────────────────────────────────────────────────────── */
 
 typedef struct {
@@ -378,6 +541,7 @@ typedef struct {
     uint32_t                cycle_count;           /* Total update cycles run  */
     uint32_t                last_reconcile_cycle;  /* Cycle of last reconcile  */
     uint32_t                reconcile_duration_ms; /* How long reconcile took  */
+    wm_facts_t              facts;                 /* Shared facts (above)     */
 } world_model_t;
 
 /* ── API ─────────────────────────────────────────────────────────────────── */
@@ -434,5 +598,85 @@ void wm_reconcile(world_model_t *wm,
 uint8_t wm_snapshot(const world_model_t *wm,
                     element_state_t *out_states,
                     uint8_t max_count);
+
+/* ── Shared facts API (facts.c) ──────────────────────────────────────────── */
+
+/* Clear the fact table and Trickle state.  wm_init() calls this; an
+ * application never needs to. */
+void wm_facts_init(world_model_t *wm);
+
+/* Set this boot's random epoch.  Call once after wm_init(), before the
+ * first publish, with a value from the platform's entropy source. */
+void wm_fact_set_epoch(world_model_t *wm, uint16_t epoch);
+
+/* wm_fact_publish() results */
+#define WM_FACT_CREATED      0    /* a new key; *out is it               */
+#define WM_FACT_REUSED       1    /* a live fact of the type lies within  */
+                                  /* its merge radius; *out is that key   */
+#define WM_FACT_ERR_INVALID  (-1) /* type 0, or no valid owner id         */
+#define WM_FACT_ERR_UNSYNCED (-2) /* table not yet heard from a peer      */
+#define WM_FACT_ERR_FULL     (-3) /* would be evicted on arrival          */
+
+/* Create a fact originated by this element (or reuse a live one of the
+ * same type within the merge radius).  flags may carry FACT_IMMUTABLE and
+ * FACT_PRIO(); FACT_RETRACTED is ignored.  Restarts Trickle on a new key.
+ * out may be NULL. */
+int wm_fact_publish(world_model_t *wm, uint8_t type, const position_t *pos,
+                    uint16_t attr, uint8_t flags, fact_key_t *out);
+
+/* Tombstone a held fact — any element may retract any fact.  Returns 0,
+ * or -1 if the key is not held live. */
+int wm_fact_retract(world_model_t *wm, const fact_key_t *key);
+
+/* Merge one received record under the rules above.  Returns true if the
+ * table changed. */
+bool wm_fact_receive(world_model_t *wm, const fact_t *fact);
+
+/* A peer's fact frame was heard and its records merged: feed its digest
+ * to Trickle (match = consistent, else restart at FACT_IMIN_MS) and mark
+ * the table synced. */
+void wm_fact_heard_digest(world_model_t *wm, uint16_t digest);
+
+/* Age tombstones (dropped after FACT_TOMBSTONE_TTL_MS) and the sync
+ * timeout.  wm_tick() calls this. */
+void wm_fact_tick(world_model_t *wm, uint32_t elapsed_ms);
+
+/* Advance Trickle by elapsed_ms.  Returns true when a fact frame is due
+ * now.  rnd is any 32-bit random value; it picks the send point whenever
+ * a new interval starts. */
+bool wm_fact_trickle_tick(world_model_t *wm, uint32_t elapsed_ms, uint32_t rnd);
+
+/* Fill out[0..1] with the next one or two held records (tombstones
+ * included) in rotation.  Returns how many (0 when the table is empty —
+ * the frame then carries only the digest). */
+uint8_t wm_fact_pack(world_model_t *wm, fact_t out[2]);
+
+/* 16-bit order-independent fingerprint of the held (key, stamp, flags)
+ * set; 0 for an empty table. */
+uint16_t wm_fact_digest(const world_model_t *wm);
+
+/* The held version of key (live or tombstone).  Returns false if absent. */
+bool wm_fact_get(const world_model_t *wm, const fact_key_t *key, fact_t *out);
+
+/* The live fact of `type` at `rank` (0 = lowest (stamp, origin, epoch,
+ * seq)).  type FACT_TYPE_NONE matches any type.  Returns false if fewer
+ * than rank+1 live facts of the type are held. */
+bool wm_fact_find(const world_model_t *wm, uint8_t type, int rank, fact_t *out);
+
+/* Live facts of `type` (FACT_TYPE_NONE: any). */
+int wm_fact_count(const world_model_t *wm, uint8_t type);
+
+/* Tombstones of `type` (FACT_TYPE_NONE: any). */
+int wm_fact_tombstones(const world_model_t *wm, uint8_t type);
+
+/* Merge radius of `type`, world units; 0 merges by key only. */
+float wm_fact_merge_radius(uint8_t type);
+
+/* Same key? */
+static inline bool fact_key_equal(const fact_key_t *a, const fact_key_t *b)
+{
+    return a->type == b->type && a->origin == b->origin &&
+           a->epoch == b->epoch && a->seq == b->seq;
+}
 
 #endif /* TAPESTRY_CSM_H */
