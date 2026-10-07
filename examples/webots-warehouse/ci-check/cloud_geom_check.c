@@ -23,6 +23,7 @@
  * nothing at compile time stops them from silently drifting apart.
  */
 
+#include <math.h>
 #include <stdio.h>
 
 #include "cloud_occlusion.h"

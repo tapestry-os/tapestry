@@ -28,6 +28,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `element_state_t::discovered` is local only; the `discovery` event still
   reads it.
 
+### Fixed
+- The `webots-warehouse` compile check (`ci-check`) builds on Linux: the
+  controllers no longer rely on the platform exposing `M_PI`, and
+  `cloud_geom_check.c` includes `<math.h>` for `sqrtf`. The check is not in CI.
+
 ### Removed
 - `discovered` byte from the gossip frame (49 → 48 bytes), the
   `"discoverer"` anchor, the `discovery_any` event, and the `discovered = true`
