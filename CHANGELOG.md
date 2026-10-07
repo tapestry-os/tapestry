@@ -44,6 +44,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flying home, which after a swap is where the partner lands.
 
 ### Fixed
+- The auto-ID nonce hashes the whole device id (FNV-1a) instead of taking its
+  first 4 bytes, which two STM32 chips can share: both cf21bl drones did, so
+  each discarded the other's beacons and two drones powered on together took
+  the same id. Which device gets which id may change once on every platform.
 - A SUSPENDED Choreo step spends its own `max_duration_ms` only while
   isolated (fewer participating peers than `quorum_min` still active), so a
   flapping link with a live partner no longer ends an EXCHANGE half-way (the

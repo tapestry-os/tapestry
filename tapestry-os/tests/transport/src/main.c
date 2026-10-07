@@ -40,6 +40,7 @@
 #include <tapestry/wire.h>
 
 #include "gossip.h"
+#include "auto_id_nonce.h"
 
 /* ── Loopback transceiver ────────────────────────────────────────────────── */
 /*
@@ -1351,4 +1352,30 @@ ZTEST(gossip_wire, test_gossip_drain_sends_facts_on_the_trickle_schedule)
     zassert_equal(f->count, 1u);
     zassert_equal(f->digest, wm_fact_digest(&wm));
     zassert_equal(f->r0_type, FACT_TYPE_TARGET);
+}
+
+/* ── Auto-ID nonce ───────────────────────────────────────────────────────── */
+
+ZTEST(gossip_wire, test_auto_id_nonce_uses_the_whole_device_id)
+{
+    /* Two STM32 ids that share their first word (the wafer X/Y), as both
+     * cf21bl drones do, must still give different nonces. */
+    const uint8_t a[12] = { 0x36, 0x33, 0x32, 0x33, 0x00, 0x2f, 0x00, 0x21,
+                            0x31, 0x32, 0x51, 0x14 };
+    const uint8_t b[12] = { 0x36, 0x33, 0x32, 0x33, 0x00, 0x2f, 0x00, 0x21,
+                            0x31, 0x32, 0x51, 0x15 };
+
+    zassert_not_equal(auto_id_nonce_from_id(a, sizeof(a)),
+                      auto_id_nonce_from_id(b, sizeof(b)),
+                      "ids differing after byte 4 must not collide");
+}
+
+ZTEST(gossip_wire, test_auto_id_nonce_is_fnv1a)
+{
+    const uint8_t one[1] = { 'a' };
+
+    zassert_equal(auto_id_nonce_from_id(one, 1), 0xe40c292cu,
+                  "FNV-1a 32 of \"a\"");
+    zassert_equal(auto_id_nonce_from_id(NULL, 0), 2166136261u,
+                  "empty id is the FNV offset basis");
 }

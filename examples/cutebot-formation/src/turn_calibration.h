@@ -10,8 +10,8 @@
  *   scale = (360 x turns + offset_deg) / encoder_total_deg
  *
  * and add a line here. Keyed by the micro:bit's hardware id (the first
- * four bytes of its device id, the same value the auto-ID beacons carry
- * as their nonce), so one firmware image serves every robot; a robot with
+ * four bytes of its device id, logged as "turn cal hw 0x..."), so one
+ * firmware image serves every robot; a robot with
  * no entry uses 1.0. In firmware rather than flash because flashing a
  * micro:bit over USB erases its whole flash. Re-measure when a micro:bit
  * moves to another chassis.
