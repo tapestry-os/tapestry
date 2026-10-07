@@ -135,6 +135,7 @@ CHOREO_MAX_TRACKS = 4
 # health_flags bitmask, not a locally-recomputed energy_level threshold
 # (that derivation is platform-specific; see main.c's cf21bl_pm_battery_low()).
 ELEMENT_HEALTH_LOW_BATTERY = 0x01
+ELEMENT_HEALTH_DEPARTED    = 0x20   # csm.h
 
 
 @dataclass
@@ -790,7 +791,7 @@ class Choreo:
             # yet root-caused issue mirrored from choreo.c).
             if self._goal is not None and self._goal.type == GoalType.HOLD:
                 self._bse.tick(wm_entries, scr_state, facts)
-            self._suspended_step_timeout()
+            self._suspended_step_timeout(wm_entries, scr_state)
             # _suspended_step_timeout() may have terminated -> IDLE, or
             # advanced to a new step (still SUSPENDED); the recovery
             # check only applies if still actually SUSPENDED.
@@ -912,7 +913,8 @@ class Choreo:
         self._goal = self._steps[self._step_idx].goal
         self._bse.submit_intent(self._goal_to_intent(self._goal))
 
-    def _suspended_step_timeout(self) -> None:
+    def _suspended_step_timeout(self, wm_entries: List[dict],
+                                scr_state: dict) -> None:
         """Isolated (SUSPENDED) timeout carve-out — every goal type, not
         just HOLD.  Mirrors suspended_step_timeout() in choreo.c: every
         step's own max_duration_ms keeps counting down while suspended,
@@ -944,6 +946,14 @@ class Choreo:
         Python mirror specifically; flagged here so the two don't quietly
         drift out of sync if one gets a fix the other doesn't."""
         if self._steps is None or self._goal is None:
+            return
+        # Only isolation spends the step's time: fewer participating peers
+        # than quorum_min (at least 1) are active — mirrors choreo.c.
+        need = scr_state.get('quorum_min', 0) or 1
+        live = sum(1 for e in wm_entries
+                   if not e.get('is_self', False) and e.get('is_active')
+                   and not e.get('health_flags', 0) & ELEMENT_HEALTH_DEPARTED)
+        if live >= need:
             return
         st = self._steps[self._step_idx]
         self._step_ms += self.WM_CYCLE_MS

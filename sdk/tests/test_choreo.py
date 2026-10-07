@@ -18,7 +18,8 @@ from tapestry.bse import (BSEDirectiveType,
 from tapestry.choreo import (Choreo, ChoreoCapabilities, ChoreoEvent,
                              ChoreoScope, ChoreoState, ChoreoStep,
                              ChoreoTrack, ChoreoTrackFilter,
-                             ChoreoTransition, ELEMENT_HEALTH_LOW_BATTERY,
+                             ChoreoTransition, ELEMENT_HEALTH_DEPARTED,
+                             ELEMENT_HEALTH_LOW_BATTERY,
                              Goal, GoalShape, GoalType, SubstrateSignal)
 
 HEALTHY  = scr(QUORUM_HEALTHY)
@@ -551,6 +552,33 @@ def test_suspended_hold_times_out_while_still_isolated():
     c.submit_script([timed(goal_type=GoalType.HOLD, ms=1000)])
     for _ in range(11):
         c.tick(solo(), LOST)
+    assert c.script_complete() is True
+
+
+def test_suspended_timer_waits_while_a_peer_is_active():
+    """Flapping, not isolated: quorum LOST with the partner still active
+    (stale) must not spend the step (flight 64 run 2); once the partner
+    expires it does.  Mirrors the C test of the same name."""
+    c = Choreo(element_id=0)
+    c.submit_script([timed(goal_type=GoalType.HOLD, ms=1000)])
+    flapping = wm([(0, 0), (1, 0)], self_id=0, stale=[1])
+    for _ in range(50):
+        c.tick(flapping, LOST)
+    assert c.script_complete() is False
+    assert c.goal_status() == ChoreoState.SUSPENDED
+    for _ in range(11):
+        c.tick(solo(), LOST)
+    assert c.script_complete() is True
+
+
+def test_suspended_timer_runs_when_the_peer_departed():
+    """A landed partner still gossips but has left the script."""
+    c = Choreo(element_id=0)
+    c.submit_script([timed(goal_type=GoalType.HOLD, ms=1000)])
+    landed = wm([(0, 0), (1, 0)], self_id=0)
+    landed[1]["health_flags"] = ELEMENT_HEALTH_DEPARTED
+    for _ in range(11):
+        c.tick(landed, LOST)
     assert c.script_complete() is True
 
 

@@ -44,6 +44,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flying home, which after a swap is where the partner lands.
 
 ### Fixed
+- A SUSPENDED Choreo step spends its own `max_duration_ms` only while
+  isolated (fewer participating peers than `quorum_min` still active), so a
+  flapping link with a live partner no longer ends an EXCHANGE half-way (the
+  cf21bl swap). A cut-off element still times out, once its peers expire.
 - The `webots-warehouse` compile check (`ci-check`) builds on Linux: the
   controllers no longer rely on the platform exposing `M_PI`, and
   `cloud_geom_check.c` includes `<math.h>` for `sqrtf`. The check is not in CI.
