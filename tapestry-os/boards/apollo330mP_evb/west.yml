@@ -1,0 +1,23 @@
+# west.yml for apollo330mP_evb — Tapestry against Ambiq's Zephyr distribution
+#
+# Identical to the root west.yml except that Zephyr comes from
+# AmbiqMicro/ambiqzephyr, which carries apollo330mP_evb before upstream does.
+# Use it for a separate workspace (see README.md in this folder).  Pinned to
+# the tag the board was validated on; a moving branch is wrong for a release.
+#
+# Temporary: delete this file once apollo330mP_evb is in upstream Zephyr.
+
+manifest:
+  self:
+    path: tapestry
+
+  remotes:
+    - name: ambiq
+      url-base: https://github.com/AmbiqMicro
+
+  projects:
+    - name: zephyr
+      remote: ambiq
+      repo-path: ambiqzephyr
+      revision: v4.3.0-ambiq.v1.0.0   # validated; see above
+      import: true   # pulls in Ambiq's manifest (their hal_ambiq fork, etc.)
