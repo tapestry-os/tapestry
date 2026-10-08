@@ -725,7 +725,7 @@ bool demo_discovery_in_safe_zone(const demo_odometry_t *odo);
 /*
  * CUTEBOT_PRO_DIST_COUNTS_PER_CM — scale factor for
  * cutebot_pro_encoders_t.left_distance/right_distance (cutebot_pro.h:
- * "the raw, unit-unverified cumulative count"), used by main.c's
+ * "the raw signed cumulative count"), used by main.c's
  * distance-delta odometry to convert a per-tick raw counter delta
  * straight to real cm, instead of sampling instantaneous speed once per
  * tick and multiplying by an assumed interval (rectangle-rule
@@ -755,20 +755,11 @@ bool demo_discovery_in_safe_zone(const demo_odometry_t *odo);
  * circumference), not a function of load, and elevated data has zero
  * wheel-slip contamination, unlike a ground run would.
  *
- * NOT yet confirmed against an actual physical tape measure specifically
- * for this constant (only cross-derived from the speed field, which
- * itself WAS tape-measured) — cutebot_pro.h's own header doc already
- * names DEMO_MODE_ENCODER_BENCH as the intended way to pin this down for
- * real; do that once (command a run over a taped/measured ground
- * distance, compare to the raw counter delta) if these numbers need to
- * be trusted beyond "internally consistent to +-2% across 8 intervals."
+ * Tape-checked 2026-10-08 (DEMO_MODE_ENCODER_BENCH, hw 0xdd4e88f3, floor
+ * and chessboard alike): 102.8 cm counted for 102 cm driven.
  *
- * Sign convention of the raw counter (signed position vs. magnitude-only)
- * is still unconfirmed on the bench, but real hardware (2026-09-23)
- * strongly suggested SIGNED: negating the raw delta on reverse commands
- * double-inverted it (bots backed up for extended periods). main.c now
- * takes fabsf() of the delta and applies the last command's sign, which
- * is correct under either convention.
+ * The raw counter is SIGNED — it counts down in reverse (same bench) — so
+ * main.c's pro_wheel_deltas_cm() uses its sign directly.
  */
 #ifndef CUTEBOT_PRO_DIST_COUNTS_PER_CM
 #define CUTEBOT_PRO_DIST_COUNTS_PER_CM 22.56f

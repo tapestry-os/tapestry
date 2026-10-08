@@ -48,6 +48,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flying home, which after a swap is where the partner lands.
 
 ### Fixed
+- **Cutebot Pro odometry lost heading on every wheel reversal:** encoder
+  deltas took the sign of the command, so a wheel still rolling the old
+  way after a reversal or stop counted backwards (six pivot flips: 30°
+  turned, 0° seen). It now uses the counter's own sign. The encoder bench
+  logs both methods side by side for flip moves.
 - The auto-ID nonce hashes the whole device id (FNV-1a) instead of taking its
   first 4 bytes, which two STM32 chips can share: both cf21bl drones did, so
   each discarded the other's beacons and two drones powered on together took
