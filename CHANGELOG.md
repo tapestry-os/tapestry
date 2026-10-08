@@ -26,14 +26,39 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   (`TAPESTRY_BSE_ANCHOR_LANDMARK`) and events `landmark_added` /
   `landmark_retracted` with an optional `type`. `choreoc` emits
   `CHOREO_USES_LANDMARKS`.
-- `cf21bl-formation`: `CONFIG_CF21BL_END_TRACE` (default off) prints a short
-  2 Hz line on the script's last step, while landing and near a peer: own
-  position, target, command, nearest peer and its age.
+- `anchor = { select = "discovery-point" }`: an alias for the first target
+  landmark. The leak demo publishes its find as a target fact, so a robot
+  switched off and on rings the agreed point.
+- FORM `rotation` (TOML; `rotation_rad` in C and Python): the shape's
+  orientation in its frame. SPIN adds to it.
+- **Cutebot Pro V2.1.0** in `cutebot-formation`
+  (`CONFIG_CUTEBOT_VARIANT_PRO`): I2C driver for its closed-loop wheels and
+  4-way line sensor, failing safe on read errors; encoder odometry over real
+  elapsed time, using the counter's signed deltas (22.56 counts/cm, checked
+  by tape); per-robot turn trims in `src/turn_calibration.h`, measured with
+  `DEMO_MODE_TURN_CALIBRATE`; an encoder plausibility guard; and bench modes
+  (`DEMO_MODE_ENCODER_BENCH` odometry check with direction-flip steps, line
+  sensor, circle). The tracker turns in place near a 90° bearing instead of
+  oscillating.
+- Discovery demos in `cutebot-formation`: `spill.choreo.toml` (robots that
+  cross the target stop on its edge) and `leak.choreo.toml` (a spiral
+  search; the finder publishes the target, every robot rings it, and the
+  ring re-forms when a robot leaves or rejoins).
+  `DEMO_MODE_DISCOVERY_BENCH` checks one robot over the marker.
+- `cutebot-formation` BLE debug telemetry (`ble_debug.conf`,
+  `CONFIG_DEMO_BLE_DEBUG`): a legacy advertising set with a ~2 Hz status
+  packet and key events as text, for untethered runs. The new
+  `ble_transceiver_other_tapestry_ad()` hook lets an application add and
+  observe non-gossip Tapestry advertisements.
+- `examples/ble-observer`: an nRF5340 DK passive BLE observer (1 Mbaud UART
+  with RTS/CTS) and `tools/observer_log.py`, which logs a run into per-kind
+  CSVs plus a loss and RSSI summary.
+- `cf21bl-formation`: the status line ends with `facts=<frames heard>`, and
+  `CONFIG_CF21BL_END_TRACE` (default off) prints a short 2 Hz line on the
+  script's last step, while landing and near a peer: own position, target,
+  command, nearest peer and its age.
 
 ### Changed
-- `anchor = { select = "discovery-point" }` is now an alias for the first
-  target landmark. The leak demo publishes its find as a target fact, so a
-  robot switched off and on rings the agreed point instead of a peer's slot.
 - `element_state_t::discovered` is local only; the `discovery` event still
   reads it.
 - `WM_STALE_THRESHOLD_MS` defaults to 3000 ms (was 1500), so a lossy link
@@ -48,11 +73,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   flying home, which after a swap is where the partner lands.
 
 ### Fixed
-- **Cutebot Pro odometry lost heading on every wheel reversal:** encoder
-  deltas took the sign of the command, so a wheel still rolling the old
-  way after a reversal or stop counted backwards (six pivot flips: 30°
-  turned, 0° seen). It now uses the counter's own sign. The encoder bench
-  logs both methods side by side for flip moves.
 - The auto-ID nonce hashes the whole device id (FNV-1a) instead of taking its
   first 4 bytes, which two STM32 chips can share: both cf21bl drones did, so
   each discarded the other's beacons and two drones powered on together took
@@ -63,12 +83,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cf21bl swap). A cut-off element still times out, once its peers expire.
 - The `webots-warehouse` compile check (`ci-check`) builds on Linux: the
   controllers no longer rely on the platform exposing `M_PI`, and
-  `cloud_geom_check.c` includes `<math.h>` for `sqrtf`. The check is not in CI.
+  `cloud_geom_check.c` includes `<math.h>` for `sqrtf`. CI now runs it,
+  and the Webots cutebot check, next to the webots-formation one.
 
 ### Removed
 - `discovered` byte from the gossip frame (49 → 48 bytes), the
   `"discoverer"` anchor, the `discovery_any` event, and the `discovered = true`
-  track filter.
+  track filter. The shared target fact replaces them: it carries the
+  find's position, and a rebooted element relearns it from any peer.
 
 ## [1.1.0] - 2026-09-19
 
