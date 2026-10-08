@@ -74,7 +74,8 @@ installed.
 
 ## Output
 
-The DK's application-core UART runs at **1 000 000 baud**. It appears on
+The DK's application-core UART runs at **1 000 000 baud** with RTS/CTS
+flow control to the J-Link (without it bursts lost bytes). It appears on
 the host as the J-Link's **second** USB serial interface
 (`/dev/serial/by-id/usb-SEGGER_J-Link_<serial>-if02`, usually
 `/dev/ttyACM1`), not `-if00`. It writes one line per Tapestry
