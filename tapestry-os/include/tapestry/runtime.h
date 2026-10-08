@@ -12,8 +12,7 @@
  *          // read state, drive substrate, sleep
  *      }
  *
- * Not for use by demos that bypass L5/L6 (e.g. cutebot-formation, which
- * implements its own control law directly on L4).
+ * The cutebot and cf21bl demos run the stack from their own loops instead.
  *
  * Design invariants:
  *   - No OS-specific types in this header.  Pure C99 + stdint.
