@@ -132,9 +132,11 @@ LOG_MODULE_REGISTER(demo, LOG_LEVEL_INF);
 /* Signed per-wheel distance (cm) since the previous call, from the raw
  * cumulative counters. Shared by the choreo loop's odometry and
  * DEMO_MODE_ENCODER_BENCH so the bench exercises the exact sign/scale
- * handling the demo uses. Direction comes from the command that was
- * driving the wheel (fabsf first — correct whether the firmware counter
- * is signed or magnitude-only; see CUTEBOT_PRO_DIST_COUNTS_PER_CM). */
+ * handling the demo uses. Direction is the counter's own sign: it counts
+ * down in reverse (bench, 2026-10-08). Signing by the command instead
+ * missed every wheel still rolling the old way after a reversal or a
+ * stop — six CCW/CW pivot flips turned the robot 30 degrees that it
+ * never saw (bench step 6). */
 /* Encoder plausibility guard (2026-10-06): the Pro's replies carry no
  * checksum, so a read that completes is trusted. Twice in one run a robot
  * whose chassis was browning out returned a nonsense distance counter
@@ -164,7 +166,6 @@ typedef struct {
 
 static __maybe_unused pro_enc_result_t pro_wheel_deltas_cm(const cutebot_pro_encoders_t *enc,
                                             int32_t *prev_l, int32_t *prev_r,
-                                            float left_cmd, float right_cmd,
                                             uint32_t dt_ms, pro_enc_guard_t *g,
                                             float *dl_cm, float *dr_cm)
 {
@@ -191,10 +192,8 @@ static __maybe_unused pro_enc_result_t pro_wheel_deltas_cm(const cutebot_pro_enc
     *prev_l = enc->left_distance;
     *prev_r = enc->right_distance;
 
-    *dl_cm = fabsf((float)raw_l) / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
-    *dr_cm = fabsf((float)raw_r) / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
-    if (left_cmd  < 0.0f) { *dl_cm = -*dl_cm; }
-    if (right_cmd < 0.0f) { *dr_cm = -*dr_cm; }
+    *dl_cm = (float)raw_l / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
+    *dr_cm = (float)raw_r / CUTEBOT_PRO_DIST_COUNTS_PER_CM;
     return PRO_ENC_OK;
 }
 
@@ -986,7 +985,7 @@ int main(void)
 #define ODO_BENCH_SPIN_CMS    20.0f
 #define ODO_BENCH_DIST_CM     100.0f
 #define ODO_BENCH_TURNS       2.0f
-#define ODO_BENCH_PAUSE_MS    4000u
+#define ODO_BENCH_PAUSE_MS    15000u  /* time to tape-measure each step */
 #define ODO_BENCH_TIMEOUT_MS  8000u   /* each step should take ~3-4 s */
 
     const float track_cm = CUTEBOT_PRO_WHEEL_TRACK_MM / 10.0f;
@@ -1004,10 +1003,16 @@ int main(void)
         { "4 CW 2 turns",     ODO_BENCH_SPIN_CMS,   -ODO_BENCH_SPIN_CMS,    false, 0.0f },
     };
 
-    LOG_INF("ODOMETRY BENCH — counts/cm=%.2f track=%.1fmm. Mark start "
-            "position and forward direction now; starting in %u s.",
-            (double)CUTEBOT_PRO_DIST_COUNTS_PER_CM,
-            (double)CUTEBOT_PRO_WHEEL_TRACK_MM, ODO_BENCH_PAUSE_MS / 1000u);
+    if (transport_init() != 0) {
+        LOG_WRN("transport init failed — results on serial only");
+    }
+#ifdef CONFIG_DEMO_BLE_DEBUG
+    ble_debug_init();
+#endif
+    DEMO_EVT(INF, "ODOMETRY BENCH hw 0x%08x — counts/cm=%.2f track=%.1fmm. "
+             "Mark start position and forward direction now; starting in %u s.",
+             (unsigned)demo_hw_id(), (double)CUTEBOT_PRO_DIST_COUNTS_PER_CM,
+             (double)CUTEBOT_PRO_WHEEL_TRACK_MM, ODO_BENCH_PAUSE_MS / 1000u);
     k_msleep(ODO_BENCH_PAUSE_MS);
 
     cutebot_pro_encoders_t enc = {0};
@@ -1022,7 +1027,7 @@ int main(void)
         float start = steps[i].linear ? dist_cm : head;
         float sign  = (steps[i].goal > start) ? 1.0f : -1.0f;
 
-        LOG_INF("step %s: raw L=%d R=%d  est dist=%.1fcm head=%.1fdeg",
+        DEMO_EVT(INF, "step %s: raw L=%d R=%d  est dist=%.1fcm head=%.1fdeg",
                 steps[i].label, (int)enc.left_distance, (int)enc.right_distance,
                 (double)dist_cm, (double)(head * 180.0f / M_PI_F));
 
@@ -1036,8 +1041,7 @@ int main(void)
             elapsed += 20;
             cutebot_pro_read_encoders(&enc);
             float dl, dr;
-            pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
-                                steps[i].l_cms, steps[i].r_cms, 20u, &enc_guard,
+            pro_wheel_deltas_cm(&enc, &prev_l, &prev_r, 20u, &enc_guard,
                                 &dl, &dr);
             dist_cm += 0.5f * (dl + dr);
             head    += (dr - dl) / track_cm;
@@ -1062,13 +1066,12 @@ int main(void)
         k_msleep(500);
         cutebot_pro_read_encoders(&enc);
         float dl, dr;
-        pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
-                            steps[i].l_cms, steps[i].r_cms, 520u, &enc_guard,
+        pro_wheel_deltas_cm(&enc, &prev_l, &prev_r, 520u, &enc_guard,
                             &dl, &dr);
         dist_cm += 0.5f * (dl + dr);
         head    += (dr - dl) / track_cm;
 
-        LOG_INF("step %s DONE%s: raw L=%d R=%d  est dist=%.1fcm "
+        DEMO_EVT(INF, "step %s DONE%s: raw L=%d R=%d  est dist=%.1fcm "
                 "head=%.1fdeg — measure now",
                 steps[i].label,
                 (elapsed >= ODO_BENCH_TIMEOUT_MS) ? " (TIMEOUT)" : "",
@@ -1077,7 +1080,84 @@ int main(void)
         k_msleep(ODO_BENCH_PAUSE_MS);
     }
 
-    LOG_INF("ODOMETRY BENCH COMPLETE — motors off.");
+    /*
+     * Steps 5-6: direction flips WITHOUT stopping, read at the demo loop's
+     * own 100 ms cadence. Each interval's raw counter delta is turned into
+     * motion two ways: with the counter's own sign (what the odometry
+     * uses) and with the sign of the command in force (what it used
+     * before 2026-10-08, kept here as the reference that fails). Each step
+     * starts and ends at rest, so the tape measure says which is right;
+     * on 2026-10-08 step 6 turned 30 degrees CCW, counter-sign 25.1,
+     * command-sign -0.8.
+     *   5 fwd/rev x4    — 1.5 s legs at 30 cm/s; measure the end position
+     *                     along the line from the step-5 start mark
+     *   6 CCW/CW x6     — 0.7 s pivots at 20 cm/s; measure the end heading
+     *                     against the step-6 start heading
+     */
+#define ODO_FLIP_READ_MS 100u
+    struct {
+        const char *label;
+        float       l_cms, r_cms;   /* first leg; legs alternate sign */
+        uint32_t    leg_ms;
+        int         legs;
+    } flips[] = {
+        { "5 fwd/rev flips", ODO_BENCH_LINEAR_CMS, ODO_BENCH_LINEAR_CMS, 1500u, 4 },
+        { "6 CCW/CW flips", -ODO_BENCH_SPIN_CMS,   ODO_BENCH_SPIN_CMS,    700u, 6 },
+    };
+    for (size_t i = 0; i < ARRAY_SIZE(flips); i++) {
+        float d_cmd = 0.0f, h_cmd = 0.0f;   /* command-sign estimate */
+        float d_sgn = 0.0f, h_sgn = 0.0f;   /* counter-sign estimate */
+        float l = 0.0f, r = 0.0f;           /* command in force */
+
+        DEMO_EVT(INF, "step %s: mark position and heading now", flips[i].label);
+        (void)cutebot_pro_read_encoders(&enc);
+        prev_l = enc.left_distance;
+        prev_r = enc.right_distance;
+
+        substrate_set_signal(SUBSTRATE_SIGNAL_ACTIVE);
+        int total = flips[i].legs * (int)(flips[i].leg_ms / ODO_FLIP_READ_MS);
+        for (int t = 0; t <= total + 5; t++) {   /* +5: 0.5 s coast */
+            if (t < total && t % (int)(flips[i].leg_ms / ODO_FLIP_READ_MS) == 0) {
+                float sgn = ((t / (int)(flips[i].leg_ms / ODO_FLIP_READ_MS)) % 2)
+                            ? -1.0f : 1.0f;
+                l = sgn * flips[i].l_cms;
+                r = sgn * flips[i].r_cms;
+                cutebot_pro_drive_cms(l, r);
+            } else if (t == total) {
+                cutebot_pro_drive_cms(0.0f, 0.0f);   /* keep l/r: the coast
+                                                       * is signed by the
+                                                       * last command, as
+                                                       * the demo does */
+            }
+            k_msleep(ODO_FLIP_READ_MS);
+            if (cutebot_pro_read_encoders(&enc) != 0) {
+                continue;
+            }
+            float dl, dr;
+            pro_enc_result_t eg = pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
+                                                      ODO_FLIP_READ_MS,
+                                                      &enc_guard, &dl, &dr);
+            if (eg != PRO_ENC_OK) {
+                continue;
+            }
+            d_sgn += 0.5f * (dl + dr);
+            h_sgn += (dr - dl) / track_cm;
+            float cl = (l < 0.0f) ? -fabsf(dl) : fabsf(dl);
+            float cr = (r < 0.0f) ? -fabsf(dr) : fabsf(dr);
+            d_cmd += 0.5f * (cl + cr);
+            h_cmd += (cr - cl) / track_cm;
+        }
+        substrate_set_signal(SUBSTRATE_SIGNAL_IDLE);
+
+        DEMO_EVT(INF, "step %s DONE: cmd-sign dist=%.1fcm head=%.1fdeg | "
+                 "counter-sign dist=%.1fcm head=%.1fdeg — measure now",
+                 flips[i].label, (double)d_cmd,
+                 (double)(h_cmd * 180.0f / M_PI_F), (double)d_sgn,
+                 (double)(h_sgn * 180.0f / M_PI_F));
+        k_msleep(ODO_BENCH_PAUSE_MS);
+    }
+
+    DEMO_EVT(INF, "ODOMETRY BENCH COMPLETE — motors off.");
     substrate_set_signal(SUBSTRATE_SIGNAL_FAILED);   /* red: done, not an error */
     while (true) {
         k_msleep(1000);
@@ -1202,7 +1282,7 @@ int main(void)
             if (cutebot_pro_read_encoders(&enc) == 0) {
                 float dl, dr;
                 uint32_t now_ms = k_uptime_get_32();
-                pro_wheel_deltas_cm(&enc, &prev_l, &prev_r, l, r,
+                pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
                                     now_ms - last_read_ms, &enc_guard, &dl, &dr);
                 last_read_ms = now_ms;
                 head += fabsf(dr - dl) / track_cm;
@@ -1214,7 +1294,7 @@ int main(void)
         k_msleep(TURN_CAL_COAST_MS);
         if (cutebot_pro_read_encoders(&enc) == 0) {
             float dl, dr;
-            pro_wheel_deltas_cm(&enc, &prev_l, &prev_r, l, r,
+            pro_wheel_deltas_cm(&enc, &prev_l, &prev_r,
                                 k_uptime_get_32() - last_read_ms, &enc_guard,
                                 &dl, &dr);
             head += fabsf(dr - dl) / track_cm;   /* coast */
@@ -1558,21 +1638,11 @@ int main(void)
          * reading recovers the TRUE distance traveled over this exact
          * interval, with no sampling assumption at all. See
          * CUTEBOT_PRO_DIST_COUNTS_PER_CM's doc (formation.h) for the
-         * scale factor's derivation and its two flagged open questions
-         * (derived not tape-measured; magnitude-only sign assumed by
-         * analogy with the speed field, not independently confirmed).
-         *
-         * Direction is reconstructed exactly as it always was for speed:
-         * from speed_cmd/rate_cmd's sign as of the LAST tick's
-         * substrate_move() call — still in scope here since this tick
-         * hasn't overwritten them yet (that happens further below, via
-         * demo_track_target) — which is exactly the command whose
-         * resulting motion this encoder read reflects. */
+         * scale factor (tape-checked 2026-10-08: 102.8 cm counted for
+         * 102 cm driven). Direction is the counter's own sign — see
+         * pro_wheel_deltas_cm(). */
         cutebot_pro_encoders_t enc = {0};
         int enc_ret = cutebot_pro_read_encoders(&enc);
-
-        float last_left_cmd  = speed_cmd - rate_cmd;
-        float last_right_cmd = speed_cmd + rate_cmd;
 
         /* A failed read contributes no motion this tick (prev_* kept, so
          * the next good read measures the whole interval) — never a
@@ -1591,8 +1661,7 @@ int main(void)
             uint32_t now_ms_enc = k_uptime_get_32();
             uint32_t span_ms = enc_good_ms ? now_ms_enc - enc_good_ms : dt_ms;
             pro_enc_result_t eg = pro_wheel_deltas_cm(
-                &enc, &prev_left_dist, &prev_right_dist,
-                last_left_cmd, last_right_cmd, span_ms, &enc_guard,
+                &enc, &prev_left_dist, &prev_right_dist, span_ms, &enc_guard,
                 &left_delta_cm, &right_delta_cm);
             if (eg != PRO_ENC_REJECTED) {
                 enc_good_ms = now_ms_enc;

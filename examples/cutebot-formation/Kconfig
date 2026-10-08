@@ -426,7 +426,8 @@ config TAPESTRY_QUORUM_TARGET
 
 config DEMO_BLE_DEBUG
 	bool "Broadcast debug telemetry over BLE (legacy advertising)"
-	depends on (DEMO_MODE_CHOREO || DEMO_MODE_TURN_CALIBRATE) && BT
+	depends on (DEMO_MODE_CHOREO || DEMO_MODE_TURN_CALIBRATE || \
+		    DEMO_MODE_ENCODER_BENCH) && BT
 	help
 	  Adds a third, legacy-format BLE advertising set (after state gossip
 	  and shared facts) carrying a status packet (~2 Hz: step, quorum,

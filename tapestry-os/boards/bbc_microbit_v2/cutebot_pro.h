@@ -24,10 +24,9 @@
  * it "rotation degrees" but returns a raw 4-byte value with no documented
  * scale factor anywhere (official firmware source, an independent
  * V2.0.2/V2.1.0-specific community driver, and the vendor wiki were all
- * checked). Treat cutebot_pro_encoders_t.left_distance/right_distance as
- * an opaque, monotonic-within-a-run raw count until DEMO_MODE_ENCODER_BENCH
- * (Kconfig) pins down the real scale against a physically measured
- * distance.
+ * checked). DEMO_MODE_ENCODER_BENCH (2026-10-08) measured it on hardware:
+ * a SIGNED count (down in reverse) of ~22.56 per cm driven — see
+ * CUTEBOT_PRO_DIST_COUNTS_PER_CM in examples/cutebot-formation.
  *
  * 4-way line sensor: cmd 0x60 sub 0x00 reads one I2C-polled byte, bit0..
  * bit3 = channel 1..4 (1 = line/dark). Unlike Mini's cutebot_line.c, this
@@ -47,7 +46,7 @@ extern "C" {
 #endif
 
 /* One encoder read. speed is signed cm/s (matches the commanded direction);
- * distance is the raw, unit-unverified cumulative count (see header doc). */
+ * distance is the raw signed cumulative count (see header doc). */
 typedef struct {
     float   left_speed_cms;
     float   right_speed_cms;
