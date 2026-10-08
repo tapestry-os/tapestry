@@ -5,6 +5,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-08
+
 > **Breaking:** wire v6 → v7. Reflash every element from one build.
 
 ### Added
@@ -53,6 +55,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `examples/ble-observer`: an nRF5340 DK passive BLE observer (1 Mbaud UART
   with RTS/CTS) and `tools/observer_log.py`, which logs a run into per-kind
   CSVs plus a loss and RSSI summary.
+- **Ambiq Apollo510 EVB** (`apollo510_evb`, Cortex-M55): an L1-L5 element
+  that gossips over a wired UART bus (`CONFIG_TAPESTRY_TRANSCEIVER_UART`,
+  any board with a spare UART), validated against an EK-RA8D1. LED and
+  button substrate; flashing pins J-Link `--reset-type=2`.
+- **Ambiq Apollo330M Plus EVB** (`apollo330mP_evb`): the same element over
+  BLE and the wired bus, sharing the Apollo510 substrate. It builds from
+  Ambiq's Zephyr fork until the board is upstream; see
+  `tapestry-os/boards/apollo330mP_evb/`.
 - `cf21bl-formation`: the status line ends with `facts=<frames heard>`, and
   `CONFIG_CF21BL_END_TRACE` (default off) prints a short 2 Hz line on the
   script's last step, while landing and near a peer: own position, target,
@@ -69,12 +79,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   vertex in the minimum-total-distance assignment, so paths no longer cross
   the shape. New `bse_set_form_bounds()` slides a shape inside an arena;
   `cutebot-formation` keeps its rings on the play area ([10, 90]).
+- `transport_init()` no longer fails when the network does not come up: the
+  wait is bounded (`CONFIG_TAPESTRY_NET_CONNECT_TIMEOUT_MS`), other
+  transceivers still start, and one whose init fails is dropped.
 - `cf21bl-formation` lands in place on low battery (`why=battery`) instead of
   flying home, which after a swap is where the partner lands.
 
 ### Fixed
 - The auto-ID nonce hashes the whole device id (FNV-1a) instead of taking its
-  first 4 bytes, which two STM32 chips can share: both cf21bl drones did, so
+  first 4 bytes, which two STM32 or Apollo5x chips can share: both cf21bl drones did, so
   each discarded the other's beacons and two drones powered on together took
   the same id. Which device gets which id may change once on every platform.
 - A SUSPENDED Choreo step spends its own `max_duration_ms` only while
@@ -868,7 +881,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for all three hardware targets and Phase 2 firmware
 - `CODE_OF_CONDUCT.md`, `SECURITY.md`
 
-[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/tapestry-os/tapestry/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/tapestry-os/tapestry/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/tapestry-os/tapestry/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/tapestry-os/tapestry/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/tapestry-os/tapestry/compare/v0.8.0...v0.9.0
