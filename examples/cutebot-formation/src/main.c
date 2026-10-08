@@ -1365,6 +1365,12 @@ int main(void)
 
     choreo_init(element_id);
     choreo_register_scr(&scr);
+    /* FORM slots stay on the checkered play area: a ring around a marker
+     * found near the border slides inward instead of parking a robot on
+     * (or past) the fence. */
+    bse_set_form_bounds(DEMO_SQUARE_UNITS, DEMO_SQUARE_UNITS,
+                        WORLD_SIZE - DEMO_SQUARE_UNITS,
+                        WORLD_SIZE - DEMO_SQUARE_UNITS);
     /*
      * choreoc.py emits one of two incompatible shapes depending on
      * whether the source .toml has [[steps]] (k_choreo_script/

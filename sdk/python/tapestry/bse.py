@@ -11,10 +11,11 @@ except the EXCHANGE arc, a deliberately minimal deconfliction rule.
 Intent → directive mapping
 --------------------------
   IDLE      → IDLE            — the substrate-neutral QUIESCENCE signal
-  FORM      → MOVE_TO_POINT   — vertex assignment by element_id rank; shape
-                                CIRCLE (N-gon), LINE (evenly spaced on X),
-                                or GRID (near-square rows/cols, radius as
-                                cell spacing)
+  FORM      → MOVE_TO_POINT   — minimum-total-distance assignment of
+                                participants to vertices; shape CIRCLE
+                                (N-gon), LINE (evenly spaced on X), or GRID
+                                (near-square rows/cols, radius as cell
+                                spacing), slid inside set_form_bounds()
   MOVE      → MOVE_TO_POINT   — offset-preserving translation: own offset
                                 from the participant centroid, captured at
                                 activation, added to intent.target (a solo
@@ -190,6 +191,8 @@ class BSE:
         self._intent    = BSEIntent()
         self._directive = BSEDirective()
         self._track_scope: int = 0
+        # set_form_bounds(): (min_x, min_y, max_x, max_y) or None.
+        self._form_bounds: Optional[Tuple[float, float, float, float]] = None
         # The fact table passed to the current tick() (LANDMARK anchor).
         self._facts = None
         self._reset_goal_state()
@@ -203,6 +206,15 @@ class BSE:
         bse_set_track_scope()).  Defaults to 0, a no-op filter — every
         peer on a script with no [[tracks]] gossips current_track=0."""
         self._track_scope = track
+
+    def set_form_bounds(self, min_x: float, min_y: float,
+                        max_x: float, max_y: float) -> None:
+        """Keep every FORM slot inside [min_x, max_x] x [min_y, max_y]
+        (mirrors bse_set_form_bounds()): the shape slides inward as a
+        whole, one axis at a time, or is centred when wider than the
+        bounds.  min > max on either axis clears it."""
+        ok = min_x <= max_x and min_y <= max_y
+        self._form_bounds = (min_x, min_y, max_x, max_y) if ok else None
 
     def _reset_goal_state(self) -> None:
         self._achieved        = False
@@ -750,76 +762,140 @@ class BSE:
             self._achieve_accum = 0
         self._achieved = self._achieve_accum >= hold
 
+    def _form_slot_offset(self, intent: BSEIntent, k: int,
+                          n: int) -> Tuple[float, float]:
+        """Slot k of n for intent.shape, as an UNROTATED offset from the
+        frame origin (mirrors form_slot_offset() in bse.c)."""
+        if intent.shape == BSEShape.LINE:
+            if n > 1:
+                return (-intent.radius + (2.0 * intent.radius) / (n - 1) * k,
+                        0.0)
+            return (0.0, 0.0)
+        if intent.shape == BSEShape.GRID:
+            cols = math.ceil(math.sqrt(n))
+            rows = math.ceil(n / cols)
+            return ((k % cols - 0.5 * (cols - 1)) * intent.radius,
+                    (k // cols - 0.5 * (rows - 1)) * intent.radius)
+        angle = 2.0 * math.pi * k / n
+        return (intent.radius * math.cos(angle),
+                intent.radius * math.sin(angle))
+
+    @staticmethod
+    def _fit_axis(v: List[float], lo: float, hi: float) -> List[float]:
+        """Slide v along one axis so it fits [lo, hi]; wider than the range
+        → centred in it (mirrors form_fit_axis())."""
+        mn, mx = min(v), max(v)
+        if mx - mn > hi - lo:
+            d = 0.5 * (lo + hi) - 0.5 * (mn + mx)
+        elif mn < lo:
+            d = lo - mn
+        elif mx > hi:
+            d = hi - mx
+        else:
+            d = 0.0
+        return [x + d for x in v]
+
+    @staticmethod
+    def _assign_slot(pos: List[Tuple[float, float, float]],
+                     slots: List[Tuple[float, float, float]], who: int) -> int:
+        """Slot of participant `who` in the minimum-total-distance
+        assignment (Hungarian algorithm, shortest augmenting paths; mirrors
+        form_assign_slot() step for step, ties to the lower slot index)."""
+        n = len(pos)
+        inf = float('inf')
+        u = [0.0] * (n + 1)
+        v = [0.0] * (n + 1)
+        p = [0] * (n + 1)
+        way = [0] * (n + 1)
+        for i in range(1, n + 1):
+            p[0] = i
+            j0 = 0
+            minv = [inf] * (n + 1)
+            used = [False] * (n + 1)
+            while True:
+                used[j0] = True
+                i0, j1, delta = p[j0], 0, inf
+                for j in range(1, n + 1):
+                    if used[j]:
+                        continue
+                    cur = math.dist(pos[i0 - 1], slots[j - 1]) - u[i0] - v[j]
+                    if cur < minv[j]:
+                        minv[j] = cur
+                        way[j] = j0
+                    if minv[j] < delta:
+                        delta = minv[j]
+                        j1 = j
+                for j in range(n + 1):
+                    if used[j]:
+                        u[p[j]] += delta
+                        v[j] -= delta
+                    else:
+                        minv[j] -= delta
+                j0 = j1
+                if p[j0] == 0:
+                    break
+            while True:
+                j1 = way[j0]
+                p[j0] = p[j1]
+                j0 = j1
+                if j0 == 0:
+                    break
+        return p.index(who + 1, 1) - 1   # p[0] is scratch
+
     def _form_directive(self, wm_entries: List[dict],
                         intent: BSEIntent, scr_state: dict) -> BSEDirective:
         """
         Assign self a vertex per intent.shape: CIRCLE (regular N-gon), LINE
         (evenly spaced on the X axis), or GRID (near-square rows/cols,
         radius as cell spacing) — all centered on the resolved frame target
-        (bse.h §5; ABSOLUTE/default keeps this exactly intent.target).
-        N = active + fresh element count (including self).
-        Rank = position of self.element_id in the sorted active-ID list.
+        (bse.h §5; ABSOLUTE/default keeps this exactly intent.target), then
+        slid inside set_form_bounds() if set.
+        N = active + fresh element count (including self).  Self's vertex is
+        its own in the minimum-total-distance assignment of the ID-sorted
+        participants to the vertices (see _assign_slot()).
         """
-        active_ids = sorted(
-            e['id'] for e in wm_entries
-            if e.get('is_active') and not e.get('is_stale')
-               and not e.get('is_self', False)
-               and e.get('current_track', 0) == self._track_scope
-        )
-        # Always include self
-        if self.element_id not in active_ids:
-            active_ids.append(self.element_id)
-            active_ids.sort()
-
-        if not active_ids:
-            return BSEDirective(type=BSEDirectiveType.HOLD)
+        parts = self._participants(wm_entries)
+        if self.element_id not in [pid for pid, _ in parts]:
+            # No own position in the world model: stand self at the frame
+            # origin below, equidistant from every CIRCLE vertex.
+            parts.append((self.element_id, None))
+            parts.sort(key=lambda p: p[0])
 
         eff_target = self._resolve_effective_target(wm_entries, intent, scr_state)
         if eff_target is None:
             return BSEDirective(type=BSEDirectiveType.HOLD)
 
-        rank = active_ids.index(self.element_id)
-        n    = len(active_ids)
+        ids  = [pid for pid, _ in parts]
+        pos  = [pp if pp is not None else eff_target for _, pp in parts]
+        rank = ids.index(self.element_id)
+        n    = len(ids)
 
-        # Own vertex OFFSET from eff_target (the frame origin) — computed
-        # separately so motion == SPIN (below) can rotate just the offset,
-        # shape-agnostically, instead of every shape needing its own
-        # rotation math.
-        if intent.shape == BSEShape.LINE:
-            if n > 1:
-                step = (2.0 * intent.radius) / (n - 1)
-                ox = -intent.radius + step * rank
-            else:
-                ox = 0.0
-            oy = 0.0
-        elif intent.shape == BSEShape.GRID:
-            cols = math.ceil(math.sqrt(n))
-            rows = math.ceil(n / cols)
-            col, row = rank % cols, rank // cols
-            ox = (col - 0.5 * (cols - 1)) * intent.radius
-            oy = (row - 0.5 * (rows - 1)) * intent.radius
-        else:
-            angle = 2.0 * math.pi * rank / n
-            ox = intent.radius * math.cos(angle)
-            oy = intent.radius * math.sin(angle)
-
-        # Motion (bse.h §6): SPIN rotates the offset about the frame
-        # origin at spin_rate_radps.  Achievement generalizes unchanged —
-        # _goal_pt is tick-scoped and simply tracks the rotating vertex.
+        # Motion (bse.h §6): SPIN rotates the shape about the frame origin
+        # at spin_rate_radps.  Achievement generalizes unchanged — _goal_pt
+        # is tick-scoped and simply tracks the rotating vertex.
         theta = intent.rotation_rad   # orientation (bse.h's rotation_rad)
         if intent.motion == BSEMotion.SPIN:
             self._spin_theta += intent.spin_rate_radps * (WM_CYCLE_MS * 0.001)
             theta += self._spin_theta
-        if theta != 0.0:
-            c, s = math.cos(theta), math.sin(theta)
-            ox, oy = ox * c - oy * s, ox * s + oy * c
+        c, s = math.cos(theta), math.sin(theta)
 
+        sx, sy = [], []
+        for k in range(n):
+            ox, oy = self._form_slot_offset(intent, k, n)
+            sx.append(eff_target[0] + ox * c - oy * s)
+            sy.append(eff_target[1] + ox * s + oy * c)
+        if self._form_bounds is not None:
+            min_x, min_y, max_x, max_y = self._form_bounds
+            sx = self._fit_axis(sx, min_x, max_x)
+            sy = self._fit_axis(sy, min_y, max_y)
         # Shapes stay planar — z is the frame origin's, unmodified (see
         # module doc: CIRCLE/LINE/GRID are named 2D patterns; the whole
         # flat shape can sit at any real altitude as a rigid unit).
+        slots = [(sx[k], sy[k], eff_target[2]) for k in range(n)]
+
         return BSEDirective(
             type   = BSEDirectiveType.MOVE_TO_POINT,
-            target = (eff_target[0] + ox, eff_target[1] + oy, eff_target[2]),
+            target = slots[self._assign_slot(pos, slots, rank)],
         )
 
     def _move_directive(self, wm_entries: List[dict],

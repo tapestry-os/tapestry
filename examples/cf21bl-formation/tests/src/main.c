@@ -1446,14 +1446,14 @@ ZTEST(choreo_script, test_form_shape_line)
 ZTEST(choreo_script, test_form_excludes_a_different_track_peer_from_count)
 {
     /* 3 elements, but id 2 is on track 1 — the shape is a 2-slot circle:
-     * rank 0 at angle 0, rank 1 at angle pi (NOT 120 degrees apart). */
+     * vertices at angle 0 and pi (NOT 120 degrees apart), one each. */
     choreo_goal_t goal = {
         .type   = CHOREO_GOAL_FORM,
         .target = { 10.0f, 10.0f },
         .radius = 5.0f,
         .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
     };
-    const float expect_x[2] = { 15.0f, 5.0f };
+    float got_x[2];
 
     for (int rank = 0; rank < 2; rank++) {
         choreo_init((element_id_t)rank);
@@ -1476,10 +1476,84 @@ ZTEST(choreo_script, test_form_excludes_a_different_track_peer_from_count)
         const tapestry_bse_directive_t *d = choreo_get_directive();
         zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT,
                       "form circle must move");
-        zassert_within(d->target.x, expect_x[rank], EPS,
-                       "rank %d circle x (2-slot, not 3-slot)", rank);
+        got_x[rank] = d->target.x;
         zassert_within(d->target.y, 10.0f, EPS, "rank %d circle y", rank);
     }
+    zassert_within(fminf(got_x[0], got_x[1]), 5.0f, EPS,
+                   "2-slot circle, not 3-slot: west vertex");
+    zassert_within(fmaxf(got_x[0], got_x[1]), 15.0f, EPS,
+                   "2-slot circle, not 3-slot: east vertex");
+}
+
+/* FORM tick for element `self` (0..n-1) of n at positions xs/ys; the
+ * directive target is returned. */
+static position_t form_target_for(const choreo_goal_t *goal, int self, int n,
+                                  const float *xs, const float *ys)
+{
+    choreo_init((element_id_t)self);
+    zassert_equal(choreo_submit_goal(goal), 0, "submit failed");
+    wm_reset();
+    for (int i = 0; i < n; i++) {
+        if (i == self) {
+            wm_set_self(i, (element_id_t)i, xs[i], ys[i]);
+        } else {
+            wm_set_peer(i, xs[i], ys[i], false);
+        }
+    }
+    scr_state_t scr;
+    scr_init(&scr, (element_id_t)self, 0, 0, SCR_CAP_NONE);
+    scr_tick(&scr, &wm);
+    choreo_tick(&wm, &scr);
+    const tapestry_bse_directive_t *d = choreo_get_directive();
+    zassert_equal(d->type, TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT, "form must move");
+    return d->target;
+}
+
+/* Ids out of bearing order: each element takes the vertex beside it, not
+ * the one its id rank gives (which would send paths across the ring). */
+ZTEST(choreo_script, test_form_takes_the_vertex_nearest_each_element)
+{
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
+        .target = { 50.0f, 50.0f },
+        .radius = 20.0f,
+        .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
+    };
+    const float xs[4] = { 48.0f, 75.0f, 27.0f, 52.0f };
+    const float ys[4] = { 25.0f, 52.0f, 49.0f, 74.0f };
+    /* vertices E, N, W, S of the ring; nearest: id0 S, id1 E, id2 W, id3 N */
+    const float want_x[4] = { 50.0f, 70.0f, 30.0f, 50.0f };
+    const float want_y[4] = { 30.0f, 50.0f, 50.0f, 70.0f };
+
+    for (int self = 0; self < 4; self++) {
+        position_t t = form_target_for(&goal, self, 4, xs, ys);
+        zassert_within(t.x, want_x[self], EPS, "id%d x", self);
+        zassert_within(t.y, want_y[self], EPS, "id%d y", self);
+    }
+}
+
+/* A radius-20 ring around (85, 95) slides to centre (70, 70) inside
+ * [10, 90]; each element still gets its nearest vertex of the slid ring. */
+ZTEST(choreo_script, test_form_bounds_slide_the_ring_inside)
+{
+    choreo_goal_t goal = {
+        .type   = CHOREO_GOAL_FORM,
+        .target = { 85.0f, 95.0f },
+        .radius = 20.0f,
+        .shape  = TAPESTRY_BSE_SHAPE_CIRCLE,
+    };
+    const float xs[4] = { 92.0f, 70.0f, 48.0f, 70.0f };
+    const float ys[4] = { 70.0f, 92.0f, 70.0f, 48.0f };
+    const float want_x[4] = { 90.0f, 70.0f, 50.0f, 70.0f };
+    const float want_y[4] = { 70.0f, 90.0f, 70.0f, 50.0f };
+
+    bse_set_form_bounds(10.0f, 10.0f, 90.0f, 90.0f);
+    for (int self = 0; self < 4; self++) {
+        position_t t = form_target_for(&goal, self, 4, xs, ys);
+        zassert_within(t.x, want_x[self], EPS, "id%d x", self);
+        zassert_within(t.y, want_y[self], EPS, "id%d y", self);
+    }
+    bse_set_form_bounds(1.0f, 1.0f, 0.0f, 0.0f);   /* clear: persists across bse_init() */
 }
 
 ZTEST(choreo_script, test_form_rank_ignores_a_lower_id_peer_on_another_track)

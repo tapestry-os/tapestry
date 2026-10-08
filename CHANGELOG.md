@@ -40,6 +40,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   keeps quorum; a silent peer is noticed 1.5 s later. `cutebot-formation`
   no longer overrides it; `webots-warehouse` keeps 1500 ms, which its scenes
   are tuned to (at 3000 ms scene 2's partition never forms).
+- **FORM assigns slots by distance**, not by id rank: each element takes its
+  vertex in the minimum-total-distance assignment, so paths no longer cross
+  the shape. New `bse_set_form_bounds()` slides a shape inside an arena;
+  `cutebot-formation` keeps its rings on the play area ([10, 90]).
 - `cf21bl-formation` lands in place on low battery (`why=battery`) instead of
   flying home, which after a swap is where the partner lands.
 
