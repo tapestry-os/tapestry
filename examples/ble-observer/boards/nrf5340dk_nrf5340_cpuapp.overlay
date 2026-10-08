@@ -1,6 +1,11 @@
 /* 1 Mbaud on the DK's USB serial (the J-Link VCOM): four robots produce
  * roughly 110 lines/s of up to ~170 bytes, ~19 kB/s, which 115200 cannot
- * carry. */
+ * carry.  Hardware flow control (RTS/CTS, already routed to the interface
+ * MCU) lets the J-Link hold the UART back instead of losing bytes: without
+ * it ~1.6% of lines arrived with characters missing, in bursts, while the
+ * link carried under 10% of its capacity.  A backlog now shows up as
+ * dropped lines in the stats line instead. */
 &uart0 {
 	current-speed = <1000000>;
+	hw-flow-control;
 };
