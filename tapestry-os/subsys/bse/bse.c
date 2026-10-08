@@ -21,8 +21,9 @@
  *     assignments, N = active fresh element count, using intent.shape:
  *     CIRCLE (regular N-gon), LINE (evenly spaced on the X axis), or GRID
  *     (near-square rows/cols, radius as cell spacing) — all centered on
- *     intent.target.  Each element independently derives its own vertex
- *     from its peer-rank ordinal; no coordination messages needed.
+ *     intent.target (slid inside bse_set_form_bounds() if set).  Each
+ *     element independently takes its slot from the minimum-total-distance
+ *     assignment of participants to vertices; no coordination messages.
  *   - Task decomposition (EXCHANGE): rotate stations by slot_shift around
  *     the ID-sorted participant ring, over a SNAPSHOT of positions captured
  *     at activation; the commanded target travels a CCW arc about the
@@ -267,6 +268,147 @@ static int collect_participants(const world_model_t *wm,
         }
     }
     return count;
+}
+
+/* ── FORM slots ───────────────────────────────────────────────────────────── */
+
+/* bse_set_form_bounds(): the arena every FORM slot is kept inside.  Not
+ * reset by bse_init() — an arena belongs to the deployment, not a script. */
+static bool  s_form_bounds_set;
+static float s_form_min_x, s_form_min_y, s_form_max_x, s_form_max_y;
+
+/* Slot k of `count` for intent.shape, as an UNROTATED offset from the
+ * frame origin. */
+static void form_slot_offset(int k, int count, float *ox, float *oy)
+{
+    switch (s_intent.shape) {
+    case TAPESTRY_BSE_SHAPE_LINE:
+        /* Evenly spaced along the X axis, spanning [-radius, +radius]. */
+        *ox = (count > 1)
+              ? -s_intent.radius
+                + (2.0f * s_intent.radius) / (float)(count - 1) * (float)k
+              : 0.0f;
+        *oy = 0.0f;
+        break;
+    case TAPESTRY_BSE_SHAPE_GRID: {
+        /* Near-square layout; radius reused as cell spacing. */
+        int cols = (int)ceilf(sqrtf((float)count));
+        int rows = (int)ceilf((float)count / (float)cols);
+        *ox = ((float)(k % cols) - 0.5f * (float)(cols - 1)) * s_intent.radius;
+        *oy = ((float)(k / cols) - 0.5f * (float)(rows - 1)) * s_intent.radius;
+        break;
+    }
+    case TAPESTRY_BSE_SHAPE_CIRCLE:
+    default: {
+        float angle = 2.0f * BSE_PI * (float)k / (float)count;
+        *ox = s_intent.radius * cosf(angle);
+        *oy = s_intent.radius * sinf(angle);
+        break;
+    }
+    }
+}
+
+/* Slide slot[0..n) along x (axis 0) or y (axis 1) so it fits [lo, hi];
+ * a shape wider than the range is centred in it instead. */
+static void form_fit_axis(position_t slot[], int n, int axis, float lo, float hi)
+{
+    float mn = INFINITY, mx = -INFINITY;
+    for (int i = 0; i < n; i++) {
+        float c = axis ? slot[i].y : slot[i].x;
+        mn = fminf(mn, c);
+        mx = fmaxf(mx, c);
+    }
+    float d = 0.0f;
+    if (mx - mn > hi - lo) {
+        d = 0.5f * (lo + hi) - 0.5f * (mn + mx);
+    } else if (mn < lo) {
+        d = lo - mn;
+    } else if (mx > hi) {
+        d = hi - mx;
+    }
+    for (int i = 0; i < n; i++) {
+        if (axis) {
+            slot[i].y += d;
+        } else {
+            slot[i].x += d;
+        }
+    }
+}
+
+/*
+ * Which slot participant `who` takes: the assignment minimizing the total
+ * distance from participants to slots (Hungarian algorithm, shortest
+ * augmenting paths, O(n^3)).  Every element runs it on the same ID-sorted
+ * participant list, so they agree up to their differing views of peer
+ * positions.  Minimum total distance means no two straight paths cross,
+ * and an element driving straight at its slot only makes its own
+ * assignment cheaper, so the answer does not flip mid-transit.  Ties go
+ * to the lower slot index.  noinline: its ~0.8 KB of scratch stays off
+ * bse_tick()'s frame for every other intent.
+ */
+static __attribute__((noinline))
+int form_assign_slot(const position_t pos[], const position_t slot[],
+                     int n, int who)
+{
+    /* 1-based: p[j] is the participant (1..n) holding slot j, 0 = none. */
+    float u[MAX_ELEMENTS + 1], v[MAX_ELEMENTS + 1], minv[MAX_ELEMENTS + 1];
+    int   p[MAX_ELEMENTS + 1], way[MAX_ELEMENTS + 1];
+    bool  used[MAX_ELEMENTS + 1];
+
+    for (int j = 0; j <= n; j++) {
+        u[j] = v[j] = 0.0f;
+        p[j] = way[j] = 0;
+    }
+    for (int i = 1; i <= n; i++) {
+        p[0] = i;
+        int j0 = 0;
+        for (int j = 0; j <= n; j++) {
+            minv[j] = INFINITY;
+            used[j] = false;
+        }
+        do {
+            used[j0] = true;
+            int   i0 = p[j0], j1 = 0;
+            float delta = INFINITY;
+            for (int j = 1; j <= n; j++) {
+                if (used[j]) {
+                    continue;
+                }
+                float dx = pos[i0 - 1].x - slot[j - 1].x;
+                float dy = pos[i0 - 1].y - slot[j - 1].y;
+                float dz = pos[i0 - 1].z - slot[j - 1].z;
+                float cur = sqrtf(dx * dx + dy * dy + dz * dz) - u[i0] - v[j];
+                if (cur < minv[j]) {
+                    minv[j] = cur;
+                    way[j]  = j0;
+                }
+                if (minv[j] < delta) {
+                    delta = minv[j];
+                    j1    = j;
+                }
+            }
+            for (int j = 0; j <= n; j++) {
+                if (used[j]) {
+                    u[p[j]] += delta;
+                    v[j]    -= delta;
+                } else {
+                    minv[j] -= delta;
+                }
+            }
+            j0 = j1;
+        } while (p[j0] != 0);
+        do {
+            int j1 = way[j0];
+            p[j0] = p[j1];
+            j0    = j1;
+        } while (j0 != 0);
+    }
+    for (int j = 1; j <= n; j++) {
+        if (p[j] == who + 1) {
+            return j - 1;
+        }
+    }
+    return who;   /* unreachable: every participant holds a slot */
 }
 
 /* ── Frames and anchors (FORM / CONVERGE, bse.h §5) ──────────────────────── */
@@ -871,7 +1013,8 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
 
     case TAPESTRY_BSE_INTENT_FORM: {
         /*
-         * Task decomposition (L6): map FORM intent onto a per-element vertex.
+         * Task decomposition (L6): map FORM intent onto a per-element vertex
+         * — the one form_assign_slot() gives this element.
          *
          * L5 still owns the QUORUM GATE: task_slot/swarm_size are valid only
          * when quorum >= DEGRADED (scr.h) — swarm_size == 0 otherwise, which
@@ -913,41 +1056,7 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
             break;
         }
 
-        /* Own vertex OFFSET from eff_target (the frame origin) — computed
-         * separately from eff_target itself so motion == SPIN (below) can
-         * rotate just the offset, shape-agnostically, instead of every
-         * shape needing its own rotation math. */
-        float ox, oy;
-        switch (s_intent.shape) {
-        case TAPESTRY_BSE_SHAPE_LINE: {
-            /* Evenly spaced along the X axis, spanning [-radius, +radius]. */
-            ox = (count > 1)
-                 ? -s_intent.radius
-                   + (2.0f * s_intent.radius) / (float)(count - 1) * (float)rank
-                 : 0.0f;
-            oy = 0.0f;
-            break;
-        }
-        case TAPESTRY_BSE_SHAPE_GRID: {
-            /* Near-square layout; radius reused as cell spacing. */
-            int cols = (int)ceilf(sqrtf((float)count));
-            int rows = (int)ceilf((float)count / (float)cols);
-            int col  = rank % cols;
-            int row  = rank / cols;
-            ox = ((float)col - 0.5f * (float)(cols - 1)) * s_intent.radius;
-            oy = ((float)row - 0.5f * (float)(rows - 1)) * s_intent.radius;
-            break;
-        }
-        case TAPESTRY_BSE_SHAPE_CIRCLE:
-        default: {
-            float angle = 2.0f * BSE_PI * (float)rank / (float)count;
-            ox = s_intent.radius * cosf(angle);
-            oy = s_intent.radius * sinf(angle);
-            break;
-        }
-        }
-
-        /* Motion (bse.h §6): SPIN rotates the offset about the frame
+        /* Motion (bse.h §6): SPIN rotates the shape about the frame
          * origin at spin_rate_radps.  Achievement generalizes unchanged —
          * s_goal_pt is tick-scoped and simply tracks the rotating vertex. */
         float theta = s_intent.rotation_rad;   /* orientation (bse.h) */
@@ -956,19 +1065,26 @@ void bse_tick(const world_model_t *wm, const scr_state_t *scr)
                                * ((float)WM_CYCLE_MS * 0.001f);
             theta += s_act.spin_theta;
         }
-        if (theta != 0.0f) {
-            float c = cosf(theta);
-            float s = sinf(theta);
-            float rox = ox * c - oy * s;
-            float roy = ox * s + oy * c;
-            ox = rox;
-            oy = roy;
+        float c = cosf(theta);
+        float s = sinf(theta);
+
+        /* Every slot, rotated and placed about eff_target, then slid
+         * inside the form bounds (if set) — all slots are needed to pick
+         * this element's own. */
+        position_t slot[MAX_ELEMENTS];
+        for (int k = 0; k < count; k++) {
+            float ox, oy;
+            form_slot_offset(k, count, &ox, &oy);
+            slot[k].x = eff_target.x + ox * c - oy * s;
+            slot[k].y = eff_target.y + ox * s + oy * c;
+            slot[k].z = eff_target.z;   /* shapes are planar — z is the frame origin's */
+        }
+        if (s_form_bounds_set) {
+            form_fit_axis(slot, count, 0, s_form_min_x, s_form_max_x);
+            form_fit_axis(slot, count, 1, s_form_min_y, s_form_max_y);
         }
 
-        position_t tgt;
-        tgt.x = eff_target.x + ox;
-        tgt.y = eff_target.y + oy;
-        tgt.z = eff_target.z;   /* shapes are planar — z is the frame origin's */
+        position_t tgt = slot[form_assign_slot(part_pos, slot, count, rank)];
 
         s_directive.type   = TAPESTRY_BSE_DIRECTIVE_MOVE_TO_POINT;
         s_directive.target = tgt;
@@ -1150,4 +1266,13 @@ bool bse_anchor_lost(void)
 void bse_set_track_scope(uint8_t track)
 {
     s_track_scope = track;
+}
+
+void bse_set_form_bounds(float min_x, float min_y, float max_x, float max_y)
+{
+    s_form_bounds_set = min_x <= max_x && min_y <= max_y;
+    s_form_min_x = min_x;
+    s_form_min_y = min_y;
+    s_form_max_x = max_x;
+    s_form_max_y = max_y;
 }

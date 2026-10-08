@@ -59,25 +59,43 @@ def test_unknown_intent_falls_back_to_idle():
 
 # ── FORM ─────────────────────────────────────────────────────────────────────
 
-def test_form_circle_places_each_rank_on_its_ngon_vertex():
-    entries = wm([(0, 0)] * 4, self_id=0)
-    for rank in range(4):
-        b = run(rank, BSEIntent(type=BSEIntentType.FORM, target=(10.0, 20.0, 0.0),
-                                radius=5.0, shape=BSEShape.CIRCLE),
-                wm([(0, 0)] * 4, self_id=rank))
-        angle = 2.0 * math.pi * rank / 4
-        approx_xy(b.get_directive().target,
-                  (10.0 + 5.0 * math.cos(angle), 20.0 + 5.0 * math.sin(angle)))
-    assert len(entries) == 4
+def form_targets(intent, positions, bounds=None):
+    """Every element's FORM target, by id, all ticking the same world."""
+    out = []
+    for i in range(len(positions)):
+        b = BSE(i)
+        if bounds is not None:
+            b.set_form_bounds(*bounds)
+        b.submit_intent(intent)
+        b.tick(wm(positions, self_id=i), HEALTHY)
+        out.append(b.get_directive().target)
+    return out
 
 
-def test_form_line_spreads_ranks_evenly_across_the_diameter():
-    """N ranks on [target.x - radius, target.x + radius], y untouched."""
-    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 7.0, 0.0),
-                                radius=3.0, shape=BSEShape.LINE),
-                   wm([(0, 0)] * 4, self_id=r)).get_directive().target
-               for r in range(4)]
-    assert [t[0] for t in targets] == [-3.0, -1.0, 1.0, 3.0]
+def assert_same_points(got, expected, tol=1e-9):
+    """Same multiset of points, any order."""
+    key = lambda t: (round(t[0], 6), round(t[1], 6))
+    for g, e in zip(sorted(got, key=key), sorted(expected, key=key)):
+        approx_xy(g, e, tol)
+    assert len(got) == len(expected)
+
+
+def test_form_circle_puts_one_element_on_each_ngon_vertex():
+    """All co-located (every assignment ties): still each vertex once."""
+    targets = form_targets(BSEIntent(type=BSEIntentType.FORM,
+                                     target=(10.0, 20.0, 0.0), radius=5.0,
+                                     shape=BSEShape.CIRCLE), [(0, 0)] * 4)
+    assert_same_points(targets, [
+        (10.0 + 5.0 * math.cos(2.0 * math.pi * k / 4),
+         20.0 + 5.0 * math.sin(2.0 * math.pi * k / 4)) for k in range(4)])
+
+
+def test_form_line_spreads_elements_evenly_across_the_diameter():
+    """N slots on [target.x - radius, target.x + radius], y untouched."""
+    targets = form_targets(BSEIntent(type=BSEIntentType.FORM,
+                                     target=(0.0, 7.0, 0.0), radius=3.0,
+                                     shape=BSEShape.LINE), [(0, 0)] * 4)
+    assert sorted(t[0] for t in targets) == [-3.0, -1.0, 1.0, 3.0]
     assert all(t[1] == 7.0 for t in targets)
 
 
@@ -90,33 +108,97 @@ def test_form_line_of_one_stays_on_the_target():
 
 
 def test_form_grid_is_a_centered_near_square():
-    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0, 0.0),
-                                radius=2.0, shape=BSEShape.GRID),
-                   wm([(0, 0)] * 4, self_id=r)).get_directive().target
-               for r in range(4)]
-    assert targets == [(-1.0, -1.0, 0.0), (1.0, -1.0, 0.0),
-                       (-1.0, 1.0, 0.0), (1.0, 1.0, 0.0)]
+    targets = form_targets(BSEIntent(type=BSEIntentType.FORM,
+                                     target=(0.0, 0.0, 0.0), radius=2.0,
+                                     shape=BSEShape.GRID), [(0, 0)] * 4)
+    assert_same_points(targets, [(-1.0, -1.0), (1.0, -1.0),
+                                 (-1.0, 1.0), (1.0, 1.0)])
 
 
 def test_form_grid_handles_a_non_square_count():
     """N=5 → 3 cols x 2 rows; radius is the cell spacing, not a radius."""
-    targets = [run(r, BSEIntent(type=BSEIntentType.FORM, target=(0.0, 0.0, 0.0),
-                                radius=1.0, shape=BSEShape.GRID),
-                   wm([(0, 0)] * 5, self_id=r)).get_directive().target
-               for r in range(5)]
-    assert targets[0] == (-1.0, -0.5, 0.0)
-    assert targets[2] == (1.0, -0.5, 0.0)
-    assert targets[3] == (-1.0, 0.5, 0.0)
+    targets = form_targets(BSEIntent(type=BSEIntentType.FORM,
+                                     target=(0.0, 0.0, 0.0), radius=1.0,
+                                     shape=BSEShape.GRID), [(0, 0)] * 5)
+    assert_same_points(targets, [(-1.0, -0.5), (0.0, -0.5), (1.0, -0.5),
+                                 (-1.0, 0.5), (0.0, 0.5)])
 
 
-def test_form_ranks_by_sorted_element_id_not_world_model_order():
-    """Vertex assignment must be order-independent: every element derives
-    the same ring from the same ID set regardless of gossip arrival order."""
-    entries = wm([(0, 0)] * 3, self_id=2)
-    b_forward = run(2, BSEIntent(type=BSEIntentType.FORM, radius=10.0), entries)
-    b_reverse = run(2, BSEIntent(type=BSEIntentType.FORM, radius=10.0),
-                    list(reversed(entries)))
-    assert b_forward.get_directive().target == b_reverse.get_directive().target
+RING4 = BSEIntent(type=BSEIntentType.FORM, target=(50.0, 50.0, 0.0),
+                  radius=20.0, shape=BSEShape.CIRCLE)
+# CIRCLE vertices of RING4: E, N, W, S.
+E, N, W, S = (70.0, 50.0), (50.0, 70.0), (30.0, 50.0), (50.0, 30.0)
+
+
+def test_form_takes_the_vertex_nearest_each_element():
+    """Ids out of bearing order: each still takes the vertex beside it,
+    not the one its id rank would give (which crosses the ring)."""
+    targets = form_targets(RING4, [(48, 25), (75, 52), (27, 49), (52, 74)])
+    for t, want in zip(targets, [S, E, W, N]):
+        approx_xy(t, want)
+
+
+def test_form_assignment_has_no_crossing_paths():
+    """Two elements each nearer the other's 'rank' vertex: swap, not cross.
+    Element 0 west of centre and 1 east of it; rank order would send 0 east
+    and 1 west through each other."""
+    targets = form_targets(BSEIntent(type=BSEIntentType.FORM,
+                                     target=(50.0, 50.0, 0.0), radius=20.0,
+                                     shape=BSEShape.LINE), [(35, 55), (65, 45)])
+    approx_xy(targets[0], (30.0, 50.0))
+    approx_xy(targets[1], (70.0, 50.0))
+
+
+def test_form_assignment_holds_while_elements_drive_to_their_vertices():
+    """Moving straight at its own vertex only makes the chosen assignment
+    cheaper, so it never flips mid-transit."""
+    start = [(50, 45), (40, 52), (58, 55), (47, 60)]
+    first = form_targets(RING4, start)
+    for f in (0.25, 0.5, 0.75, 1.0):
+        moved = [(p[0] + f * (t[0] - p[0]), p[1] + f * (t[1] - p[1]))
+                 for p, t in zip(start, first)]
+        assert form_targets(RING4, moved) == first
+
+
+def test_form_assignment_ignores_world_model_order():
+    """Every element derives the same assignment from the same set,
+    regardless of gossip arrival order."""
+    entries = wm([(48, 25), (75, 52), (27, 49), (52, 74)], self_id=2)
+    forward = run(2, RING4, entries)
+    reverse = run(2, RING4, list(reversed(entries)))
+    assert forward.get_directive().target == reverse.get_directive().target
+
+
+def test_form_bounds_slide_the_shape_inside():
+    """A radius-20 ring around (85, 95) would reach x=105 and y=115: the
+    whole ring slides to centre (70, 70) to fit [10, 90], shape unchanged."""
+    intent = BSEIntent(type=BSEIntentType.FORM, target=(85.0, 95.0, 0.0),
+                       radius=20.0, shape=BSEShape.CIRCLE)
+    targets = form_targets(intent, [(0, 0)] * 4, bounds=(10.0, 10.0, 90.0, 90.0))
+    assert_same_points(targets, [(90.0, 70.0), (70.0, 90.0),
+                                 (50.0, 70.0), (70.0, 50.0)])
+
+
+def test_form_bounds_centre_a_shape_wider_than_them():
+    intent = BSEIntent(type=BSEIntentType.FORM, target=(20.0, 50.0, 0.0),
+                       radius=30.0, shape=BSEShape.LINE)
+    targets = form_targets(intent, [(0, 0)] * 2, bounds=(0.0, 0.0, 40.0, 100.0))
+    assert_same_points(targets, [(-10.0, 50.0), (50.0, 50.0)])
+
+
+def test_form_bounds_leave_a_shape_already_inside_alone():
+    targets = form_targets(RING4, [(0, 0)] * 4, bounds=(10.0, 10.0, 90.0, 90.0))
+    assert_same_points(targets, [E, N, W, S])
+
+
+def test_form_bounds_clear_with_min_above_max():
+    b = BSE(0)
+    b.set_form_bounds(10.0, 10.0, 90.0, 90.0)
+    b.set_form_bounds(1.0, 0.0, 0.0, 0.0)
+    b.submit_intent(BSEIntent(type=BSEIntentType.FORM, target=(95.0, 50.0, 0.0),
+                              radius=0.0))
+    b.tick(wm([(0, 0)]), HEALTHY)
+    approx_xy(b.get_directive().target, (95.0, 50.0))
 
 
 def test_form_excludes_stale_and_inactive_peers_from_the_ring():

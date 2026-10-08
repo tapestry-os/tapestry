@@ -468,4 +468,14 @@ bool bse_anchor_lost(void);
  */
 void bse_set_track_scope(uint8_t track);
 
+/*
+ * bse_set_form_bounds — keep every FORM slot inside [min_x, max_x] x
+ * [min_y, max_y]: a shape that would cross an edge slides inward as a
+ * whole (one axis at a time), and one wider than the bounds is centred in
+ * them.  For a fenced arena, e.g. a ring around a landmark found near the
+ * edge.  min > max on either axis clears it (the default).  Not reset by
+ * bse_init() — the arena belongs to the deployment, not to a script.
+ */
+void bse_set_form_bounds(float min_x, float min_y, float max_x, float max_y);
+
 #endif /* TAPESTRY_BSE_H */

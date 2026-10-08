@@ -102,7 +102,7 @@ const tapestry_bse_directive_t *d = choreo_get_directive();
 
 | Goal | Directive produced |
 |---|---|
-| `CHOREO_GOAL_FORM` | `MOVE_TO_POINT` — vertex by element_id rank; `shape` CIRCLE (N-gon), LINE (evenly spaced), or GRID (near-square rows/cols) |
+| `CHOREO_GOAL_FORM` | `MOVE_TO_POINT` — vertex from the minimum-total-distance assignment of participants to vertices; `shape` CIRCLE (N-gon), LINE (evenly spaced), or GRID (near-square rows/cols); `bse_set_form_bounds()` keeps the shape inside an arena |
 | `CHOREO_GOAL_MOVE` | `MOVE_TO_POINT` — target displaced by this element's own offset from the participant centroid (preserves formation; a solo element degenerates to CONVERGE) |
 | `CHOREO_GOAL_CONVERGE` | `MOVE_TO_POINT` — all elements to target (collapses formation) |
 | `CHOREO_GOAL_EXCHANGE` | `MOVE_TO_POINT` — rotate stations among participants, arc or direct path |

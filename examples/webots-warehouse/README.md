@@ -82,12 +82,13 @@ Each robot computes its own zone locally:
 - `scr_tick()` sorts the trusted, non-stale peers in *this robot's own world
   model* by element ID, and hands back `task_slot` (its own ordinal in that
   sort) and `swarm_size` (the count) — [`scr.c`](../../tapestry-os/subsys/scr/scr.c).
-- `bse_tick()` turns `FORM`+`grid` into a cell for exactly that rank —
-  [`bse.c`](../../tapestry-os/subsys/bse/bse.c).
+- `bse_tick()` lays out `FORM`+`grid` for that count and gives each robot
+  its cell in the minimum-total-distance assignment of the sorted robots to
+  the cells — [`bse.c`](../../tapestry-os/subsys/bse/bse.c).
 
-Every robot computes the same sorted order from its own converged copy, so
-the assignment is consistent with no election, no assignment message, and no
-arbiter. Change the fleet size and the layout re-solves; there is nothing to
+Every robot computes the same sorted list and positions from its own
+converged copy, so the assignment is consistent with no election, no
+assignment message, and no arbiter. Change the fleet size and the layout re-solves; there is nothing to
 reconfigure.
 
 ## Scene 2 — Partition recovery, decentralized vs. centralized
