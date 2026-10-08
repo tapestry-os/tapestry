@@ -473,7 +473,7 @@ jobs:
   # against the real SDK before trusting a change to the Webots device calls
   # themselves is still on you — see ci-check/Makefile's own comment.
   webots-formation:
-    name: webots-formation compile check (header stubs, no Webots install)
+    name: Webots compile checks (header stubs, no Webots install)
     runs-on: ubuntu-22.04
 
     steps:
@@ -484,4 +484,12 @@ jobs:
 
       - name: Build cf21bl controller against Webots header stubs
         working-directory: tapestry/examples/webots-formation/ci-check
+        run: make
+
+      - name: Build cutebot controller against Webots header stubs
+        working-directory: tapestry/examples/webots-formation/ci-check-cutebot
+        run: make
+
+      - name: Build webots-warehouse controllers against Webots header stubs
+        working-directory: tapestry/examples/webots-warehouse/ci-check
         run: make
