@@ -109,6 +109,295 @@ Solid {
 }
 
 
+# -- Pick stations ----------------------------------------------------------
+# Purely cosmetic set dressing -- a small box stack at each of the 9
+# FORM/GRID cells (scene1-zone-allocation.choreo.toml: target=[0,0,0],
+# shape="grid", radius=3.5 -- bse.c's GRID math gives the same 3x3 centers
+# these use). Offset 1.0 m into the upper-right (north-east) quadrant of
+# each cell's own territory, not the cell center itself -- the first
+# version sat 0.8 m north of center and robots drove straight through it
+# (no boundingObject, so nothing stopped them, and it looked wrong even
+# without physics). North-east was empirically clear of every robot's
+# travel path in the run this was checked against; re-verify if the
+# fleet's paths ever change. Sized 2x the original (0.8x0.8x0.6 base box)
+# for visibility, with a third, smaller box added on top for a fuller
+# stack. No boundingObject (nothing for a robot to physically collide
+# with -- these are not part of the simulation the robots' own scripted
+# targets know about) and no controller (unlike "warehouse supervisor"
+# below, these are not even a Robot node, so there is no ambiguity about
+# authority: a plain Solid cannot read as one).
+
+Solid {
+  translation -2.5 -2.5 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 0 crate"
+    }
+    Solid {
+      translation 0.12 0.08 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 0 box"
+    }
+    Solid {
+      translation -0.08 0.1 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 0 lid"
+    }
+  ]
+  name "station 0"
+}
+Solid {
+  translation 1 -2.5 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 1 crate"
+    }
+    Solid {
+      translation -0.1 0.05 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 1 box"
+    }
+    Solid {
+      translation 0.1 -0.06 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 1 lid"
+    }
+  ]
+  name "station 1"
+}
+Solid {
+  translation 4.5 -2.5 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 2 crate"
+    }
+    Solid {
+      translation 0.08 -0.1 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 2 box"
+    }
+    Solid {
+      translation -0.1 -0.08 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 2 lid"
+    }
+  ]
+  name "station 2"
+}
+Solid {
+  translation -2.5 1 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 3 crate"
+    }
+    Solid {
+      translation 0.1 0.1 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 3 box"
+    }
+    Solid {
+      translation -0.06 0.09 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 3 lid"
+    }
+  ]
+  name "station 3"
+}
+Solid {
+  translation 1 1 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 4 crate"
+    }
+    Solid {
+      translation -0.08 -0.08 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 4 box"
+    }
+    Solid {
+      translation 0.09 0.07 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 4 lid"
+    }
+  ]
+  name "station 4"
+}
+Solid {
+  translation 4.5 1 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 5 crate"
+    }
+    Solid {
+      translation 0.1 -0.08 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 5 box"
+    }
+    Solid {
+      translation -0.07 -0.1 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 5 lid"
+    }
+  ]
+  name "station 5"
+}
+Solid {
+  translation -2.5 4.5 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 6 crate"
+    }
+    Solid {
+      translation -0.1 0.08 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 6 box"
+    }
+    Solid {
+      translation 0.08 -0.09 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 6 lid"
+    }
+  ]
+  name "station 6"
+}
+Solid {
+  translation 1 4.5 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 7 crate"
+    }
+    Solid {
+      translation 0.08 0.1 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 7 box"
+    }
+    Solid {
+      translation -0.09 0.06 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 7 lid"
+    }
+  ]
+  name "station 7"
+}
+Solid {
+  translation 4.5 4.5 0.0
+  children [
+    Solid {
+      translation 0 0 0.3
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.55 0.4 0.25 roughness 0.9 metalness 0 }
+        geometry Box { size 0.8 0.8 0.6 }
+      } ]
+      name "station 8 crate"
+    }
+    Solid {
+      translation -0.1 -0.1 0.82
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.62 0.46 0.3 roughness 0.9 metalness 0 }
+        geometry Box { size 0.52 0.52 0.44 }
+      } ]
+      name "station 8 box"
+    }
+    Solid {
+      translation 0.07 0.1 1.19
+      children [ Shape {
+        appearance PBRAppearance { baseColor 0.68 0.52 0.34 roughness 0.9 metalness 0 }
+        geometry Box { size 0.36 0.36 0.3 }
+      } ]
+      name "station 8 lid"
+    }
+  ]
+  name "station 8"
+}
+
 # -- The fleet ------------------------------------------------------------
 # controllerArgs: <element_id> <n_elements> <scene> [fail_at_s] -- read by
 # controllers/rover/main.c, and by the transceiver's per-element UDP port

@@ -180,7 +180,8 @@ def decode_fact(payload):
     hdr = {"sender": v[0], "count": v[1], "digest": v[2], "version": v[-1]}
     recs = []
     for i in range(min(v[1], 2)):
-        rec = dict(zip(FACT_RECORD_FIELDS, v[3 + i * n:3 + (i + 1) * n]))
+        rec = dict(zip(FACT_RECORD_FIELDS, v[3 + i * n:3 + (i + 1) * n],
+                       strict=True))
         recs.append(rec)
     return hdr, recs
 

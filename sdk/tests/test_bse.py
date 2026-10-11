@@ -74,10 +74,12 @@ def form_targets(intent, positions, bounds=None):
 
 def assert_same_points(got, expected, tol=1e-9):
     """Same multiset of points, any order."""
-    key = lambda t: (round(t[0], 6), round(t[1], 6))
-    for g, e in zip(sorted(got, key=key), sorted(expected, key=key)):
-        approx_xy(g, e, tol)
+    def key(t):
+        return (round(t[0], 6), round(t[1], 6))
     assert len(got) == len(expected)
+    for g, e in zip(sorted(got, key=key), sorted(expected, key=key),
+                    strict=True):
+        approx_xy(g, e, tol)
 
 
 def test_form_circle_puts_one_element_on_each_ngon_vertex():
@@ -134,7 +136,7 @@ def test_form_takes_the_vertex_nearest_each_element():
     """Ids out of bearing order: each still takes the vertex beside it,
     not the one its id rank would give (which crosses the ring)."""
     targets = form_targets(RING4, [(48, 25), (75, 52), (27, 49), (52, 74)])
-    for t, want in zip(targets, [S, E, W, N]):
+    for t, want in zip(targets, [S, E, W, N], strict=True):
         approx_xy(t, want)
 
 
@@ -156,7 +158,7 @@ def test_form_assignment_holds_while_elements_drive_to_their_vertices():
     first = form_targets(RING4, start)
     for f in (0.25, 0.5, 0.75, 1.0):
         moved = [(p[0] + f * (t[0] - p[0]), p[1] + f * (t[1] - p[1]))
-                 for p, t in zip(start, first)]
+                 for p, t in zip(start, first, strict=True)]
         assert form_targets(RING4, moved) == first
 
 
