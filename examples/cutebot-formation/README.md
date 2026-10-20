@@ -154,6 +154,42 @@ correction off; leak's spiral has its own rule, above):
 - Accumulated drift over the ~2 min lap is uncorrected: expect final
   positions off by several units.
 
+### Stationary sensor: `leak-sensor.choreo.toml`
+
+A stationary **leak sensor**, a dev board running
+[`examples/leak-sensor`](../leak-sensor/README.md), sits on the board at a
+configured position. The robots first move out from the start cross to
+`home`, a radius-20 ring about the centre, and wait there until someone
+presses the sensor's button. Then they form a radius-20 ring around the
+sensor. Switch a robot off and the rest re-form into a triangle. Press the
+sensor's clear button and they go back home and wait for the next leak, so
+there is no power cycle between runs.
+
+If a robot is switched off or back on while they wait, everyone re-forms
+`home`, so the next leak always starts from an even ring. Put a robot that
+is switched back on on its start-cross spot, as at boot: it starts at
+`home` too and takes its slot.
+
+One script runs on every element. Each element picks a track by its own
+capabilities: robots (locomotion) take `responders`, and the sensor takes
+the catch-all. FORM ranks and `element_lost`/`joined` count only peers on
+the same track, so the sensor is never a ring vertex, and the sensor
+rebooting or dropping out does not count as a robot joining or leaving. The sensor gossips
+`ELEMENT_HEALTH_STATIONARY`, which gives it its own keep-out
+(`DEMO_TRACK_STATIONARY_SEP`, 15.8 units against 25.3 between robots) and
+keeps it out of auto-ID's `n_total` and the start barrier.
+
+```sh
+python3 tapestry/sdk/tools/choreoc.py tapestry/examples/cutebot-formation/leak-sensor.choreo.toml \
+    -o tapestry/examples/cutebot-formation/src/choreo_script.h
+west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation -p always \
+    -- -DCONFIG_CUTEBOT_VARIANT_PRO=y -DEXTRA_CONF_FILE=ble_debug.conf
+```
+
+Place the sensor where its build says (default (70, 70), two squares
+diagonally from the centre). The robots ring the configured point, not
+where the board actually lies.
+
 ## Hardware
 
 | Item | Details |

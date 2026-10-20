@@ -1,0 +1,145 @@
+# leak-sensor.choreo.toml — "the sensor calls, the robots cordon it": a
+# stationary leak sensor (examples/leak-sensor — an EVB placed on the board)
+# sits among four parked robots.  Nobody moves until someone presses the
+# sensor's button; then all four robots form a circle around the sensor.
+# Power one robot off and the other three re-balance into a triangle.
+#
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/leak-sensor.choreo.toml \
+#       -o tapestry/examples/cutebot-formation/src/choreo_script.h
+#   python3 tapestry/sdk/tools/choreoc.py \
+#       tapestry/examples/cutebot-formation/leak-sensor.choreo.toml \
+#       -o tapestry/examples/leak-sensor/src/choreo_script.h
+#
+# ONE script, every element: the robots and the sensor both run it, and each
+# picks its track by its own capabilities.  The robots have locomotion and
+# take "responders"; the sensor has none and falls through to the catch-all.
+# Each element gossips its track (current_track), and FORM's ranks and
+# element_lost/joined count only peers on their own track — so the sensor
+# is never a ring vertex, and the same file run on five robots would put
+# all five in the ring.  No firmware special case decides who rings.
+#
+# What the sensor is to the robots physically is NOT in the script: it
+# gossips ELEMENT_HEALTH_STATIONARY (csm.h), so the robots give it its own
+# keep-out (DEMO_TRACK_STATIONARY_SEP, 15.8 units, vs 25.3 between robots)
+# and auto-ID leaves it out of n_total.
+#
+# How the leak is shared (L4 shared facts, wire v7): the button publishes a
+# TARGET fact at the sensor's configured position.  Every element holds the
+# same fact table and re-sends it on Trickle, so a robot switched off and
+# back on — or the sensor itself after a reboot — relearns it from any peer
+# and rings the same spot.  "landmark_added" (type target) fires on every
+# robot once the fact is held; the ring anchors on the fact's stored
+# position, never a robot's live one.
+#
+# Geometry: radius 20 puts four robots 28.3 units apart and three 34.6
+# apart, clear of the robots' own 25.3 keep-out, and leaves 4.2 units
+# between each vertex and the sensor's 15.8 keep-out (more than eps 3).
+#
+# PLACEMENT: the sensor's position is set at build time
+# (CONFIG_LEAK_SENSOR_X/Y, default (70, 70): two squares right and two up
+# from the centre, on a grid crossing).  The robots wait on "home", a
+# radius-20 ring about the centre; anywhere about 2.5-3 squares out keeps
+# the ring around the sensor inside the play area (FORM slides slots inward
+# at the border, which would pull one into the keep-out).  Place the sensor
+# where its configuration says — the robots ring where it says it is, not
+# where it lies.
+#
+# HOME, a radius-20 ring about the board centre, is where the robots wait.
+# They form it first, straight out from the start cross along their own
+# axes (four robots on the radius-10 cross are 14.1 units apart, inside
+# their own 25.3 keep-out — fine while parked, not as a starting point for
+# the ring).  They return to it when the leak is cleared (sensor sw1: no
+# power cycle between runs), and whenever a robot joins or leaves while
+# they wait, so the next leak always starts from an even ring of whoever is
+# present.  A robot switched back on starts at "home" too and takes its
+# slot; its peers re-form around it (hardware, 2026-10-19: without this a
+# rejoined robot stayed on its start cross inside the others' triangle and
+# the next ring re-assigned slots mid-transit).  With the sensor at
+# (70, 70), two home slots are also ring slots.  The trigger is level, not
+# edge: "landmark_added" fires whenever a target fact is held, so a robot
+# switched on while a leak is held goes from "home" straight to the ring —
+# clear the leak, or power the sensor off too, to start clean.
+#
+# Bounds: each track's max_runtime covers a full 75-minute demo slot of
+# waiting, rings and resets; the holds run that long too.
+
+choreo = "leak-sensor"
+
+[[tracks]]
+# "responders"
+filter      = { requires = ["locomotion"] }
+max_runtime = "90min"
+
+[[tracks.steps]]
+# Leak cleared, a robot joined or left, or just booted: an even ring about
+# the centre, then wait.  A leak already held goes straight to the ring.
+name = "home"
+[tracks.steps.form]
+shape     = "circle"
+target    = [50.0, 50.0, 0.0]
+radius    = 20.0
+until     = "achieved"
+eps       = 3.0
+settle    = "2s"
+timeout   = "90s"
+requires  = ["locomotion", "abs_position"]
+indicator = "idle"
+on        = [
+  { event = "achieved",       goto = "wait" },
+  { event = "landmark_added", type = "target", goto = "ring" },
+]
+
+[[tracks.steps]]
+# Parked on home until the sensor reports.
+name = "wait"
+[tracks.steps.hold]
+duration  = "75min"
+requires  = ["locomotion"]
+indicator = "idle"
+on        = [
+  { event = "landmark_added", type = "target", goto = "ring" },
+  { event = "element_joined", goto = "home" },
+  { event = "element_lost",   goto = "home" },
+]
+
+[[tracks.steps]]
+name = "ring"
+[tracks.steps.form]
+shape         = "circle"
+frame         = "element"
+anchor        = { select = "landmark", type = "target", rank = 0 }
+radius        = 20.0
+until         = "achieved"
+eps           = 3.0
+settle        = "2s"
+timeout       = "90s"
+requires      = ["locomotion"]
+indicator     = "active"
+telemetry_tag = "leak"
+on            = [
+  { event = "achieved",            goto = "settled" },
+  { event = "landmark_retracted",  type = "target", goto = "home" },
+]
+
+[[tracks.steps]]
+# Holds the achieved ring; re-forms (4 -> 3 robots: a triangle) on a
+# debounced membership change, same as leak.choreo.toml's "settled".
+name = "settled"
+[tracks.steps.hold]
+duration  = "75min"
+requires  = ["locomotion"]
+indicator = "active"
+on = [
+  { event = "element_lost",       goto = "ring" },
+  { event = "element_joined",     goto = "ring" },
+  { event = "landmark_retracted", type = "target", goto = "home" },
+]
+
+[[tracks]]
+# Catch-all: the sensor (no locomotion).  It only holds; what it does — the
+# button, the fact, its LEDs — is its application's job, not the script's.
+# "sensors"
+
+[[tracks.steps]]
+hold = { duration = "90min" }

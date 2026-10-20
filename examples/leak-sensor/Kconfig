@@ -1,0 +1,29 @@
+mainmenu "Tapestry leak-sensor"
+
+source "Kconfig.zephyr"
+rsource "../../tapestry-os/subsys/transport/Kconfig"
+
+config TAPESTRY_ELEMENT_ID
+	int "Element ID (fixed, not negotiated)"
+	range 0 31
+	default 31
+	help
+	  A stationary element takes a fixed ID instead of joining auto-ID
+	  negotiation. Keep it at the top of [0, MAX_ELEMENTS) so it can never
+	  collide with a robot's negotiated ID, which counts up from 0. Give
+	  each sensor in the same deployment its own (31, 30, ...).
+
+config LEAK_SENSOR_X
+	int "Position X, world units"
+	range 0 100
+	default 70
+	help
+	  Where the sensor sits on the board, in the robots' [0, 100] world
+	  (examples/cutebot-formation: one chessboard square = 10 units,
+	  centre (50, 50)). The robots learn it from this element's gossip and
+	  ring this point, so place the board where this says.
+
+config LEAK_SENSOR_Y
+	int "Position Y, world units"
+	range 0 100
+	default 70
