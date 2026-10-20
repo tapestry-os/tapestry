@@ -521,8 +521,14 @@ int choreo_submit_goal(const choreo_goal_t *goal)
  * submitted that way would run forever undetected. Add the same check
  * here (or require the wire format to carry a precomputed total-timeout
  * value this function can enforce) before trusting scripts from any
- * source other than choreoc. */
-static int validate_steps(const choreo_step_t *steps, uint8_t n_steps)
+ * source other than choreoc.
+ *
+ * check_caps false skips only the capability check: a track whose filter
+ * requires capabilities this element lacks can never become its active
+ * track (track_matches() reads the same static capability set), so its
+ * steps' requirements say nothing about this element. */
+static int validate_steps(const choreo_step_t *steps, uint8_t n_steps,
+                          bool check_caps)
 {
     if (steps == NULL || n_steps == 0) {
         return -1;
@@ -543,7 +549,7 @@ static int validate_steps(const choreo_step_t *steps, uint8_t n_steps)
              * real duration bound. */
             return -1;
         }
-        if (!caps_satisfied(derived_caps(&st->goal))) {
+        if (check_caps && !caps_satisfied(derived_caps(&st->goal))) {
             return -EPERM;
         }
         for (uint8_t j = 0; j < st->n_transitions; j++) {
@@ -560,7 +566,7 @@ static int validate_steps(const choreo_step_t *steps, uint8_t n_steps)
 
 int choreo_submit_script(const choreo_step_t *steps, uint8_t n_steps)
 {
-    int rc0 = validate_steps(steps, n_steps);
+    int rc0 = validate_steps(steps, n_steps, true);
     if (rc0 != 0) {
         return rc0;
     }
@@ -682,12 +688,42 @@ choreo_goal_type_t choreo_current_goal_type(void)
  * comparison doesn't have the same "which direction changed" ambiguity a
  * flickering count does, so it isn't debounced the same way.
  */
-static void update_membership_debounce(const scr_state_t *scr,
+/*
+ * The collective this element coordinates with, for membership and count
+ * events: SCR's swarm (self + fresh, trusted, non-departed peers) minus
+ * peers on another track — the same peers bse.c's collect_participants()
+ * leaves out of FORM.  A peer doing something else (a stationary sensor on
+ * a catch-all track, a robot that migrated off to charge) neither joins
+ * nor leaves this one.  Identical to scr_get_swarm_size() without tracks.
+ */
+static uint8_t track_member_count(const world_model_t *wm,
+                                  const scr_state_t *scr)
+{
+    uint8_t n = scr_get_swarm_size(scr);
+    if (n == 0 || s_n_tracks == 0 || wm == NULL) {
+        return n;
+    }
+    uint8_t own_track = choreo_current_track();
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_self || !element_is_participating(e) || e->is_stale ||
+            !scr_peer_is_trusted(scr, e->state.id)) {
+            continue;
+        }
+        if (e->state.current_track != own_track && n > 1u) {
+            n--;
+        }
+    }
+    return n;
+}
+
+static void update_membership_debounce(const world_model_t *wm,
+                                       const scr_state_t *scr,
                                        bool *joined, bool *lost)
 {
     *joined = false;
     *lost   = false;
-    uint8_t raw = scr_get_swarm_size(scr);
+    uint8_t raw = track_member_count(wm, scr);
 
     if (!s_count_locked_valid) {
         s_count_locked_valid = true;
@@ -744,9 +780,9 @@ static bool event_fires(choreo_event_t event, uint8_t threshold,
     case CHOREO_EVENT_ELEMENT_LOST:
         return lost;
     case CHOREO_EVENT_COUNT_GTE:
-        return scr_get_swarm_size(scr) >= threshold;
+        return track_member_count(wm, scr) >= threshold;
     case CHOREO_EVENT_COUNT_EQ:
-        return scr_get_swarm_size(scr) == threshold;
+        return track_member_count(wm, scr) == threshold;
     case CHOREO_EVENT_ANCHOR_LOST:
         return bse_anchor_lost();
     case CHOREO_EVENT_QUORUM_LOST:
@@ -945,7 +981,7 @@ static void script_advance(const world_model_t *wm, const scr_state_t *scr)
     s_step_ms += WM_CYCLE_MS;
 
     bool joined, lost;
-    update_membership_debounce(scr, &joined, &lost);
+    update_membership_debounce(wm, scr, &joined, &lost);
 
     int target_idx = -1;
     for (uint8_t i = 0; i < st->n_transitions; i++) {
@@ -1167,8 +1203,14 @@ int choreo_submit_tracks(const world_model_t *wm, const choreo_track_t *tracks, 
     if (wm == NULL || tracks == NULL || n_tracks == 0 || n_tracks > CHOREO_MAX_TRACKS) {
         return -1;
     }
+    /* Every track is checked for structure; capabilities only on the
+     * tracks this element could ever run (see validate_steps()) — else a
+     * capability filter would reject exactly the elements it exists to
+     * route elsewhere (a sensor without locomotion beside a locomotion-
+     * filtered track). */
     for (uint8_t i = 0; i < n_tracks; i++) {
-        int rc0 = validate_steps(tracks[i].steps, tracks[i].n_steps);
+        int rc0 = validate_steps(tracks[i].steps, tracks[i].n_steps,
+                                 caps_satisfied(tracks[i].filter.required_caps));
         if (rc0 != 0) {
             return rc0;
         }

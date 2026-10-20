@@ -1010,6 +1010,74 @@ def test_track_capability_filter_matches_first_track():
     assert c.current_track() == 0, "SENSOR cap must match the first declared track"
 
 
+def test_track_an_unreachable_tracks_capabilities_are_not_checked():
+    """A stationary sensor beside a locomotion-filtered FORM track: it can
+    never run that track, so the FORM's locomotion floor must not reject
+    it.  It lands on the catch-all."""
+    c = Choreo(element_id=31, capabilities=CAP_SENSOR | CAP_ABS_POSITION)
+    movers = [ChoreoStep(goal=Goal(type=GoalType.FORM, target=(50.0, 50.0, 0.0),
+                                   radius=20.0,
+                                   required_caps=ChoreoCapabilities.LOCOMOTION),
+                         max_duration_ms=60_000)]
+    sensors = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(required_caps=ChoreoCapabilities.LOCOMOTION),
+                    steps=movers),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=sensors),
+    ]
+    assert c.submit_tracks(solo(), tracks) == 0
+    assert c.current_track() == 1
+
+
+def test_track_a_reachable_tracks_capabilities_are_still_checked():
+    """The catch-all matches every element, so its requirements bind
+    everyone: an element without SENSOR is rejected up front."""
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)
+    movers = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
+    catchall = [timed(required_caps=ChoreoCapabilities.SENSING)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(required_caps=ChoreoCapabilities.LOCOMOTION),
+                    steps=movers),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=catchall),
+    ]
+    assert c.submit_tracks(solo(), tracks) == -errno.EPERM
+
+
+def test_track_membership_counts_only_the_own_track():
+    """element_joined/element_lost and count_* see the collective on this
+    element's track: a peer on another track (a stationary sensor on the
+    catch-all) coming and going is no membership change."""
+    c = Choreo(element_id=0, capabilities=CAP_ACTUATOR)
+    movers = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=600_000,
+                         on=[ChoreoTransition(event=ChoreoEvent.ELEMENT_JOINED,
+                                              goto_step_idx=1),
+                             ChoreoTransition(event=ChoreoEvent.ELEMENT_LOST,
+                                              goto_step_idx=1)]),
+              ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=600_000)]
+    others = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=600_000)]
+    tracks = [
+        ChoreoTrack(filter=ChoreoTrackFilter(required_caps=ChoreoCapabilities.LOCOMOTION),
+                    steps=movers),
+        ChoreoTrack(filter=ChoreoTrackFilter(), steps=others),
+    ]
+    entries = wm([(0, 0), (10, 0), (50, 50)], self_id=0)
+    entries[2]['current_track'] = 1          # the stationary peer
+    assert c.submit_tracks(entries, tracks) == 0
+    assert c.current_track() == 0
+    for _ in range(50):
+        c.tick(entries, HEALTHY)
+
+    gone = [e for e in entries if e is not entries[2]]   # other-track peer leaves
+    for _ in range(60):
+        c.tick(gone, HEALTHY)
+    assert c.script_step() == 0, "another track's peer leaving is not element_lost"
+
+    alone = [e for e in gone if e is not gone[1]]        # own-track peer leaves
+    for _ in range(60):
+        c.tick(alone, HEALTHY)
+    assert c.script_step() == 1, "an own-track peer leaving is element_lost"
+
+
 def test_track_no_match_and_no_catchall_is_rejected():
     c = Choreo(element_id=0, capabilities=0)
     steps = [ChoreoStep(goal=Goal(type=GoalType.HOLD), max_duration_ms=60_000)]
