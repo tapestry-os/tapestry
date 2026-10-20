@@ -326,6 +326,25 @@ static void compute_start_pos(element_id_t id, int n_total,
     *heading = a;
 }
 
+/*
+ * Fresh peers the start barrier waits for: robots only.  A stationary
+ * element (csm.h ELEMENT_HEALTH_STATIONARY — a sensor post) is not in
+ * auto-ID's n_total, so counting it here would release the barrier one
+ * robot early.
+ */
+static int demo_fresh_robot_peers(const world_model_t *wm)
+{
+    int fresh = 0;
+    for (int i = 0; i < MAX_ELEMENTS; i++) {
+        const wm_entry_t *e = &wm->entries[i];
+        if (e->is_active && !e->is_self && !e->is_stale &&
+            !element_is_stationary(e)) {
+            fresh++;
+        }
+    }
+    return fresh;
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -678,13 +697,7 @@ int main(void)
         wm_tick(&wm, WM_CYCLE_MS);
         substrate_set_signal(SUBSTRATE_SIGNAL_NONE);
 
-        int fresh = 0;
-        for (int i = 0; i < MAX_ELEMENTS; i++) {
-            const wm_entry_t *e = &wm.entries[i];
-            if (e->is_active && !e->is_self && !e->is_stale) {
-                fresh++;
-            }
-        }
+        int fresh = demo_fresh_robot_peers(&wm);
         if (fresh >= n_total - 1) {
             peers_ready_ms += WM_CYCLE_MS;
             if (peers_ready_ms >= DEMO_SYNC_SETTLE_MS) {
@@ -1518,13 +1531,7 @@ int main(void)
         wm_tick(&wm, WM_CYCLE_MS);
         demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
 
-        int fresh = 0;
-        for (int i = 0; i < MAX_ELEMENTS; i++) {
-            const wm_entry_t *e = &wm.entries[i];
-            if (e->is_active && !e->is_self && !e->is_stale) {
-                fresh++;
-            }
-        }
+        int fresh = demo_fresh_robot_peers(&wm);
         if (fresh >= n_total - 1) {
             peers_ready_ms += WM_CYCLE_MS;
             if (peers_ready_ms >= DEMO_SYNC_SETTLE_MS) {

@@ -96,6 +96,9 @@ bool transport_poll_directive(element_id_t own_id,
  *   3. Assigns the nonce-rank-th unclaimed ID as this element's identity.
  *
  * Sets *n_total_out to the estimated total swarm size (co-booting + running).
+ * Elements gossiping ELEMENT_HEALTH_STATIONARY (csm.h) are left out of both
+ * the count and the claimed-ID set: they hold fixed IDs, which must sit
+ * above the negotiated range (the top of [0, MAX_ELEMENTS)).
  * Returns the assigned element_id_t.
  */
 element_id_t transport_negotiate_id(int *n_total_out);

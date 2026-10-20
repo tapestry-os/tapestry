@@ -457,7 +457,8 @@ per robot before running the formation demo.
 `tests/` is a host-buildable ztest suite (no BLE, no hardware) covering
 `demo_track_target()`'s go-to-point law (arrival snap, trapezoidal
 approach, the exact-180°-behind reverse case, the emergency repulsion
-backstop) and the ring Choreo end-to-end (hold → form circle → settled
+backstop, the smaller keep-out around a stationary peer) and the ring
+Choreo end-to-end (hold → form circle → settled
 hold), driven through real `demo_odometry_t` + `demo_track_target` +
 `demo_odometry_update` integration (not a teleporting perfect tracker) —
 matches `cf21bl-formation/tests`'s pattern.
@@ -466,14 +467,6 @@ matches `cf21bl-formation/tests`'s pattern.
 west build -p always -b native_sim/native/64 tapestry/examples/cutebot-formation/tests
 ./build/zephyr/zephyr.exe
 ```
-
-Not run against real Zephyr/native_sim as part of writing this suite (no
-`west`/`ZEPHYR_BASE` toolchain available in that session) — the same
-scenarios were instead verified with a standalone host build (plain
-`clang`, no Zephyr, linking `formation.c` directly against the real
-`scr.c`/`bse.c`/`choreo.c`/`world_model.c` sources) and passed, including
-the 4-element ring end-to-end run. Run this suite for real the first
-time `native_sim` is available, before trusting it as a regression gate.
 
 ## Known limitations
 

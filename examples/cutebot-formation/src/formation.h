@@ -276,6 +276,24 @@
  * balance point moves with wherever the peer currently is. */
 #define DEMO_TRACK_REPEL_DEADBAND 5.0f
 
+/* Keep-out around a STATIONARY peer (csm.h ELEMENT_HEALTH_STATIONARY — a
+ * sensor post placed on the board).  DEMO_TRACK_MIN_SEP is sized for two
+ * robots closing on each other; here only this robot moves, so the margin
+ * can be smaller — and must be, for a radius-20 ring around the post to be
+ * reachable: a vertex inside the keep-out could never be achieved.  15.8
+ * units leaves such a ring 4.2 units of clearance, more than an achieve eps
+ * of 3.0.
+ *
+ * The gain is doubled to keep the head-on stopping distance physical: a
+ * robot beelining at the post balances where repulsion equals
+ * DEMO_TRACK_MAX_FORCE, i.e. at SEP - MAX_FORCE/K = 15.8 - 5.0 = 10.8 units
+ * (137 mm) centre to centre — clear of a ~110 mm robot against a board of
+ * about its size.  With the robot gain (4.0) it would be 5.8 units, 73 mm:
+ * contact.  Unlike a robot peer, a stationary peer still repels when its
+ * entry is stale: its position cannot have changed. */
+#define DEMO_TRACK_STATIONARY_SEP DEMO_MM(200.0f)   /* 15.8 units */
+#define DEMO_TRACK_STATIONARY_K   8.0f
+
 /* ── Dead-reckoning state ───────────────────────────────────────────────── */
 
 typedef struct {

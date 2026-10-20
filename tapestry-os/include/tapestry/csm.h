@@ -168,6 +168,22 @@ static inline orientation_t orientation_identity(void)
 #define ELEMENT_DEPARTED_REASON_SHIFT 6u
 #define ELEMENT_DEPARTED_REASON_MASK  0xC0u
 
+/* This element never moves: a fixed sensor post, a beacon, a station.  It
+ * is placed by hand at a configured position and gossips that position,
+ * so peers see it as a physical obstacle — with a keep-out of their own
+ * choosing, since only one side of the encounter is moving.  It takes a
+ * fixed element ID instead of negotiating one, and auto-ID does not count
+ * it: a negotiated collective's n_total and ID ordering are the same
+ * whether or not stationary elements are on air (transport.c).
+ *
+ * Physical, not choreographic: whether it takes part in a step is the
+ * script's business, expressed with [[tracks]] filters on capabilities
+ * (choreo.h §7) — element_is_participating() does not read this bit.
+ * Additive bit in the high byte wire v6 opened up, so no
+ * TAPESTRY_WIRE_VERSION bump; older receivers just see a peer that
+ * happens not to move. */
+#define ELEMENT_HEALTH_STATIONARY     0x0100u
+
 typedef enum {
     ELEMENT_DEPARTED_COMPLETE = 0,  /* script finished — quiescence -> land */
     ELEMENT_DEPARTED_BACKSTOP = 1,  /* mission-duration backstop elapsed    */
@@ -341,6 +357,12 @@ static inline bool element_is_participating(const wm_entry_t *e)
         return false;
     }
     return (e->state.health_flags & ELEMENT_HEALTH_DEPARTED) == 0;
+}
+
+/* True for a peer that has declared ELEMENT_HEALTH_STATIONARY (see there). */
+static inline bool element_is_stationary(const wm_entry_t *e)
+{
+    return (e->state.health_flags & ELEMENT_HEALTH_STATIONARY) != 0;
 }
 
 /* ── Consistency metric ──────────────────────────────────────────────────── */

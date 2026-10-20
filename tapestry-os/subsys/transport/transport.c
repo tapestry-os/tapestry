@@ -337,10 +337,12 @@ element_id_t transport_negotiate_id_retry(element_id_t isolated_id,
         wm_tick(&diag_wm, WM_CYCLE_MS);
         wm_update_self(&diag_wm, &diag_state);
 
+        /* Stationary elements are no part of the negotiated collective
+         * (csm.h): hearing only one is still being alone. */
         int fresh = 0, active = 0;
         for (int i = 0; i < MAX_ELEMENTS; i++) {
             const wm_entry_t *e = &diag_wm.entries[i];
-            if (e->is_active && !e->is_self) {
+            if (e->is_active && !e->is_self && !element_is_stationary(e)) {
                 active++;
                 if (!e->is_stale) { fresh++; }
             }
