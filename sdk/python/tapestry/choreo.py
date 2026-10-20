@@ -514,12 +514,14 @@ class Choreo:
             return rc
         return self.deploy()
 
-    def _validate_steps(self, steps: List[ChoreoStep]) -> int:
+    def _validate_steps(self, steps: List[ChoreoStep],
+                        check_caps: bool = True) -> int:
         """Validate every step up front — a script (or, per-track, a
         track) that would stall or fail a capability check mid-show is
         rejected before anything moves.  Shared by submit_script() and
         submit_tracks() so the two validation paths can't drift (mirrors
-        validate_steps() in choreo.c)."""
+        validate_steps() in choreo.c).  check_caps=False skips only the
+        capability check, for a track this element can never run."""
         if not steps:
             return -1
         for st in steps:
@@ -532,7 +534,7 @@ class Choreo:
                 # until=achieved alone is not a sufficient exit, only a
                 # valid early-advance on top of a real duration bound.
                 return -1
-            if not self._caps_satisfied(self._derived_caps(st.goal)):
+            if check_caps and not self._caps_satisfied(self._derived_caps(st.goal)):
                 return -_errno.EPERM
             if len(st.on) > CHOREO_MAX_TRANSITIONS:
                 return -1
@@ -690,8 +692,9 @@ class Choreo:
         """
         Load and start a multi-track Choreo (mirrors choreo_submit_tracks).
 
-        Validates every track's every step exactly as submit_script() does,
-        then determines this element's initial track (first matching
+        Validates every track's every step exactly as submit_script() does
+        — capabilities only on tracks whose filter's required_caps this
+        element satisfies, since it can never run any other — then determines this element's initial track (first matching
         filter, undebounced, evaluated against wm_entries) and deploys its
         step 0.
 
@@ -703,7 +706,8 @@ class Choreo:
         if not tracks or len(tracks) > CHOREO_MAX_TRACKS:
             return -1
         for tr in tracks:
-            rc0 = self._validate_steps(tr.steps)
+            rc0 = self._validate_steps(
+                tr.steps, self._caps_satisfied(tr.filter.required_caps))
             if rc0 != 0:
                 return rc0
 
@@ -830,14 +834,19 @@ class Choreo:
         return False
 
     def _swarm_size(self, wm_entries: List[dict]) -> int:
-        """Self + fresh active peer count — Python mirror of
-        scr_get_swarm_size() for the membership events below (no BFT
-        filtering in the Python SDK; matches bse.py's _participants())."""
+        """Self + fresh active peers on this element's own track — the
+        Python mirror of track_member_count() in choreo.c for the
+        membership and count events below (no BFT filtering in the Python
+        SDK; matches bse.py's _participants()).  Without tracks every
+        peer's current_track is 0, so this is every fresh peer."""
+        own_track = self.current_track()
         count = 0
         for e in wm_entries:
             if e.get('is_self', False):
                 count += 1
-            elif e.get('is_active') and not e.get('is_stale'):
+            elif e.get('is_active') and not e.get('is_stale') and \
+                    (self._n_tracks == 0 or
+                     e.get('current_track', 0) == own_track):
                 count += 1
         return count
 
