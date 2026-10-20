@@ -970,7 +970,10 @@ typedef struct {
  *
  * Validates every track's every step exactly as choreo_submit_script()
  * does (goal validity, capability requirements, transition targets in
- * range), then determines this element's initial track (first matching
+ * range) — except that capability requirements are checked only on
+ * tracks whose filter's required_caps this element satisfies: it can
+ * never run any other, and checking them would reject exactly the
+ * elements a capability filter routes elsewhere.  Then determines this element's initial track (first matching
  * filter, undebounced, evaluated against `wm` — the same reason
  * choreo_collective_achieved() takes a world_model_t* instead of caching
  * one: submission is caller-driven, not tick-driven) and deploys its
