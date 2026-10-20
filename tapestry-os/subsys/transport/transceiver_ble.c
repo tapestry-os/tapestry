@@ -414,7 +414,9 @@ int ble_transceiver_drain_claimed(bool *claimed_out, int max_id)
     int n = 0;
     while (k_msgq_get(&ble_rx_q, wire, K_NO_WAIT) == 0) {
         const tapestry_gossip_frame_t *f = (const tapestry_gossip_frame_t *)wire;
-        if (f->id < (uint8_t)max_id) {
+        /* Stationary elements are not counted — see gossip_drain_discovery(). */
+        if (f->id < (uint8_t)max_id &&
+            !(f->health_flags & ELEMENT_HEALTH_STATIONARY)) {
             claimed_out[f->id] = true;
         }
         n++;

@@ -773,7 +773,10 @@ int gossip_drain_discovery(uint32_t *nonces_out, int max_nonces,
                 if (n_nonces < max_nonces) {
                     nonces_out[n_nonces++] = g->update_seq;
                 }
-            } else if (claimed_out != NULL && g->id < (uint8_t)max_id) {
+            } else if (claimed_out != NULL && g->id < (uint8_t)max_id &&
+                       !(g->health_flags & ELEMENT_HEALTH_STATIONARY)) {
+                /* A stationary element holds a fixed ID outside the
+                 * negotiated range and is not counted (csm.h). */
                 claimed_out[g->id] = true;
             }
         }

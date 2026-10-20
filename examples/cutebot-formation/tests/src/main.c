@@ -5,7 +5,8 @@
  *   - demo_track_target()   the differential-drive go-to-point law
  *                           (arrival snap, trapezoidal approach, emergency
  *                           repulsion backstop, the exact-180-degree
- *                           reverse case)
+ *                           reverse case, the keep-out around a
+ *                           stationary peer)
  *   - demo_arena_fence()    the outward-command veto near a WORLD_SIZE
  *                           edge, exercised implicitly through the ring
  *                           script test below (element 3's scenario) —
@@ -343,6 +344,70 @@ ZTEST(formation_field, test_track_ignores_stale_peer_repulsion)
     demo_track_target(&wm, &odo, 50.0f, 0.0f, &speed, &rate);
     zassert_true(speed > 0.0f,
                  "a stale peer must not contribute repulsion");
+}
+
+/* ── Stationary peers (csm.h ELEMENT_HEALTH_STATIONARY) ───────────────── */
+
+static void wm_set_stationary(int slot, float x, float y, bool stale)
+{
+    wm_set_peer(slot, x, y, stale);
+    wm.entries[slot].state.health_flags = ELEMENT_HEALTH_STATIONARY;
+}
+
+/* At 20 units a robot peer is inside DEMO_TRACK_MIN_SEP (25.3) and pushes;
+ * a stationary peer there is outside DEMO_TRACK_STATIONARY_SEP (15.8) and
+ * does not — the clearance a radius-20 ring around it depends on. */
+ZTEST(formation_field, test_stationary_keepout_is_smaller_than_a_robots)
+{
+    demo_odometry_t odo;
+    float s_free, r_free, s_robot, r_robot, s_post, r_post;
+
+    wm_reset();
+    demo_odometry_init(&odo, 30.0f, 50.0f);
+    demo_track_target(&wm, &odo, 80.0f, 50.0f, &s_free, &r_free);
+
+    wm_set_peer(5, 30.0f, 70.0f, false);
+    demo_track_target(&wm, &odo, 80.0f, 50.0f, &s_robot, &r_robot);
+
+    wm_reset();
+    wm_set_stationary(31, 30.0f, 70.0f, false);
+    demo_track_target(&wm, &odo, 80.0f, 50.0f, &s_post, &r_post);
+
+    zassert_true(fabsf(s_robot - s_free) > 1e-3f || fabsf(r_robot - r_free) > 1e-3f,
+                 "a robot peer 20 units away should repel");
+    zassert_within(s_post, s_free, 1e-6f, "a stationary peer 20 units away "
+                   "should not repel (speed %f vs %f)", (double)s_post,
+                   (double)s_free);
+    zassert_within(r_post, r_free, 1e-6f, "a stationary peer 20 units away "
+                   "should not repel (rate %f vs %f)", (double)r_post,
+                   (double)r_free);
+}
+
+/* Driving straight at a stationary peer, through the real integration: the
+ * robot stops short of contact (a ~110 mm robot against a board about its
+ * size), whether or not the peer's entry is fresh — it cannot have moved. */
+ZTEST(formation_field, test_head_on_stops_clear_of_a_stationary_peer)
+{
+    const float contact = DEMO_MM(110.0f);
+
+    for (int stale = 0; stale <= 1; stale++) {
+        wm_reset();
+        wm_set_stationary(31, 70.0f, 50.0f, stale);
+
+        demo_odometry_t odo;
+        demo_odometry_init(&odo, 20.0f, 50.0f);
+        odo.heading = 0.0f;
+
+        float min_d = 1e9f, speed, rate;
+        for (int i = 0; i < 400; i++) {
+            demo_track_target(&wm, &odo, 90.0f, 50.0f, &speed, &rate);
+            demo_odometry_update(&odo, speed, rate, DT_MS);
+            min_d = fminf(min_d, dist2d(odo.x, odo.y, 70.0f, 50.0f));
+        }
+        zassert_true(min_d > contact,
+                     "%s peer: robot came within %.1f units (contact %.1f)",
+                     stale ? "stale" : "fresh", (double)min_d, (double)contact);
+    }
 }
 
 /* ── Discovery detection ("leak" / "spill") ────────────── */

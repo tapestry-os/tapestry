@@ -415,19 +415,24 @@ void demo_track_target(const world_model_t *wm,
     bool repelled = false;
     for (int i = 0; i < MAX_ELEMENTS; i++) {
         const wm_entry_t *e = &wm->entries[i];
-        if (!e->is_active || e->is_self || e->is_stale) {
+        /* A stationary peer keeps its own, smaller keep-out and still
+         * counts when stale — see DEMO_TRACK_STATIONARY_SEP. */
+        bool stationary = element_is_stationary(e);
+        if (!e->is_active || e->is_self || (e->is_stale && !stationary)) {
             continue;
         }
+        float sep = stationary ? DEMO_TRACK_STATIONARY_SEP : DEMO_TRACK_MIN_SEP;
+        float k   = stationary ? DEMO_TRACK_STATIONARY_K : DEMO_TRACK_EMERGENCY_K;
 
         float pdx  = e->state.position.x - odo->x;
         float pdy  = e->state.position.y - odo->y;
         float pdist = sqrtf(pdx * pdx + pdy * pdy);
 
-        if (pdist < 0.01f || pdist >= DEMO_TRACK_MIN_SEP) {
+        if (pdist < 0.01f || pdist >= sep) {
             continue;
         }
 
-        float force = (DEMO_TRACK_MIN_SEP - pdist) * DEMO_TRACK_EMERGENCY_K;
+        float force = (sep - pdist) * k;
         fx -= force * (pdx / pdist);
         fy -= force * (pdy / pdist);
         repelled = true;
