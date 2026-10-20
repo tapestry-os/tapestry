@@ -1469,7 +1469,7 @@ int main(void)
      * whether the source .toml has [[steps]] (k_choreo_script/
      * CHOREO_SCRIPT_LEN — ring.choreo.toml, form-grid.choreo.toml,
      * spill.choreo.toml) or [[tracks]] (k_choreo_tracks/CHOREO_N_TRACKS
-     * — no cutebot script today, §7) — see choreoc.py's _emit_steps_header()
+     * — leak-sensor.choreo.toml, §7) — see choreoc.py's _emit_steps_header()
      * vs _emit_tracks_header(). CHOREO_N_TRACKS only exists in the
      * tracks case, so it's the compile-time discriminator between the
      * two choreo_script.h shapes; whichever script is currently
