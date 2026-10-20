@@ -675,6 +675,51 @@ ZTEST(gossip_wire, test_discovery_beacons_and_claimed_ids_split_correctly)
     zassert_false(claimed[3], "no other id should be claimed");
 }
 
+/*
+ * A stationary element (a sensor post on a fixed id) gossips during the
+ * robots' auto-ID window but is no part of the negotiated collective: its
+ * frames must not claim an id, or every robot's n_total grows by one.
+ */
+ZTEST(gossip_wire, test_a_stationary_element_claims_no_id)
+{
+    uint32_t nonces[4] = {0};
+    bool claimed[MAX_ELEMENTS] = {false};
+
+    element_state_t post = sender_state(31, false);
+    post.health_flags |= ELEMENT_HEALTH_STATIONARY;
+    element_state_t robot = sender_state(5, false);
+
+    gossip_send(&post, TAPESTRY_QOS_SOFT_RT);
+    gossip_send(&robot, TAPESTRY_QOS_SOFT_RT);
+
+    int n = gossip_drain_discovery(nonces, 4, claimed, MAX_ELEMENTS);
+
+    zassert_equal(n, 0, "no beacons were sent");
+    zassert_false(claimed[31], "a stationary element must not claim its id");
+    zassert_true(claimed[5], "a running robot still claims its id");
+}
+
+ZTEST(gossip_wire, test_stationary_bit_round_trips)
+{
+    world_model_t wm;
+    element_state_t own = sender_state(31, false);
+
+    own.health_flags = ELEMENT_HEALTH_STATIONARY;
+
+    receiver_init(&wm, 0);
+    gossip_send(&own, TAPESTRY_QOS_SOFT_RT);
+    zassert_equal(gossip_drain(&wm, 0), 1, "frame should be accepted");
+
+    const wm_entry_t *e = wm_get_entry(&wm, 31);
+
+    zassert_not_null(e, "sender entry");
+    zassert_true(element_is_stationary(e),
+                 "STATIONARY (high byte) must survive the wire hop");
+    zassert_true(element_is_participating(e),
+                 "stationary is physical, not choreographic: the peer still "
+                 "participates — tracks decide what it does");
+}
+
 /* ── Authenticated framing (auth.conf) ───────────────────────────────────── */
 
 #ifdef CONFIG_TAPESTRY_WIRE_AUTH_ENABLED
