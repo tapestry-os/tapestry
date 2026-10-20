@@ -80,10 +80,15 @@
 #ifdef CONFIG_DEMO_MODE_CHOREO
 #include <tapestry/scr.h>      /* real L5 quorum */
 #include <tapestry/choreo.h>
+#ifdef CONFIG_DEMO_LEAK_DUAL
+/* Both leak scripts; one is picked at boot (leak_scripts.h). */
+#include "leak_scripts.h"
+#else
 /* The show itself. GENERATED from one of ../{ring,leak,spill}.choreo.toml
  * (the file to edit) by sdk/tools/choreoc.py — see the regeneration command in its
  * banner. */
 #include "choreo_script.h"
+#endif
 #endif
 #if defined(CONFIG_CUTEBOT_VARIANT_PRO)
 /* Cutebot Pro: motor/encoder/LED/line-sensor are all one I2C peripheral —
@@ -1481,7 +1486,11 @@ int main(void)
      * not-yet-discovered state, matching every track filter that reads
      * a self-only condition (see choreo_track_filter_t's doc).
      */
-#ifdef CHOREO_N_TRACKS
+#if defined(CONFIG_DEMO_LEAK_DUAL)
+    /* Submitted after the start barrier, once it knows whether the leak
+     * sensor is on (see there).  Until then current_track is 0 — the
+     * robots' track in both scripts. */
+#elif defined(CHOREO_N_TRACKS)
     if (choreo_submit_tracks(&wm, k_choreo_tracks, CHOREO_N_TRACKS) != 0) {
         LOG_ERR("id=%u choreo tracks rejected — staying grounded",
                 (unsigned)element_id);
@@ -1526,15 +1535,33 @@ int main(void)
      * nothing mode-specific here.
      */
     uint32_t peers_ready_ms = 0;
+#ifdef CONFIG_DEMO_LEAK_DUAL
+    /* Which leak demo: a stationary element (the leak sensor) heard at any
+     * point of the barrier picks leak-sensor.  The barrier lasts at least
+     * DEMO_LEAK_LISTEN_MS, so a robot does not decide "no sensor" before
+     * it could have heard one. */
+    bool sensor_heard = false;
+#endif
     for (uint32_t waited_ms = 0; ; waited_ms += WM_CYCLE_MS) {
         transport_drain(&wm, element_id);
         wm_tick(&wm, WM_CYCLE_MS);
         demo_set_leds(&wm, SUBSTRATE_SIGNAL_NONE);
 
+#ifdef CONFIG_DEMO_LEAK_DUAL
+        for (int i = 0; i < MAX_ELEMENTS && !sensor_heard; i++) {
+            const wm_entry_t *e = &wm.entries[i];
+            sensor_heard = e->is_active && !e->is_self &&
+                           element_is_stationary(e);
+        }
+        bool listened = sensor_heard ||
+                        waited_ms >= (uint32_t)CONFIG_DEMO_LEAK_LISTEN_MS;
+#else
+        bool listened = true;
+#endif
         int fresh = demo_fresh_robot_peers(&wm);
         if (fresh >= n_total - 1) {
             peers_ready_ms += WM_CYCLE_MS;
-            if (peers_ready_ms >= DEMO_SYNC_SETTLE_MS) {
+            if (peers_ready_ms >= DEMO_SYNC_SETTLE_MS && listened) {
                 break;
             }
         } else {
@@ -1570,6 +1597,26 @@ int main(void)
         k_msleep(WM_CYCLE_MS);
     }
 
+#ifdef CONFIG_DEMO_LEAK_DUAL
+    {
+        const demo_script_t *script = sensor_heard ? &demo_script_leak_sensor
+                                                   : &demo_script_leak;
+        int rc = script->tracks != NULL
+                 ? choreo_submit_tracks(&wm, script->tracks, script->n_tracks)
+                 : choreo_submit_script(script->steps, script->n_steps);
+        if (rc != 0) {
+            LOG_ERR("id=%u choreo \"%s\" rejected (%d) — staying grounded",
+                    (unsigned)element_id, script->name, rc);
+            substrate_set_power(SUBSTRATE_POWER_SLEEP);
+            return -1;
+        }
+        DEMO_EVT(INF, "id=%u leak sensor %s — choreo \"%s\" loaded, "
+                 "time bound %u s", (unsigned)element_id,
+                 sensor_heard ? "heard" : "NOT heard", script->name,
+                 (unsigned)(script->total_timeout_ms / 1000u));
+        choreo_publish_state(&own_state);
+    }
+#endif
     DEMO_EVT(INF, "id=%u demo ready — entering main loop",
              (unsigned)element_id);
 

@@ -190,6 +190,36 @@ Place the sensor where its build says (default (70, 70), two squares
 diagonally from the centre). The robots ring the configured point, not
 where the board actually lies.
 
+### Both leak demos in one firmware (`DEMO_LEAK_DUAL`)
+
+Build with `-DCONFIG_DEMO_LEAK_DUAL=y` and the robots carry both
+`leak.choreo.toml` and `leak-sensor.choreo.toml`. The start barrier listens
+for the leak sensor for at least 3 s (`DEMO_LEAK_LISTEN_MS`). If the robots
+hear it they run leak-sensor; if not, they run leak. Each robot logs its
+choice: `leak sensor heard — choreo "leak-sensor" loaded`.
+
+```sh
+west build -b bbc_microbit_v2 tapestry/examples/cutebot-formation -p always \
+    -- -DCONFIG_CUTEBOT_VARIANT_PRO=y -DCONFIG_DEMO_LEAK_DUAL=y \
+       -DEXTRA_CONF_FILE=ble_debug.conf
+```
+
+`src/choreo_script.h` is not used in this build, so there's nothing to
+regenerate first. The leak script is `src/choreo_leak.h`, and the
+leak-sensor script is the header `examples/leak-sensor` ships.
+
+To switch demos, power-cycle the robots with the sensor on (leak-sensor)
+or off (leak):
+
+- **leak:** sensor off, printed disc on the board.
+- **leak-sensor:** sensor on, disc off the board. The robots' marker
+  detection is still armed, so a robot that drives over the disc while no
+  leak is held reports a leak there.
+
+The choice is made once, at boot. Turning the sensor on or off mid-run
+does not change the script. A robot switched back on mid-run chooses the
+same way, so leave the sensor as it was.
+
 ## Hardware
 
 | Item | Details |
@@ -498,6 +528,13 @@ Choreo end-to-end (hold → form circle → settled
 hold), driven through real `demo_odometry_t` + `demo_track_target` +
 `demo_odometry_update` integration (not a teleporting perfect tracker) —
 matches `cf21bl-formation/tests`'s pattern.
+
+`src/leak_sensor.c` covers `leak-sensor.choreo.toml` with a stationary
+sensor. It checks track selection for a robot and for the sensor, the
+script per robot (home, wait, ring, settled, home), membership changes
+while waiting, and all four robots driving at once: to the ring around
+the sensor, out to home, and home again after a rejoin. It compiles against the header `examples/leak-sensor` ships, so it
+does not depend on which script `src/choreo_script.h` currently holds.
 
 ```sh
 west build -p always -b native_sim/native/64 tapestry/examples/cutebot-formation/tests

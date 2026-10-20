@@ -49,6 +49,14 @@ if(CONFIG_DEMO_MODE_CHOREO)
     )
 endif()
 
+# Both leak scripts, picked at boot (Kconfig DEMO_LEAK_DUAL, leak_scripts.h).
+if(CONFIG_DEMO_LEAK_DUAL)
+    target_sources(app PRIVATE
+        src/leak_script_search.c
+        src/leak_script_sensor.c
+    )
+endif()
+
 # BLE transceiver — micro:bit only (CONFIG_BT=y in board overlay).
 if(CONFIG_BT)
     target_sources(app PRIVATE ${TAPESTRY_OS_TRANSPORT}/transceiver_ble.c)

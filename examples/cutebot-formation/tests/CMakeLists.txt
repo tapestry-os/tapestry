@@ -7,6 +7,9 @@ set(TAPESTRY_OS_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/../../../tapestry-os)
 
 target_sources(app PRIVATE
     src/main.c
+    # leak-sensor.choreo.toml + a stationary sensor (its own TU: it includes
+    # examples/leak-sensor's generated script header)
+    src/leak_sensor.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../src/formation.c
     # L6/L7 under test: the choreo demo mode's script engine + BSE
     ${TAPESTRY_OS_ROOT}/subsys/scr/scr.c

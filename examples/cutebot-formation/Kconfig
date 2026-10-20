@@ -424,6 +424,28 @@ config TAPESTRY_QUORUM_TARGET
 	range 0 4
 	default 1
 
+config DEMO_LEAK_DUAL
+	bool "Both leak demos, picked at boot by whether the leak sensor is on"
+	depends on DEMO_MODE_CHOREO
+	help
+	  Builds leak.choreo.toml AND leak-sensor.choreo.toml into the robots
+	  instead of src/choreo_script.h. At boot the start barrier also
+	  listens for a stationary element (examples/leak-sensor) for at least
+	  DEMO_LEAK_LISTEN_MS: heard -> leak-sensor (wait for its button),
+	  not heard -> leak (search the board for the printed marker). Switch
+	  demos by powering the sensor on or off and power-cycling the robots;
+	  no reflash. The leak-sensor script is the header examples/leak-sensor
+	  ships; the leak one is src/choreo_leak.h (see leak_scripts.h).
+
+config DEMO_LEAK_LISTEN_MS
+	int "How long the start barrier listens for the leak sensor (ms)"
+	depends on DEMO_LEAK_DUAL
+	default 3000
+	help
+	  Counted from the end of auto-ID. The sensor gossips every 500 ms, so
+	  3 s is six chances to hear it; every robot must reach the same
+	  answer or they would run different scripts.
+
 config DEMO_BLE_DEBUG
 	bool "Broadcast debug telemetry over BLE (legacy advertising)"
 	depends on (DEMO_MODE_CHOREO || DEMO_MODE_TURN_CALIBRATE || \
