@@ -351,6 +351,42 @@ ZTEST(facts, test_trickle_restarts_at_imin_on_an_inconsistent_digest_or_new_fact
     zassert_equal(got[0], 2);
 }
 
+/* An element that learns something new passes it on at FACT_IMIN_MS
+ * instead of on its long interval (RFC 6206: new data is an
+ * inconsistency); a repeat of what it already holds changes nothing.
+ * Hardware 2026-10-22: without this a robot that missed a sensor's three
+ * bursts waited ~5 s for a neighbour's slow timer. */
+ZTEST(facts, test_trickle_restarts_at_imin_when_a_received_record_is_new)
+{
+    fact_t leak = mk(FACT_TYPE_TARGET, 31, 0x2d67, 0, FACT_IMMUTABLE, 1,
+                     70.0f, 70.0f);
+    int got[4];
+
+    init_synced(0, 1);
+    for (int i = 0; i < 200; i++) {
+        wm_fact_trickle_tick(&wm, 100u, 12345u);
+    }
+    zassert_equal(wm.facts.trickle_i_ms, FACT_IMAX_MS);
+    zassert_true(wm_fact_receive(&wm, &leak), "new record must be taken");
+    zassert_equal(send_ticks(3, 12345u, got, 4), 1,
+                  "a newly learned fact must go out at IMIN");
+    zassert_equal(got[0], 2);
+
+    for (int i = 0; i < 200; i++) {
+        wm_fact_trickle_tick(&wm, 100u, 12345u);
+    }
+    zassert_false(wm_fact_receive(&wm, &leak), "a repeat changes nothing");
+    zassert_equal(wm.facts.trickle_i_ms, FACT_IMAX_MS,
+                  "a repeat must not restart Trickle");
+
+    fact_t cleared = leak;
+    cleared.flags |= FACT_RETRACTED;
+    cleared.stamp  = 2;
+    zassert_true(wm_fact_receive(&wm, &cleared), "retraction must be taken");
+    zassert_equal(send_ticks(3, 12345u, got, 4), 1,
+                  "a newly learned retraction must go out at IMIN");
+}
+
 ZTEST(facts, test_pack_rotates_two_records_at_a_time)
 {
     fact_t out[2];

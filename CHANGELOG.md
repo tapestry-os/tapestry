@@ -5,6 +5,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Stationary elements:** `ELEMENT_HEALTH_STATIONARY` marks an element that
+  never moves and has a fixed id. Auto-ID and the isolated-boot retry leave it
+  out; Cutebots skip it in the start barrier and keep a smaller keep-out
+  around it.
+- `examples/leak-sensor`: a fixed element whose button reports a leak as a
+  shared fact. Robots running `leak-sensor.choreo.toml` wait at home, ring the
+  sensor, and go home when it clears.
+
+### Fixed
+- `choreo_submit_tracks()` checks capabilities only on tracks this element's
+  capabilities reach, so a capability filter can route an element past a track
+  it could not run.
+- Membership and count events (`element_lost`, `element_joined`, `count_gte`,
+  `count_eq`) count the element's own track, as `CHOREO_API.md` says, instead
+  of every fresh peer.
+- A received record that changes the fact table restarts Trickle, so an
+  element that just learned a fact relays it at once instead of on its long
+  interval.
+
 ## [1.2.0] - 2026-10-08
 
 > **Breaking:** wire v6 → v7. Reflash every element from one build.

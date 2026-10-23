@@ -279,6 +279,16 @@ class FactTable:
         return 0
 
     def receive(self, fact: Fact) -> bool:
+        """Merge one record; True if the table changed.  New data is a
+        Trickle inconsistency (RFC 6206), so a change restarts at
+        FACT_IMIN_MS and this element passes it on promptly (mirrors
+        wm_fact_receive() in facts.c)."""
+        if not self._merge(fact):
+            return False
+        self._trickle_reset()
+        return True
+
+    def _merge(self, fact: Fact) -> bool:
         if fact.type == FACT_TYPE_NONE or fact.origin >= MAX_ELEMENTS:
             return False
         if fact.stamp > self.clock:
