@@ -237,6 +237,23 @@ def test_trickle_restarts_at_imin_on_an_inconsistent_digest_or_new_fact():
     assert _send_ticks(t, 3) == [2]
 
 
+def test_trickle_restarts_at_imin_when_a_received_record_is_new():
+    """Mirror of the C test: new data restarts Trickle, a repeat does not."""
+    t = synced(0, 1)
+    _send_ticks(t, 200)
+    assert t.trickle_i_ms == F.FACT_IMAX_MS
+    leak = Fact(TARGET, 31, 0x2d67, 0, F.FACT_IMMUTABLE, 1, (70, 70, 0))
+    assert t.receive(leak)
+    assert _send_ticks(t, 3) == [2]
+    _send_ticks(t, 200)
+    assert not t.receive(leak)
+    assert t.trickle_i_ms == F.FACT_IMAX_MS
+    cleared = Fact(TARGET, 31, 0x2d67, 0, F.FACT_IMMUTABLE | F.FACT_RETRACTED,
+                   2, (70, 70, 0))
+    assert t.receive(cleared)
+    assert _send_ticks(t, 3) == [2]
+
+
 def test_pack_rotates_two_records_at_a_time():
     t = synced(9)
     for i in range(3):
