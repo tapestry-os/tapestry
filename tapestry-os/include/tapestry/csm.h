@@ -658,7 +658,8 @@ int wm_fact_publish(world_model_t *wm, uint8_t type, const position_t *pos,
 int wm_fact_retract(world_model_t *wm, const fact_key_t *key);
 
 /* Merge one received record under the rules above.  Returns true if the
- * table changed. */
+ * table changed — and then restarts Trickle at FACT_IMIN_MS: new data is
+ * an inconsistency (RFC 6206), so the element passes it on promptly. */
 bool wm_fact_receive(world_model_t *wm, const fact_t *fact);
 
 /* A peer's fact frame was heard and its records merged: feed its digest

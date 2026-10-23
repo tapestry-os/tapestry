@@ -269,7 +269,8 @@ int wm_fact_retract(world_model_t *wm, const fact_key_t *key)
     return 0;
 }
 
-bool wm_fact_receive(world_model_t *wm, const fact_t *fact)
+/* The merge rules of wm_fact_receive(); true if the table changed. */
+static bool merge_record(world_model_t *wm, const fact_t *fact)
 {
     wm_facts_t *t = &wm->facts;
 
@@ -324,6 +325,22 @@ bool wm_fact_receive(world_model_t *wm, const fact_t *fact)
     }
 
     return admit(wm, fact);
+}
+
+/* New data is a Trickle inconsistency (RFC 6206): an element that has just
+ * learned a fact, or its retraction, restarts at FACT_IMIN_MS and passes it
+ * on within a fraction of a second, so a peer that missed the originator's
+ * burst hears it from its neighbours instead of waiting out their long
+ * intervals (hardware, 2026-10-22: a robot that missed three bursts from a
+ * stationary sensor heard the leak ~5 s late).  K still bounds the chatter:
+ * a neighbour that hears K consistent frames in an interval stays quiet. */
+bool wm_fact_receive(world_model_t *wm, const fact_t *fact)
+{
+    if (!merge_record(wm, fact)) {
+        return false;
+    }
+    trickle_reset(&wm->facts);
+    return true;
 }
 
 void wm_fact_heard_digest(world_model_t *wm, uint16_t digest)
